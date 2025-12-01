@@ -94,7 +94,7 @@ func (h *AuthHandler) RefreshToken(c *gin.Context) {
 	if result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not retreive user info"})
 	}
-	newToken := utils.WriteJWT(user.Email, user.Roles, user.UserId, h.jwtSigningKey, 15)
+	newToken := utils.WriteJWT(user.Email, user.Roles, user.ID, h.jwtSigningKey, 15)
 	c.SetCookie("jwt", newToken, 3600, "/", "localhost:3000", false, false)
 }
 
@@ -311,7 +311,7 @@ func (h *AuthHandler) GoogleCallback(c *gin.Context) {
 			Email:     email,
 			Provider:  "google",
 			Roles:     []string{"user"},
-			UserId:    uuid.New(),
+			ID:        uuid.New(),
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
 		}
@@ -331,9 +331,9 @@ func (h *AuthHandler) GoogleCallback(c *gin.Context) {
 
 	// Check if profile exists
 	var profile models.Profile
-	profileExists := h.db.Where("user_id = ?", user.UserId).First(&profile).Error == nil
+	profileExists := h.db.Where("user_id = ?", user.ID).First(&profile).Error == nil
 	if !profileExists {
-		profile.UserID = user.UserId
+		profile.UserID = user.ID
 		profile.Email = user.Email
 		profile.FirstName = firstName
 		profile.LastName = lastName
@@ -371,7 +371,7 @@ func (h *AuthHandler) GoogleCallback(c *gin.Context) {
 	// } else {
 	// 	roles = []string{"user"}
 	// }
-	authJwt := utils.WriteJWT(email, user.Roles, user.UserId, h.jwtSigningKey, 15)
+	authJwt := utils.WriteJWT(email, user.Roles, user.ID, h.jwtSigningKey, 15)
 	c.SetCookie("jwt", authJwt, 3600, "/", "localhost:3000", false, false)
 	c.Redirect(http.StatusTemporaryRedirect, dashboardURL)
 }
