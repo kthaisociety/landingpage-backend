@@ -1,10 +1,13 @@
 package models
 
 import (
+	"time"
+
 	"github.com/google/uuid"
 )
 
 type TeamUserPair struct {
-	TeamID uuid.UUID `gorm:"primaryKey;foreignKey:TeamID" json:"teamID"`
-	UserID uuid.UUID `gorm:"primaryKey;foreignKey:UserID" json:"userID"`
+	TeamID   uuid.UUID `gorm:"type:uuid;primaryKey" json:"team_id"`
+	UserID   uuid.UUID `gorm:"type:uuid;primaryKey" json:"user_id"`
+	JoinedAt time.Time `gorm:"autoCreateTime" json:"joined_at"`
 }

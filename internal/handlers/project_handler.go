@@ -127,48 +127,56 @@ func (h *ProjectHandler) Create(c *gin.Context) {
 		input.Status = models.ProjectStatusPlanning
 	}
 
-	project := models.Project{
-		ProjectID:   uuid.New(),
-		ProjectName: input.Name,
-		Description: input.Description,
-		Skills:      input.Skills,
-		Status:      input.Status,
-	}
+	var project models.Project
 
-	if err := h.db.Create(&project).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
+	// Use Transaction method - handles nested transactions via savepoints
+	err = h.db.Transaction(func(tx *gorm.DB) error {
+		project = models.Project{
+			ProjectID:   uuid.New(),
+			ProjectName: input.Name,
+			Description: input.Description,
+			Skills:      input.Skills,
+			Status:      input.Status,
+		}
 
-	// Create a team for this project
-	team := models.Team{
-		TeamID:   uuid.New(),
-		TeamName: fmt.Sprintf("%s Team", input.Name),
-	}
+		if err := tx.Create(&project).Error; err != nil {
+			return err
+		}
 
-	if err := h.db.Create(&team).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
+		// Create a team for this project
+		team := models.Team{
+			TeamID:   uuid.New(),
+			TeamName: fmt.Sprintf("%s Team", input.Name),
+		}
 
-	// Link team to project
-	teamProjectPair := models.TeamProjectPair{
-		TeamID:    team.TeamID,
-		ProjectID: project.ProjectID,
-	}
+		if err := tx.Create(&team).Error; err != nil {
+			return err
+		}
 
-	if err := h.db.Create(&teamProjectPair).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
+		// Link team to project
+		teamProjectPair := models.TeamProjectPair{
+			TeamID:    team.TeamID,
+			ProjectID: project.ProjectID,
+		}
 
-	// Add creator as first team member
-	teamUserPair := models.TeamUserPair{
-		TeamID: team.TeamID,
-		UserID: userID,
-	}
+		if err := tx.Create(&teamProjectPair).Error; err != nil {
+			return err
+		}
 
-	if err := h.db.Create(&teamUserPair).Error; err != nil {
+		// Add creator as first team member
+		teamUserPair := models.TeamUserPair{
+			TeamID: team.TeamID,
+			UserID: userID,
+		}
+
+		if err := tx.Create(&teamUserPair).Error; err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -179,11 +187,23 @@ func (h *ProjectHandler) Create(c *gin.Context) {
 
 // Update updates a project
 func (h *ProjectHandler) Update(c *gin.Context) {
+	userID, _, err := h.getUserData(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
 	projectID := c.Param("id")
 
 	projectUUID, err := uuid.Parse(projectID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid project ID"})
+		return
+	}
+
+	// Check if user is authorized (member or admin)
+	if !h.isAuthorizedForProject(projectUUID, userID) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You must be a project member or admin to update it"})
 		return
 	}
 
@@ -234,11 +254,23 @@ func (h *ProjectHandler) Update(c *gin.Context) {
 
 // Delete deletes a project
 func (h *ProjectHandler) Delete(c *gin.Context) {
+	userID, _, err := h.getUserData(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
 	projectID := c.Param("id")
 
 	projectUUID, err := uuid.Parse(projectID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid project ID"})
+		return
+	}
+
+	// Check if user is authorized (member or admin)
+	if !h.isAuthorizedForProject(projectUUID, userID) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You must be a project member or admin to delete it"})
 		return
 	}
 
@@ -279,6 +311,21 @@ func (h *ProjectHandler) AddMember(c *gin.Context) {
 	var teamProjectPair models.TeamProjectPair
 	if err := h.db.Where("project_id = ?", projectUUID).First(&teamProjectPair).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Project team not found"})
+		return
+	}
+
+	// Check if user is already a member
+	var existingCount int64
+	h.db.Model(&models.TeamUserPair{}).Where("team_id = ? AND user_id = ?", teamProjectPair.TeamID, userUUID).Count(&existingCount)
+	if existingCount > 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "User is already a member of this project"})
+		return
+	}
+
+	// Verify user exists
+	var user models.User
+	if err := h.db.First(&user, "id = ?", userUUID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
 
@@ -340,8 +387,8 @@ func (h *ProjectHandler) buildProjectResponse(project models.Project) ProjectRes
 	var teamUserPairs []models.TeamUserPair
 	h.db.Where("team_id = ?", teamProjectPair.TeamID).Find(&teamUserPairs)
 
-	// Get user profiles for all members
-	var members []ProjectMemberResponse
+	// Get user profiles for all members (initialize to empty slice, not nil)
+	members := make([]ProjectMemberResponse, 0)
 	for _, pair := range teamUserPairs {
 		var profile models.Profile
 		if err := h.db.Where("user_id = ?", pair.UserID).First(&profile).Error; err == nil {
@@ -367,20 +414,8 @@ func (h *ProjectHandler) buildProjectResponse(project models.Project) ProjectRes
 	}
 }
 
+// getUserData retrieves user data from the JWT context
 func (h *ProjectHandler) getUserData(c *gin.Context) (uuid.UUID, *models.User, error) {
-	// ⚠️ TESTING ONLY: Hardcode to our dummy admin user
-	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
-
-	var user models.User
-	if err := h.db.First(&user, "id = ?", userID).Error; err != nil {
-		return uuid.Nil, nil, fmt.Errorf("user not found: %v", err)
-	}
-
-	return userID, &user, nil
-}
-
-// getUserData retrieves user data from the session and database
-func (h *ProjectHandler) getRealUserData(c *gin.Context) (uuid.UUID, *models.User, error) {
 	userIDStr := c.GetString("user_id")
 	if userIDStr == "" {
 		return uuid.Nil, nil, fmt.Errorf("user_id not found in context")
@@ -397,4 +432,27 @@ func (h *ProjectHandler) getRealUserData(c *gin.Context) (uuid.UUID, *models.Use
 	}
 
 	return userID, &user, nil
+}
+
+// isAuthorizedForProject checks if a user can modify a project (member or admin)
+func (h *ProjectHandler) isAuthorizedForProject(projectID, userID uuid.UUID) bool {
+	// Check if user is an admin
+	var user models.User
+	if err := h.db.First(&user, "id = ?", userID).Error; err == nil {
+		for _, role := range user.Roles {
+			if role == models.RoleAdmin {
+				return true
+			}
+		}
+	}
+
+	// Check if user is a project member
+	var teamProjectPair models.TeamProjectPair
+	if err := h.db.Where("project_id = ?", projectID).First(&teamProjectPair).Error; err != nil {
+		return false
+	}
+
+	var count int64
+	h.db.Model(&models.TeamUserPair{}).Where("team_id = ? AND user_id = ?", teamProjectPair.TeamID, userID).Count(&count)
+	return count > 0
 }
