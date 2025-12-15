@@ -3,7 +3,6 @@ package handlers
 import (
     "bytes"
     "encoding/json"
-    "fmt"
     "net/http"
     "net/http/httptest"
     "testing"
@@ -19,16 +18,18 @@ import (
 )
 
 // setupTestDB connects to your Docker database
-func setupTestDB() (*gorm.DB, error) {
+// Returns nil, nil if database is not available (CI without DB)
+func setupTestDB(t *testing.T) *gorm.DB {
     // Connection string matching your docker-compose setup
     dsn := "host=localhost user=postgres password=password dbname=kthais port=5432 sslmode=disable"
     
     db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
     if err != nil {
-        return nil, fmt.Errorf("failed to connect to docker db: %v", err)
+        t.Skip("Skipping test: database not available (run 'docker compose up -d' for local testing)")
+        return nil
     }
 
-    return db, nil
+    return db
 }
 
 // testUserID is the user ID used for authenticated test requests
@@ -77,9 +78,9 @@ func seedTestUser(tx *gorm.DB) error {
 
 func TestCreateProject(t *testing.T) {
     // 1. Connect to real DB
-    db, err := setupTestDB()
-    if err != nil {
-        t.Fatalf("Could not connect to DB. Is Docker running? Error: %v", err)
+    db := setupTestDB(t)
+    if db == nil {
+        return
     }
 
     // 2. Start a Transaction
@@ -142,9 +143,9 @@ func TestCreateProject(t *testing.T) {
 }
 
 func TestGetProject(t *testing.T) {
-    db, err := setupTestDB()
-    if err != nil {
-        t.Fatal(err)
+    db := setupTestDB(t)
+    if db == nil {
+        return
     }
 
     tx := db.Begin()
@@ -192,9 +193,9 @@ func TestGetProject(t *testing.T) {
 }
 
 func TestAddMember(t *testing.T) {
-	db, err := setupTestDB()
-	if err != nil {
-		t.Fatal(err)
+	db := setupTestDB(t)
+	if db == nil {
+		return
 	}
 
 	tx := db.Begin()
@@ -265,9 +266,9 @@ func TestAddMember(t *testing.T) {
 }
 
 func TestRemoveMember(t *testing.T) {
-	db, err := setupTestDB()
-	if err != nil {
-		t.Fatal(err)
+	db := setupTestDB(t)
+	if db == nil {
+		return
 	}
 
 	tx := db.Begin()
