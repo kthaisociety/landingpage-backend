@@ -104,12 +104,6 @@ func (h *ProjectHandler) Get(c *gin.Context) {
 
 // Create creates a new project
 func (h *ProjectHandler) Create(c *gin.Context) {
-	userID, _, err := h.getUserData(c)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve user data"})
-		return
-	}
-
 	var input struct {
 		Name        string               `json:"name" binding:"required"`
 		Description string               `json:"description"`
@@ -130,7 +124,7 @@ func (h *ProjectHandler) Create(c *gin.Context) {
 	var project models.Project
 
 	// Use Transaction method - handles nested transactions via savepoints
-	err = h.db.Transaction(func(tx *gorm.DB) error {
+	err := h.db.Transaction(func(tx *gorm.DB) error {
 		project = models.Project{
 			ProjectID:   uuid.New(),
 			ProjectName: input.Name,
@@ -160,16 +154,6 @@ func (h *ProjectHandler) Create(c *gin.Context) {
 		}
 
 		if err := tx.Create(&teamProjectPair).Error; err != nil {
-			return err
-		}
-
-		// Add creator as first team member
-		teamUserPair := models.TeamUserPair{
-			TeamID: team.TeamID,
-			UserID: userID,
-		}
-
-		if err := tx.Create(&teamUserPair).Error; err != nil {
 			return err
 		}
 
@@ -314,18 +298,18 @@ func (h *ProjectHandler) AddMember(c *gin.Context) {
 		return
 	}
 
+	// Verify user exists
+	var user models.User
+	if err := h.db.First(&user, "id = ?", userUUID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
 	// Check if user is already a member
 	var existingCount int64
 	h.db.Model(&models.TeamUserPair{}).Where("team_id = ? AND user_id = ?", teamProjectPair.TeamID, userUUID).Count(&existingCount)
 	if existingCount > 0 {
 		c.JSON(http.StatusConflict, gin.H{"error": "User is already a member of this project"})
-		return
-	}
-
-	// Verify user exists
-	var user models.User
-	if err := h.db.First(&user, "id = ?", userUUID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
 
