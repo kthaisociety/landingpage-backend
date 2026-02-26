@@ -7,6 +7,7 @@ require (
 	github.com/gin-contrib/sessions v1.0.2
 	github.com/gin-gonic/gin v1.10.0
 	github.com/joho/godotenv v1.5.1
+	github.com/lib/pq v1.11.2
 	github.com/markbates/goth v1.80.0
 	github.com/redis/go-redis/v9 v9.7.1
 	github.com/stretchr/testify v1.10.0
