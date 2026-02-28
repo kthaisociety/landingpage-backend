@@ -32,7 +32,6 @@ func (h *ProjectHandler) Register(r *gin.RouterGroup) {
 		// Authenticated endpoints — admin only for writes
 		authenticated := projects.Group("")
 		authenticated.Use(middleware.AuthRequiredJWT(h.cfg))
-		authenticated.Use(middleware.RegisteredUserRequired(h.db))
 		authenticated.Use(middleware.RoleRequired(h.cfg, "admin"))
 		authenticated.POST("", h.Create)
 		authenticated.PUT("/:id", h.Update)
