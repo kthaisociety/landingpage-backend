@@ -375,7 +375,7 @@ func (h *RegistrationHandler) getUserData(c *gin.Context) (uuid.UUID, *models.Us
 	}
 
 	var user models.User
-	if err := h.db.First(&user, "id = ?", userID).Error; err != nil {
+	if err := h.db.First(&user, "user_id = ?", userID).Error; err != nil {
 		return uuid.Nil, nil, err
 	}
 

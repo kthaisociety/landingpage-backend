@@ -5,6 +5,7 @@ import (
 	"backend/internal/middleware"
 	"backend/internal/models"
 	"fmt"
+	"log"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -24,14 +25,15 @@ func NewProjectHandler(db *gorm.DB, cfg *config.Config) *ProjectHandler {
 func (h *ProjectHandler) Register(r *gin.RouterGroup) {
 	projects := r.Group("/projects")
 	{
-		// Public endpoints (anyone can view)
+		// Public endpoints
 		projects.GET("", h.List)
 		projects.GET("/:id", h.Get)
 
-		// Authenticated endpoints
+		// Authenticated endpoints — admin only for writes
 		authenticated := projects.Group("")
 		authenticated.Use(middleware.AuthRequiredJWT(h.cfg))
 		authenticated.Use(middleware.RegisteredUserRequired(h.db))
+		authenticated.Use(middleware.RoleRequired(h.cfg, "admin"))
 		authenticated.POST("", h.Create)
 		authenticated.PUT("/:id", h.Update)
 		authenticated.DELETE("/:id", h.Delete)
@@ -64,15 +66,90 @@ type ProjectMemberResponse struct {
 func (h *ProjectHandler) List(c *gin.Context) {
 	var projects []models.Project
 	if err := h.db.Find(&projects).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		log.Printf("Error listing projects: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list projects"})
 		return
 	}
 
-	// Build response with members for each project
-	var response []ProjectResponse
+	if len(projects) == 0 {
+		c.JSON(http.StatusOK, []ProjectResponse{})
+		return
+	}
+
+	// Batch-load all team-project pairs
+	projectIDs := make([]uuid.UUID, len(projects))
+	for i, p := range projects {
+		projectIDs[i] = p.ProjectId
+	}
+
+	var teamProjectPairs []models.TeamProjectPair
+	h.db.Where("project_id IN ?", projectIDs).Find(&teamProjectPairs)
+
+	// Map project_id -> team_id
+	projectToTeam := make(map[uuid.UUID]uuid.UUID)
+	teamIDs := make([]uuid.UUID, 0, len(teamProjectPairs))
+	for _, tp := range teamProjectPairs {
+		projectToTeam[tp.ProjectId] = tp.TeamId
+		teamIDs = append(teamIDs, tp.TeamId)
+	}
+
+	// Batch-load all team-user pairs
+	var teamUserPairs []models.TeamUserPair
+	if len(teamIDs) > 0 {
+		h.db.Where("team_id IN ?", teamIDs).Find(&teamUserPairs)
+	}
+
+	// Map team_id -> []user_id
+	teamToUsers := make(map[uuid.UUID][]uuid.UUID)
+	allUserIDs := make([]uuid.UUID, 0)
+	for _, tu := range teamUserPairs {
+		teamToUsers[tu.TeamId] = append(teamToUsers[tu.TeamId], tu.UserId)
+		allUserIDs = append(allUserIDs, tu.UserId)
+	}
+
+	// Batch-load all profiles
+	profileMap := make(map[uuid.UUID]models.Profile)
+	if len(allUserIDs) > 0 {
+		var profiles []models.Profile
+		h.db.Where("user_id IN ?", allUserIDs).Find(&profiles)
+		for _, p := range profiles {
+			profileMap[p.UserID] = p
+		}
+	}
+
+	// Build response
+	response := make([]ProjectResponse, 0, len(projects))
 	for _, project := range projects {
-		projectResp := h.buildProjectResponse(project)
-		response = append(response, projectResp)
+		members := make([]ProjectMemberResponse, 0)
+		if teamID, ok := projectToTeam[project.ProjectId]; ok {
+			for _, userID := range teamToUsers[teamID] {
+				if profile, ok := profileMap[userID]; ok {
+					members = append(members, ProjectMemberResponse{
+						UserID:         profile.UserID,
+						FirstName:      profile.FirstName,
+						LastName:       profile.LastName,
+						Email:          profile.Email,
+						ProfilePicture: profile.ProfilePicture,
+					})
+				}
+			}
+		}
+
+		skills := project.Skills
+		if skills == nil {
+			skills = []string{}
+		}
+
+		response = append(response, ProjectResponse{
+			ID:          project.ProjectId,
+			Name:        project.ProjectName,
+			Description: project.Description,
+			Skills:      skills,
+			Status:      project.Status,
+			Members:     members,
+			CreatedAt:   project.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+			UpdatedAt:   project.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		})
 	}
 
 	c.JSON(http.StatusOK, response)
@@ -94,7 +171,8 @@ func (h *ProjectHandler) Get(c *gin.Context) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Project not found"})
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		log.Printf("Error fetching project %s: %v", projectUUID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch project"})
 		return
 	}
 
@@ -121,12 +199,17 @@ func (h *ProjectHandler) Create(c *gin.Context) {
 		input.Status = models.ProjectStatusPlanning
 	}
 
+	if !isValidProjectStatus(input.Status) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid status. Must be one of: planning, active, completed"})
+		return
+	}
+
 	var project models.Project
 
 	// Use Transaction method - handles nested transactions via savepoints
 	err := h.db.Transaction(func(tx *gorm.DB) error {
 		project = models.Project{
-			ProjectID:   uuid.New(),
+			ProjectId:   uuid.New(),
 			ProjectName: input.Name,
 			Description: input.Description,
 			Skills:      input.Skills,
@@ -139,7 +222,7 @@ func (h *ProjectHandler) Create(c *gin.Context) {
 
 		// Create a team for this project
 		team := models.Team{
-			TeamID:   uuid.New(),
+			TeamId:   uuid.New(),
 			TeamName: fmt.Sprintf("%s Team", input.Name),
 		}
 
@@ -149,8 +232,8 @@ func (h *ProjectHandler) Create(c *gin.Context) {
 
 		// Link team to project
 		teamProjectPair := models.TeamProjectPair{
-			TeamID:    team.TeamID,
-			ProjectID: project.ProjectID,
+			TeamId:    team.TeamId,
+			ProjectId: project.ProjectId,
 		}
 
 		if err := tx.Create(&teamProjectPair).Error; err != nil {
@@ -161,7 +244,8 @@ func (h *ProjectHandler) Create(c *gin.Context) {
 	})
 
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		log.Printf("Error creating project: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create project"})
 		return
 	}
 
@@ -171,23 +255,11 @@ func (h *ProjectHandler) Create(c *gin.Context) {
 
 // Update updates a project
 func (h *ProjectHandler) Update(c *gin.Context) {
-	userID, _, err := h.getUserData(c)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-
 	projectID := c.Param("id")
 
 	projectUUID, err := uuid.Parse(projectID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid project ID"})
-		return
-	}
-
-	// Check if user is authorized (member or admin)
-	if !h.isAuthorizedForProject(projectUUID, userID) {
-		c.JSON(http.StatusForbidden, gin.H{"error": "You must be a project member or admin to update it"})
 		return
 	}
 
@@ -197,13 +269,14 @@ func (h *ProjectHandler) Update(c *gin.Context) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Project not found"})
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		log.Printf("Error fetching project %s for update: %v", projectUUID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch project"})
 		return
 	}
 
 	var input struct {
-		Name        string               `json:"name"`
-		Description string               `json:"description"`
+		Name        *string              `json:"name"`
+		Description *string              `json:"description"`
 		Skills      []string             `json:"skills"`
 		Status      models.ProjectStatus `json:"status"`
 	}
@@ -214,21 +287,30 @@ func (h *ProjectHandler) Update(c *gin.Context) {
 	}
 
 	// Update fields if provided
-	if input.Name != "" {
-		project.ProjectName = input.Name
+	if input.Name != nil {
+		if *input.Name == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Name cannot be empty"})
+			return
+		}
+		project.ProjectName = *input.Name
 	}
-	if input.Description != "" {
-		project.Description = input.Description
+	if input.Description != nil {
+		project.Description = *input.Description
 	}
 	if input.Skills != nil {
 		project.Skills = input.Skills
 	}
 	if input.Status != "" {
+		if !isValidProjectStatus(input.Status) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid status. Must be one of: planning, active, completed"})
+			return
+		}
 		project.Status = input.Status
 	}
 
 	if err := h.db.Save(&project).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		log.Printf("Error updating project %s: %v", projectUUID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update project"})
 		return
 	}
 
@@ -236,14 +318,8 @@ func (h *ProjectHandler) Update(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
-// Delete deletes a project
+// Delete deletes a project and cleans up associated team records
 func (h *ProjectHandler) Delete(c *gin.Context) {
-	userID, _, err := h.getUserData(c)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-
 	projectID := c.Param("id")
 
 	projectUUID, err := uuid.Parse(projectID)
@@ -252,14 +328,42 @@ func (h *ProjectHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	// Check if user is authorized (member or admin)
-	if !h.isAuthorizedForProject(projectUUID, userID) {
-		c.JSON(http.StatusForbidden, gin.H{"error": "You must be a project member or admin to delete it"})
-		return
-	}
+	err = h.db.Transaction(func(tx *gorm.DB) error {
+		// Find associated team before deleting
+		var teamProjectPair models.TeamProjectPair
+		if err := tx.Where("project_id = ?", projectUUID).First(&teamProjectPair).Error; err == nil {
+			// Remove all team members
+			if err := tx.Where("team_id = ?", teamProjectPair.TeamId).Delete(&models.TeamUserPair{}).Error; err != nil {
+				return err
+			}
+			// Remove team-project link
+			if err := tx.Where("team_id = ? AND project_id = ?", teamProjectPair.TeamId, projectUUID).Delete(&models.TeamProjectPair{}).Error; err != nil {
+				return err
+			}
+			// Remove the team itself
+			if err := tx.Delete(&models.Team{}, "team_id = ?", teamProjectPair.TeamId).Error; err != nil {
+				return err
+			}
+		}
 
-	if err := h.db.Delete(&models.Project{}, "project_id = ?", projectUUID).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		// Delete the project
+		result := tx.Delete(&models.Project{}, "project_id = ?", projectUUID)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return gorm.ErrRecordNotFound
+		}
+		return nil
+	})
+
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Project not found"})
+			return
+		}
+		log.Printf("Error deleting project %s: %v", projectUUID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete project"})
 		return
 	}
 
@@ -300,14 +404,14 @@ func (h *ProjectHandler) AddMember(c *gin.Context) {
 
 	// Verify user exists
 	var user models.User
-	if err := h.db.First(&user, "id = ?", userUUID).Error; err != nil {
+	if err := h.db.First(&user, "user_id = ?", userUUID).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
 
 	// Check if user is already a member
 	var existingCount int64
-	h.db.Model(&models.TeamUserPair{}).Where("team_id = ? AND user_id = ?", teamProjectPair.TeamID, userUUID).Count(&existingCount)
+	h.db.Model(&models.TeamUserPair{}).Where("team_id = ? AND user_id = ?", teamProjectPair.TeamId, userUUID).Count(&existingCount)
 	if existingCount > 0 {
 		c.JSON(http.StatusConflict, gin.H{"error": "User is already a member of this project"})
 		return
@@ -315,8 +419,8 @@ func (h *ProjectHandler) AddMember(c *gin.Context) {
 
 	// Add user to team
 	teamUserPair := models.TeamUserPair{
-		TeamID: teamProjectPair.TeamID,
-		UserID: userUUID,
+		TeamId: teamProjectPair.TeamId,
+		UserId: userUUID,
 	}
 
 	if err := h.db.Create(&teamUserPair).Error; err != nil {
@@ -352,9 +456,14 @@ func (h *ProjectHandler) RemoveMember(c *gin.Context) {
 	}
 
 	// Remove user from team
-	if err := h.db.Where("team_id = ? AND user_id = ?", teamProjectPair.TeamID, userUUID).
-		Delete(&models.TeamUserPair{}).Error; err != nil {
+	result := h.db.Where("team_id = ? AND user_id = ?", teamProjectPair.TeamId, userUUID).
+		Delete(&models.TeamUserPair{})
+	if result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to remove member"})
+		return
+	}
+	if result.RowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User is not a member of this project"})
 		return
 	}
 
@@ -365,17 +474,30 @@ func (h *ProjectHandler) RemoveMember(c *gin.Context) {
 func (h *ProjectHandler) buildProjectResponse(project models.Project) ProjectResponse {
 	// Find team associated with this project
 	var teamProjectPair models.TeamProjectPair
-	h.db.Where("project_id = ?", project.ProjectID).First(&teamProjectPair)
+	if err := h.db.Where("project_id = ?", project.ProjectId).First(&teamProjectPair).Error; err != nil {
+		log.Printf("Warning: could not find team for project %s: %v", project.ProjectId, err)
+	}
 
 	// Get all team members
 	var teamUserPairs []models.TeamUserPair
-	h.db.Where("team_id = ?", teamProjectPair.TeamID).Find(&teamUserPairs)
+	if err := h.db.Where("team_id = ?", teamProjectPair.TeamId).Find(&teamUserPairs).Error; err != nil {
+		log.Printf("Warning: could not find team members for team %s: %v", teamProjectPair.TeamId, err)
+	}
 
-	// Get user profiles for all members (initialize to empty slice, not nil)
+	// Batch-load profiles for all member user IDs
 	members := make([]ProjectMemberResponse, 0)
-	for _, pair := range teamUserPairs {
-		var profile models.Profile
-		if err := h.db.Where("user_id = ?", pair.UserID).First(&profile).Error; err == nil {
+	if len(teamUserPairs) > 0 {
+		userIDs := make([]uuid.UUID, len(teamUserPairs))
+		for i, pair := range teamUserPairs {
+			userIDs[i] = pair.UserId
+		}
+
+		var profiles []models.Profile
+		if err := h.db.Where("user_id IN ?", userIDs).Find(&profiles).Error; err != nil {
+			log.Printf("Warning: could not load profiles for project %s: %v", project.ProjectId, err)
+		}
+
+		for _, profile := range profiles {
 			members = append(members, ProjectMemberResponse{
 				UserID:         profile.UserID,
 				FirstName:      profile.FirstName,
@@ -386,11 +508,16 @@ func (h *ProjectHandler) buildProjectResponse(project models.Project) ProjectRes
 		}
 	}
 
+	skills := project.Skills
+	if skills == nil {
+		skills = []string{}
+	}
+
 	return ProjectResponse{
-		ID:          project.ProjectID,
+		ID:          project.ProjectId,
 		Name:        project.ProjectName,
 		Description: project.Description,
-		Skills:      project.Skills,
+		Skills:      skills,
 		Status:      project.Status,
 		Members:     members,
 		CreatedAt:   project.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
@@ -398,45 +525,11 @@ func (h *ProjectHandler) buildProjectResponse(project models.Project) ProjectRes
 	}
 }
 
-// getUserData retrieves user data from the JWT context
-func (h *ProjectHandler) getUserData(c *gin.Context) (uuid.UUID, *models.User, error) {
-	userIDStr := c.GetString("user_id")
-	if userIDStr == "" {
-		return uuid.Nil, nil, fmt.Errorf("user_id not found in context")
+// isValidProjectStatus checks if a status string is one of the allowed values
+func isValidProjectStatus(status models.ProjectStatus) bool {
+	switch status {
+	case models.ProjectStatusPlanning, models.ProjectStatusActive, models.ProjectStatusCompleted:
+		return true
 	}
-
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		return uuid.Nil, nil, fmt.Errorf("invalid user_id format: %v", err)
-	}
-
-	var user models.User
-	if err := h.db.First(&user, "id = ?", userID).Error; err != nil {
-		return uuid.Nil, nil, fmt.Errorf("user not found: %v", err)
-	}
-
-	return userID, &user, nil
-}
-
-// isAuthorizedForProject checks if a user can modify a project (member or admin)
-func (h *ProjectHandler) isAuthorizedForProject(projectID, userID uuid.UUID) bool {
-	// Check if user is an admin
-	var user models.User
-	if err := h.db.First(&user, "id = ?", userID).Error; err == nil {
-		for _, role := range user.Roles {
-			if role == models.RoleAdmin {
-				return true
-			}
-		}
-	}
-
-	// Check if user is a project member
-	var teamProjectPair models.TeamProjectPair
-	if err := h.db.Where("project_id = ?", projectID).First(&teamProjectPair).Error; err != nil {
-		return false
-	}
-
-	var count int64
-	h.db.Model(&models.TeamUserPair{}).Where("team_id = ? AND user_id = ?", teamProjectPair.TeamID, userID).Count(&count)
-	return count > 0
+	return false
 }

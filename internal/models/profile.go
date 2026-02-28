@@ -1,8 +1,6 @@
 package models
 
 import (
-	"time"
-
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 	"gorm.io/gorm"
@@ -33,9 +31,10 @@ const (
 )
 
 type Profile struct {
-	ID             uuid.UUID      `gorm:"type:uuid;primaryKey" json:"id"`
+	gorm.Model
+	Id             uuid.UUID      `gorm:"uniqueIndex" json:"id"`
 	UserID         uuid.UUID      `gorm:"type:uuid;not null;unique" json:"user_id"`
-	User           User           `gorm:"foreignKey:UserID;references:ID" json:"user,omitempty"`
+	User           User           `gorm:"foreignKey:UserID;references:UserId" json:"user,omitempty"`
 	Email          string         `gorm:"uniqueIndex;not null" json:"email"`
 	FirstName      string         `gorm:"not null" json:"first_name"`
 	LastName       string         `gorm:"not null" json:"last_name"`
@@ -48,7 +47,4 @@ type Profile struct {
 	ProfilePicture string         `json:"profile_picture,omitempty"`
 	AboutMe        string         `json:"about_me,omitempty"`
 	Skills         pq.StringArray `gorm:"type:text[]" json:"skills,omitempty"`
-	CreatedAt      time.Time      `json:"created_at"`
-	UpdatedAt      time.Time      `json:"updated_at"`
-	DeletedAt      gorm.DeletedAt `gorm:"index" json:"-"`
 }
