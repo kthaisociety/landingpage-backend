@@ -7,7 +7,6 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
-	"time"
 
 	"backend/internal/mailchimp"
 	"backend/internal/models"
@@ -309,12 +308,10 @@ func (h *AuthHandler) GoogleCallback(c *gin.Context) {
 	if result.Error == gorm.ErrRecordNotFound {
 		// Create new user
 		user = models.User{
-			Email:     email,
-			Provider:  "google",
-			Roles:     pq.StringArray{"user"},
-			UserId:    uuid.New(),
-			CreatedAt: time.Now(),
-			UpdatedAt: time.Now(),
+			Email:    email,
+			Provider: "google",
+			Roles:    pq.StringArray{"user"},
+			UserId:   uuid.New(),
 		}
 
 		if err := h.db.Create(&user).Error; err != nil {

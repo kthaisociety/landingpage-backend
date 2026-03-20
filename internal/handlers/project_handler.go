@@ -4,7 +4,6 @@ import (
 	"backend/internal/config"
 	"backend/internal/middleware"
 	"backend/internal/models"
-	"fmt"
 	"log"
 	"net/http"
 
@@ -49,8 +48,6 @@ type ProjectResponse struct {
 	Skills      []string                `json:"skills"`
 	Status      models.ProjectStatus    `json:"status"`
 	Members     []ProjectMemberResponse `json:"members"`
-	CreatedAt   string                  `json:"created_at"`
-	UpdatedAt   string                  `json:"updated_at"`
 }
 
 type ProjectMemberResponse struct {
@@ -146,8 +143,6 @@ func (h *ProjectHandler) List(c *gin.Context) {
 			Skills:      skills,
 			Status:      project.Status,
 			Members:     members,
-			CreatedAt:   project.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
-			UpdatedAt:   project.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 		})
 	}
 
@@ -179,13 +174,14 @@ func (h *ProjectHandler) Get(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
-// Create creates a new project
+// Creates a new project
 func (h *ProjectHandler) Create(c *gin.Context) {
 	var input struct {
 		Name        string               `json:"name" binding:"required"`
 		Description string               `json:"description"`
 		Skills      []string             `json:"skills"`
 		Status      models.ProjectStatus `json:"status"`
+		TeamID      *string              `json:"team_id"`
 	}
 
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -201,6 +197,16 @@ func (h *ProjectHandler) Create(c *gin.Context) {
 	if !isValidProjectStatus(input.Status) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid status. Must be one of: planning, active, completed"})
 		return
+	}
+
+	var providedTeamID *uuid.UUID
+	if input.TeamID != nil {
+		parsedTeamID, err := uuid.Parse(*input.TeamID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid team_id"})
+			return
+		}
+		providedTeamID = &parsedTeamID
 	}
 
 	var project models.Project
@@ -219,19 +225,31 @@ func (h *ProjectHandler) Create(c *gin.Context) {
 			return err
 		}
 
-		// Create a team for this project
-		team := models.Team{
-			TeamId:   uuid.New(),
-			TeamName: fmt.Sprintf("%s Team", input.Name),
-		}
+		var teamID uuid.UUID
+		if providedTeamID != nil {
+			var team models.Team
+			if err := tx.First(&team, "team_id = ?", *providedTeamID).Error; err != nil {
+				return err
+			}
 
-		if err := tx.Create(&team).Error; err != nil {
-			return err
+			teamID = team.TeamId
+		} else {
+			// Backward-compatible behavior: create a dedicated team when none is provided.
+			team := models.Team{
+				TeamId:   uuid.New(),
+				TeamName: input.Name + " Team",
+			}
+
+			if err := tx.Create(&team).Error; err != nil {
+				return err
+			}
+
+			teamID = team.TeamId
 		}
 
 		// Link team to project
 		teamProjectPair := models.TeamProjectPair{
-			TeamId:    team.TeamId,
+			TeamId:    teamID,
 			ProjectId: project.ProjectId,
 		}
 
@@ -243,6 +261,10 @@ func (h *ProjectHandler) Create(c *gin.Context) {
 	})
 
 	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Team not found"})
+			return
+		}
 		log.Printf("Error creating project: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create project"})
 		return
@@ -252,7 +274,7 @@ func (h *ProjectHandler) Create(c *gin.Context) {
 	c.JSON(http.StatusCreated, response)
 }
 
-// Update updates a project
+// Updates a project
 func (h *ProjectHandler) Update(c *gin.Context) {
 	projectID := c.Param("id")
 
@@ -317,7 +339,7 @@ func (h *ProjectHandler) Update(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
-// Delete deletes a project and cleans up associated team records
+// Deletes a project and removes its team-project links without deleting teams
 func (h *ProjectHandler) Delete(c *gin.Context) {
 	projectID := c.Param("id")
 
@@ -328,21 +350,9 @@ func (h *ProjectHandler) Delete(c *gin.Context) {
 	}
 
 	err = h.db.Transaction(func(tx *gorm.DB) error {
-		// Find associated team before deleting
-		var teamProjectPair models.TeamProjectPair
-		if err := tx.Where("project_id = ?", projectUUID).First(&teamProjectPair).Error; err == nil {
-			// Remove all team members
-			if err := tx.Where("team_id = ?", teamProjectPair.TeamId).Delete(&models.TeamUserPair{}).Error; err != nil {
-				return err
-			}
-			// Remove team-project link
-			if err := tx.Where("team_id = ? AND project_id = ?", teamProjectPair.TeamId, projectUUID).Delete(&models.TeamProjectPair{}).Error; err != nil {
-				return err
-			}
-			// Remove the team itself
-			if err := tx.Delete(&models.Team{}, "team_id = ?", teamProjectPair.TeamId).Error; err != nil {
-				return err
-			}
+		// Remove all links between this project and any teams.
+		if err := tx.Where("project_id = ?", projectUUID).Delete(&models.TeamProjectPair{}).Error; err != nil {
+			return err
 		}
 
 		// Delete the project
@@ -519,8 +529,6 @@ func (h *ProjectHandler) buildProjectResponse(project models.Project) ProjectRes
 		Skills:      skills,
 		Status:      project.Status,
 		Members:     members,
-		CreatedAt:   project.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
-		UpdatedAt:   project.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}
 }
 
