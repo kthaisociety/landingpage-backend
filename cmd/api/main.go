@@ -196,6 +196,7 @@ func setupRoutes(r *gin.Engine, db *gorm.DB, mailchimpApi *mailchimp.MailchimpAP
 		handlers.NewAuthHandler(db, mailchimpApi, cfg.JwtSigningKey),
 		handlers.NewRegistrationHandler(db, cfg),
 		handlers.NewProfileHandler(db, mailchimpApi, cfg),
+		handlers.NewAdminHandler(db, cfg),
 		handlers.NewCompanyHandler(db, cfg),
 		handlers.NewJobListingHandler(db, cfg),
 	}

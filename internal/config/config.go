@@ -92,7 +92,7 @@ func LoadConfig() (*Config, error) {
 	cfg.SessionKey = getEnv("SESSION_KEY", "")
 	cfg.DevelopmentMode = getEnv("DEVELOPMENT", "true") == "true"
 
-	cfg.JwtSigningKey = getEnv("JWTSigningKey", "test1234566")
+	cfg.JwtSigningKey = getEnv("JWTSigningKey", "test123456")
 	//Cloudflare R2
 	cfg.R2_bucket_name = getEnv("R2_Bucket", "")
 	cfg.R2_access_key = getEnv("R2_Secret_Access_Key", "off key scraper")
