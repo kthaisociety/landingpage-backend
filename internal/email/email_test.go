@@ -9,15 +9,14 @@ import (
 	"backend/internal/config"
 	"backend/internal/models"
 
-	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	"github.com/stretchr/testify/assert"
 )
 
 var (
-	uid, _      = uuid.NewUUID()
+	// uid, _      = uuid.NewUUID()
 	mockProfile = models.Profile{
-		UserID:         uid,
+		UserId:         123,
 		Email:          "jack.gugolz@gmail.com",
 		FirstName:      "Jack",
 		LastName:       "Gugolz",
