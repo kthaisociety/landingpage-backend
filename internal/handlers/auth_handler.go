@@ -329,9 +329,10 @@ func (h *AuthHandler) GoogleCallback(c *gin.Context) {
 
 	// Check if profile exists
 	var profile models.Profile
-	profileExists := h.db.Where("user_id = ?", user.UserId).First(&profile).Error == nil
+	profileExists := h.db.Where("user_uuid = ?", user.UserId).First(&profile).Error == nil
 	if !profileExists {
-		profile.UserID = user.UserId
+		profile.UserUUID = user.UserId
+		profile.UserId = user.ID
 		profile.Email = user.Email
 		profile.FirstName = firstName
 		profile.LastName = lastName

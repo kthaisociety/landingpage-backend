@@ -53,7 +53,7 @@ func (h *ProfileHandler) GetMyProfile(c *gin.Context) {
 	}
 
 	var profile models.Profile
-	if err := h.db.Where("user_id = ?", userID).First(&profile).Error; err != nil {
+	if err := h.db.Where("user_uuid = ?", userID).First(&profile).Error; err != nil {
 		// If profile doesn't exist, return empty profile
 		c.JSON(http.StatusOK, gin.H{
 			"userId": userID,
@@ -88,7 +88,7 @@ func (h *ProfileHandler) UpdateMyProfile(c *gin.Context) {
 
 	// Check if profile exists
 	var existingProfile models.Profile
-	result := h.db.Where("user_id = ?", userID).First(&existingProfile)
+	result := h.db.Where("user_uuid = ?", userID).First(&existingProfile)
 
 	// Parse input
 	var input struct {
@@ -143,9 +143,16 @@ func (h *ProfileHandler) UpdateMyProfile(c *gin.Context) {
 		return
 	}
 
-	// If profile doesn't exist, create it
+	// Check if profile exist
+	var user models.User
+	if err := h.db.First(&user, "user_id = ?", userID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
 	newProfile := models.Profile{
-		UserID:         userID,
+		UserUUID:       userID,
+		UserId:         user.ID,
 		FirstName:      input.FirstName,
 		LastName:       input.LastName,
 		Email:          input.Email,
@@ -182,7 +189,7 @@ func (h *ProfileHandler) CreateMyProfile(c *gin.Context) {
 
 	// Check if profile already exists
 	var existingProfile models.Profile
-	result := h.db.Where("user_id = ?", userID).First(&existingProfile)
+	result := h.db.Where("user_uuid = ?", userID).First(&existingProfile)
 	if result.Error == nil {
 		c.JSON(http.StatusConflict, gin.H{
 			"error":   "Profile already exists",
@@ -209,8 +216,15 @@ func (h *ProfileHandler) CreateMyProfile(c *gin.Context) {
 	}
 
 	// Create new profile
+	var user models.User
+	if err := h.db.First(&user, "user_id = ?", userID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
 	newProfile := models.Profile{
-		UserID:         userID,
+		UserUUID:       userID,
+		UserId:         user.ID,
 		FirstName:      input.FirstName,
 		LastName:       input.LastName,
 		Email:          input.Email,
@@ -238,9 +252,14 @@ func (h *ProfileHandler) CreateMyProfile(c *gin.Context) {
 // GetProfile returns a profile by user ID (requires authentication)
 func (h *ProfileHandler) GetProfile(c *gin.Context) {
 	userId := c.Param("userId")
+	userUUID, err := uuid.Parse(userId)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
+		return
+	}
 
 	var profile models.Profile
-	if err := h.db.Where("user_id = ?", userId).First(&profile).Error; err != nil {
+	if err := h.db.Where("user_uuid = ?", userUUID).First(&profile).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Profile not found"})
 		return
 	}
@@ -262,9 +281,14 @@ func (h *ProfileHandler) ListAllProfiles(c *gin.Context) {
 // UpdateProfile allows an admin to update any profile
 func (h *ProfileHandler) UpdateProfile(c *gin.Context) {
 	userId := c.Param("userId")
+	userUUID, err := uuid.Parse(userId)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
+		return
+	}
 
 	var profile models.Profile
-	if err := h.db.Where("user_id = ?", userId).First(&profile).Error; err != nil {
+	if err := h.db.Where("user_uuid = ?", userUUID).First(&profile).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Profile not found"})
 		return
 	}
@@ -302,10 +326,15 @@ func (h *ProfileHandler) UpdateProfile(c *gin.Context) {
 // DeleteProfile allows an admin to delete a profile
 func (h *ProfileHandler) DeleteProfile(c *gin.Context) {
 	userId := c.Param("userId")
+	userUUID, err := uuid.Parse(userId)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
+		return
+	}
 
 	// Find profile first to check if it exists
 	var profile models.Profile
-	if err := h.db.Where("user_id = ?", userId).First(&profile).Error; err != nil {
+	if err := h.db.Where("user_uuid = ?", userUUID).First(&profile).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Profile not found"})
 		return
 	}

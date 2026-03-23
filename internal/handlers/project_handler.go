@@ -73,17 +73,21 @@ func (h *ProjectHandler) List(c *gin.Context) {
 	}
 
 	// Batch-load all team-project pairs
-	projectIDs := make([]uuid.UUID, len(projects))
+	projectIDs := make([]uint, len(projects))
 	for i, p := range projects {
-		projectIDs[i] = p.ProjectId
+		projectIDs[i] = p.ID
 	}
 
 	var teamProjectPairs []models.TeamProjectPair
-	h.db.Where("project_id IN ?", projectIDs).Find(&teamProjectPairs)
+	if err := h.db.Where("project_id IN ?", projectIDs).Find(&teamProjectPairs).Error; err != nil {
+		log.Printf("Error loading team-project pairs: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list projects"})
+		return
+	}
 
 	// Map project_id -> team_id
-	projectToTeam := make(map[uuid.UUID]uuid.UUID)
-	teamIDs := make([]uuid.UUID, 0, len(teamProjectPairs))
+	projectToTeam := make(map[uint]uint)
+	teamIDs := make([]uint, 0, len(teamProjectPairs))
 	for _, tp := range teamProjectPairs {
 		projectToTeam[tp.ProjectId] = tp.TeamId
 		teamIDs = append(teamIDs, tp.TeamId)
@@ -92,24 +96,28 @@ func (h *ProjectHandler) List(c *gin.Context) {
 	// Batch-load all team-user pairs
 	var teamUserPairs []models.TeamUserPair
 	if len(teamIDs) > 0 {
-		h.db.Where("team_id IN ?", teamIDs).Find(&teamUserPairs)
+		if err := h.db.Where("team_id IN ?", teamIDs).Find(&teamUserPairs).Error; err != nil {
+			log.Printf("Error loading team-user pairs: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list projects"})
+			return
+		}
 	}
 
 	// Map team_id -> []user_id
-	teamToUsers := make(map[uuid.UUID][]uuid.UUID)
-	allUserIDs := make([]uuid.UUID, 0)
+	teamToUsers := make(map[uint][]uint)
+	allUserIDs := make([]uint, 0)
 	for _, tu := range teamUserPairs {
 		teamToUsers[tu.TeamId] = append(teamToUsers[tu.TeamId], tu.UserId)
 		allUserIDs = append(allUserIDs, tu.UserId)
 	}
 
 	// Batch-load all profiles
-	profileMap := make(map[uuid.UUID]models.Profile)
+	profileMap := make(map[uint]models.Profile)
 	if len(allUserIDs) > 0 {
 		var profiles []models.Profile
 		h.db.Where("user_id IN ?", allUserIDs).Find(&profiles)
 		for _, p := range profiles {
-			profileMap[p.UserID] = p
+			profileMap[p.UserId] = p
 		}
 	}
 
@@ -117,11 +125,11 @@ func (h *ProjectHandler) List(c *gin.Context) {
 	response := make([]ProjectResponse, 0, len(projects))
 	for _, project := range projects {
 		members := make([]ProjectMemberResponse, 0)
-		if teamID, ok := projectToTeam[project.ProjectId]; ok {
+		if teamID, ok := projectToTeam[project.ID]; ok {
 			for _, userID := range teamToUsers[teamID] {
 				if profile, ok := profileMap[userID]; ok {
 					members = append(members, ProjectMemberResponse{
-						UserID:         profile.UserID,
+						UserID:         profile.UserUUID,
 						FirstName:      profile.FirstName,
 						LastName:       profile.LastName,
 						Email:          profile.Email,
@@ -225,14 +233,13 @@ func (h *ProjectHandler) Create(c *gin.Context) {
 			return err
 		}
 
-		var teamID uuid.UUID
+		var teamInternalID uint
 		if providedTeamID != nil {
 			var team models.Team
 			if err := tx.First(&team, "team_id = ?", *providedTeamID).Error; err != nil {
 				return err
 			}
-
-			teamID = team.TeamId
+			teamInternalID = team.ID
 		} else {
 			// Backward-compatible behavior: create a dedicated team when none is provided.
 			team := models.Team{
@@ -243,14 +250,13 @@ func (h *ProjectHandler) Create(c *gin.Context) {
 			if err := tx.Create(&team).Error; err != nil {
 				return err
 			}
-
-			teamID = team.TeamId
+			teamInternalID = team.ID
 		}
 
 		// Link team to project
 		teamProjectPair := models.TeamProjectPair{
-			TeamId:    teamID,
-			ProjectId: project.ProjectId,
+			TeamId:    teamInternalID,
+			ProjectId: project.ID,
 		}
 
 		if err := tx.Create(&teamProjectPair).Error; err != nil {
@@ -350,13 +356,18 @@ func (h *ProjectHandler) Delete(c *gin.Context) {
 	}
 
 	err = h.db.Transaction(func(tx *gorm.DB) error {
+		var project models.Project
+		if err := tx.First(&project, "project_id = ?", projectUUID).Error; err != nil {
+			return err
+		}
+
 		// Remove all links between this project and any teams.
-		if err := tx.Where("project_id = ?", projectUUID).Delete(&models.TeamProjectPair{}).Error; err != nil {
+		if err := tx.Where("project_id = ?", project.ID).Delete(&models.TeamProjectPair{}).Error; err != nil {
 			return err
 		}
 
 		// Delete the project
-		result := tx.Delete(&models.Project{}, "project_id = ?", projectUUID)
+		result := tx.Delete(&models.Project{}, "id = ?", project.ID)
 		if result.Error != nil {
 			return result.Error
 		}
@@ -404,9 +415,15 @@ func (h *ProjectHandler) AddMember(c *gin.Context) {
 		return
 	}
 
-	// Find team associated with this project
+	// Find project and team associated with this project
+	var project models.Project
+	if err := h.db.First(&project, "project_id = ?", projectUUID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Project not found"})
+		return
+	}
+
 	var teamProjectPair models.TeamProjectPair
-	if err := h.db.Where("project_id = ?", projectUUID).First(&teamProjectPair).Error; err != nil {
+	if err := h.db.Where("project_id = ?", project.ID).First(&teamProjectPair).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Project team not found"})
 		return
 	}
@@ -418,21 +435,29 @@ func (h *ProjectHandler) AddMember(c *gin.Context) {
 		return
 	}
 
-	// Check if user is already a member
-	var existingCount int64
-	h.db.Model(&models.TeamUserPair{}).Where("team_id = ? AND user_id = ?", teamProjectPair.TeamId, userUUID).Count(&existingCount)
-	if existingCount > 0 {
-		c.JSON(http.StatusConflict, gin.H{"error": "User is already a member of this project"})
-		return
-	}
+	// Add user to team within a transaction to avoid race conditions
+	err = h.db.Transaction(func(tx *gorm.DB) error {
+		var count int64
+		if err := tx.Model(&models.TeamUserPair{}).
+			Where("team_id = ? AND user_id = ?", teamProjectPair.TeamId, user.ID).
+			Count(&count).Error; err != nil {
+			return err
+		}
+		if count > 0 {
+			return gorm.ErrDuplicatedKey
+		}
 
-	// Add user to team
-	teamUserPair := models.TeamUserPair{
-		TeamId: teamProjectPair.TeamId,
-		UserId: userUUID,
-	}
+		return tx.Create(&models.TeamUserPair{
+			TeamId: teamProjectPair.TeamId,
+			UserId: user.ID,
+		}).Error
+	})
 
-	if err := h.db.Create(&teamUserPair).Error; err != nil {
+	if err != nil {
+		if err == gorm.ErrDuplicatedKey {
+			c.JSON(http.StatusConflict, gin.H{"error": "User is already a member of this project"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add member"})
 		return
 	}
@@ -457,15 +482,28 @@ func (h *ProjectHandler) RemoveMember(c *gin.Context) {
 		return
 	}
 
-	// Find team associated with this project
+	// Find project and team associated with this project
+	var project models.Project
+	if err := h.db.First(&project, "project_id = ?", projectUUID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Project not found"})
+		return
+	}
+
 	var teamProjectPair models.TeamProjectPair
-	if err := h.db.Where("project_id = ?", projectUUID).First(&teamProjectPair).Error; err != nil {
+	if err := h.db.Where("project_id = ?", project.ID).First(&teamProjectPair).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Project team not found"})
 		return
 	}
 
+	// Verify user exists
+	var user models.User
+	if err := h.db.First(&user, "user_id = ?", userUUID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
 	// Remove user from team
-	result := h.db.Where("team_id = ? AND user_id = ?", teamProjectPair.TeamId, userUUID).
+	result := h.db.Where("team_id = ? AND user_id = ?", teamProjectPair.TeamId, user.ID).
 		Delete(&models.TeamUserPair{})
 	if result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to remove member"})
@@ -481,39 +519,17 @@ func (h *ProjectHandler) RemoveMember(c *gin.Context) {
 
 // buildProjectResponse constructs a ProjectResponse with all members
 func (h *ProjectHandler) buildProjectResponse(project models.Project) ProjectResponse {
+	members := make([]ProjectMemberResponse, 0)
+
 	// Find team associated with this project
 	var teamProjectPair models.TeamProjectPair
-	if err := h.db.Where("project_id = ?", project.ProjectId).First(&teamProjectPair).Error; err != nil {
+	err := h.db.Where("project_id = ?", project.ID).First(&teamProjectPair).Error
+	if err != nil {
 		log.Printf("Warning: could not find team for project %s: %v", project.ProjectId, err)
-	}
-
-	// Get all team members
-	var teamUserPairs []models.TeamUserPair
-	if err := h.db.Where("team_id = ?", teamProjectPair.TeamId).Find(&teamUserPairs).Error; err != nil {
-		log.Printf("Warning: could not find team members for team %s: %v", teamProjectPair.TeamId, err)
-	}
-
-	// Batch-load profiles for all member user IDs
-	members := make([]ProjectMemberResponse, 0)
-	if len(teamUserPairs) > 0 {
-		userIDs := make([]uuid.UUID, len(teamUserPairs))
-		for i, pair := range teamUserPairs {
-			userIDs[i] = pair.UserId
-		}
-
-		var profiles []models.Profile
-		if err := h.db.Where("user_id IN ?", userIDs).Find(&profiles).Error; err != nil {
-			log.Printf("Warning: could not load profiles for project %s: %v", project.ProjectId, err)
-		}
-
-		for _, profile := range profiles {
-			members = append(members, ProjectMemberResponse{
-				UserID:         profile.UserID,
-				FirstName:      profile.FirstName,
-				LastName:       profile.LastName,
-				Email:          profile.Email,
-				ProfilePicture: profile.ProfilePicture,
-			})
+	} else {
+		// Only query members if we found a team
+		if loaded := h.loadTeamMembers(teamProjectPair.TeamId, project.ProjectId); loaded != nil {
+			members = loaded
 		}
 	}
 
@@ -530,6 +546,42 @@ func (h *ProjectHandler) buildProjectResponse(project models.Project) ProjectRes
 		Status:      project.Status,
 		Members:     members,
 	}
+}
+
+// loadTeamMembers fetches profiles for all users in the given team.
+func (h *ProjectHandler) loadTeamMembers(teamID uint, projectUUID uuid.UUID) []ProjectMemberResponse {
+	var teamUserPairs []models.TeamUserPair
+	if err := h.db.Where("team_id = ?", teamID).Find(&teamUserPairs).Error; err != nil {
+		log.Printf("Warning: could not find team members for team %d: %v", teamID, err)
+		return nil
+	}
+
+	if len(teamUserPairs) == 0 {
+		return nil
+	}
+
+	userIDs := make([]uint, len(teamUserPairs))
+	for i, pair := range teamUserPairs {
+		userIDs[i] = pair.UserId
+	}
+
+	var profiles []models.Profile
+	if err := h.db.Where("user_id IN ?", userIDs).Find(&profiles).Error; err != nil {
+		log.Printf("Warning: could not load profiles for project %s: %v", projectUUID, err)
+		return nil
+	}
+
+	members := make([]ProjectMemberResponse, 0, len(profiles))
+	for _, profile := range profiles {
+		members = append(members, ProjectMemberResponse{
+			UserID:         profile.UserUUID,
+			FirstName:      profile.FirstName,
+			LastName:       profile.LastName,
+			Email:          profile.Email,
+			ProfilePicture: profile.ProfilePicture,
+		})
+	}
+	return members
 }
 
 // isValidProjectStatus checks if a status string is one of the allowed values
