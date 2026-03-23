@@ -4,7 +4,7 @@ Next-generation backend for KTH AI Society website.
 
 ## Requirements
 
-- Go 1.24.x
+- Go 1.23.x
 - Docker
 
 ## Setup

@@ -119,6 +119,8 @@ func main() {
 		&models.Registration{},
 		&models.TeamMember{},
 		&models.BlobData{},
+		&models.JobListing{},
+		&models.Company{},
 	)
 	if err != nil {
 		log.Fatal("Failed to migrate database:", err)
@@ -195,10 +197,22 @@ func setupRoutes(r *gin.Engine, db *gorm.DB, mailchimpApi *mailchimp.MailchimpAP
 		handlers.NewRegistrationHandler(db, cfg),
 		handlers.NewProfileHandler(db, mailchimpApi, cfg),
 		handlers.NewAdminHandler(db, cfg),
+		handlers.NewCompanyHandler(db, cfg),
+		handlers.NewJobListingHandler(db, cfg),
 	}
 
 	for _, h := range allHandlers {
 		h.Register(api)
 	}
+
+	// Add alias routes for frontend compatibility
+	jobHandler := handlers.NewJobListingHandler(db, cfg)
+	api.GET("/jobs", jobHandler.GetAllListings)
+	// Handle /jobs/:id by converting path param to query param
+	api.GET("/jobs/:id", func(c *gin.Context) {
+		id := c.Param("id")
+		c.Request.URL.RawQuery = "id=" + id
+		jobHandler.GetJobListing(c)
+	})
 
 }

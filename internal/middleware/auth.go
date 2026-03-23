@@ -4,6 +4,7 @@ import (
 	"backend/internal/config"
 	"backend/internal/models"
 	"backend/internal/utils"
+	"log"
 	"net/http"
 	"slices"
 	"strings"
@@ -42,6 +43,7 @@ func RoleRequired(cfg *config.Config, role string) gin.HandlerFunc {
 			if cookie.Name == "jwt" {
 				valid, token := utils.ParseAndVerify(cookie.Value, cfg.JwtSigningKey)
 				if !valid {
+					log.Printf("JWT Token not Valid!\n")
 					abort()
 				}
 				roles := strings.Split(utils.GetClaims(token)["roles"].(string), ",")
