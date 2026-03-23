@@ -7,7 +7,6 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
-	"time"
 
 	"backend/internal/mailchimp"
 	"backend/internal/models"
@@ -19,6 +18,7 @@ import (
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 	"github.com/markbates/goth"
 	"github.com/markbates/goth/providers/google"
 	"gorm.io/gorm"
@@ -308,12 +308,10 @@ func (h *AuthHandler) GoogleCallback(c *gin.Context) {
 	if result.Error == gorm.ErrRecordNotFound {
 		// Create new user
 		user = models.User{
-			Email:     email,
-			Provider:  "google",
-			Roles:     []string{"user"},
-			UserId:    uuid.New(),
-			CreatedAt: time.Now(),
-			UpdatedAt: time.Now(),
+			Email:    email,
+			Provider: "google",
+			Roles:    pq.StringArray{"user"},
+			UserId:   uuid.New(),
 		}
 
 		if err := h.db.Create(&user).Error; err != nil {
@@ -331,9 +329,10 @@ func (h *AuthHandler) GoogleCallback(c *gin.Context) {
 
 	// Check if profile exists
 	var profile models.Profile
-	profileExists := h.db.Where("user_id = ?", user.UserId).First(&profile).Error == nil
+	profileExists := h.db.Where("user_uuid = ?", user.UserId).First(&profile).Error == nil
 	if !profileExists {
-		profile.UserID = user.UserId
+		profile.UserUUID = user.UserId
+		profile.UserId = user.ID
 		profile.Email = user.Email
 		profile.FirstName = firstName
 		profile.LastName = lastName
@@ -346,7 +345,7 @@ func (h *AuthHandler) GoogleCallback(c *gin.Context) {
 	// Set session for the user
 	session = sessions.Default(c)
 	session.Clear()
-	session.Set("user_id", user.ID)
+	session.Set("user_id", user.UserId)
 	session.Set("authenticated", true)
 
 	if err := session.Save(); err != nil {

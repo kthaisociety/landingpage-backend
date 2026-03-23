@@ -2,6 +2,7 @@ package models
 
 import (
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 	"gorm.io/gorm"
 )
 
@@ -29,17 +30,22 @@ const (
 	StudyProgramTechnologyAndManagement         StudyProgram = "Technology and Management"
 )
 
-// viv - might need to update with createdAt/updatedAt to track activity and if registerd
 type Profile struct {
 	gorm.Model
-	UserID         uuid.UUID    `gorm:"not null;unique" json:"user_id"`
-	Email          string       `gorm:"uniqueIndex;not null" json:"email"`
-	FirstName      string       `gorm:"not null" json:"first_name"`
-	LastName       string       `gorm:"not null" json:"last_name"`
-	University     string       `gorm:"not null" json:"university"`
-	Programme      StudyProgram `gorm:"not null" json:"programme,omitempty"`
-	GraduationYear int          `gorm:"not null" json:"graduation_year,omitempty"`
-	GitHubLink     string       `json:"github_link,omitempty"`
-	LinkedInLink   string       `json:"linkedin_link,omitempty"`
-	Registered     bool         `json:"registered"`
+	Id             uuid.UUID      `gorm:"uniqueIndex" json:"id"`
+	UserUUID       uuid.UUID      `gorm:"not null" json:"user_id"`
+	UserId         uint           `gorm:"not null" json:"-"`
+	User           User           `json:"user,omitempty"`
+	Email          string         `gorm:"uniqueIndex;not null" json:"email"`
+	FirstName      string         `gorm:"not null" json:"first_name"`
+	LastName       string         `gorm:"not null" json:"last_name"`
+	Registered     bool           `gorm:"default:false;not null" json:"registered"`
+	University     string         `gorm:"not null" json:"university"`
+	Programme      StudyProgram   `gorm:"not null" json:"programme"`
+	GraduationYear int            `gorm:"not null" json:"graduation_year"`
+	GitHubLink     string         `json:"github_link,omitempty"`
+	LinkedInLink   string         `json:"linkedin_link,omitempty"`
+	ProfilePicture string         `json:"profile_picture,omitempty"`
+	AboutMe        string         `json:"about_me,omitempty"`
+	Skills         pq.StringArray `gorm:"type:text[]" json:"skills,omitempty"`
 }
