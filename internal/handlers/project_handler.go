@@ -43,6 +43,7 @@ func (h *ProjectHandler) Register(r *gin.RouterGroup) {
 // ProjectResponse includes all project details with members
 type ProjectResponse struct {
 	ID          uuid.UUID               `json:"id"`
+	TeamID      *uuid.UUID              `json:"team_id,omitempty"`
 	Name        string                  `json:"name"`
 	Description string                  `json:"description"`
 	Skills      []string                `json:"skills"`
@@ -538,7 +539,7 @@ func (h *ProjectHandler) buildProjectResponse(project models.Project) ProjectRes
 		skills = []string{}
 	}
 
-	return ProjectResponse{
+	response := ProjectResponse{
 		ID:          project.ProjectId,
 		Name:        project.ProjectName,
 		Description: project.Description,
@@ -546,6 +547,15 @@ func (h *ProjectHandler) buildProjectResponse(project models.Project) ProjectRes
 		Status:      project.Status,
 		Members:     members,
 	}
+
+	if err == nil {
+		var team models.Team
+		if err := h.db.First(&team, teamProjectPair.TeamId).Error; err == nil {
+			response.TeamID = &team.TeamId
+		}
+	}
+
+	return response
 }
 
 // loadTeamMembers fetches profiles for all users in the given team.
