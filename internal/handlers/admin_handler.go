@@ -262,6 +262,10 @@ func (h *AdminHandler) ListFilteredUsers(c *gin.Context) {
 	}
 
 	if hasProfile := c.Query("has_profile"); hasProfile != "" {
+		if hasProfile != "true" && hasProfile != "false" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid has_profile, use true or false"})
+			return
+		}
 		exists := "EXISTS (SELECT 1 FROM profiles WHERE profiles.user_uuid = users.user_id AND profiles.deleted_at IS NULL)"
 		if hasProfile == "true" {
 			query = query.Where(exists)
@@ -271,6 +275,10 @@ func (h *AdminHandler) ListFilteredUsers(c *gin.Context) {
 	}
 
 	if registered := c.Query("registered"); registered != "" {
+		if registered != "true" && registered != "false" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid registered, use true or false"})
+			return
+		}
 		val := registered == "true"
 		query = query.Where(
 			"EXISTS (SELECT 1 FROM profiles WHERE profiles.user_uuid = users.user_id AND profiles.registered = ? AND profiles.deleted_at IS NULL)",
@@ -293,7 +301,7 @@ func (h *AdminHandler) ListFilteredUsers(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid created_before, use YYYY-MM-DD"})
 			return
 		}
-		query = query.Where("users.created_at <= ?", t)
+		query = query.Where("users.created_at < ?", t)
 	}
 
 	var users []models.User
