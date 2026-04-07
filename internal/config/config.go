@@ -38,6 +38,7 @@ type Config struct {
 		ListID string
 	}
 	JwtSigningKey    string
+	JwtValidatingKey string
 	R2_bucket_name   string
 	R2_access_key    string
 	R2_access_key_id string
@@ -92,7 +93,12 @@ func LoadConfig() (*Config, error) {
 	cfg.SessionKey = getEnv("SESSION_KEY", "")
 	cfg.DevelopmentMode = getEnv("DEVELOPMENT", "true") == "true"
 
+	
+	// Asymetric key (priate/public) is used for jwt
 	cfg.JwtSigningKey = getEnv("JWTSigningKey", "test123456")
+	cfg.JwtValidatingKey = getEnv("JWTValidatingKey", "test123456")
+
+
 	//Cloudflare R2
 	cfg.R2_bucket_name = getEnv("R2_Bucket", "")
 	cfg.R2_access_key = getEnv("R2_Secret_Access_Key", "off key scraper")
