@@ -26,9 +26,9 @@ import (
 
 // Add this line to ensure AuthHandler implements Handler interface
 type AuthHandler struct {
-	db            *gorm.DB
-	mailchimp     *mailchimp.MailchimpAPI
-	jwtSigningKey string
+	db               *gorm.DB
+	mailchimp        *mailchimp.MailchimpAPI
+	jwtSigningKey    string
 	jwtValidatingKey string
 }
 
@@ -171,23 +171,23 @@ func (h *AuthHandler) BeginGoogleAuth(c *gin.Context) {
 
 	origin := c.GetHeader("Origin")
 
-    // 2. Next.js proxies often strip the Origin. Let's use a bulletproof fallback.
-    if origin == "" {
-        cfg, err := config.LoadConfig()
-        // If we have allowed origins in our config, use the first one (e.g., http://localhost:3000)
-        if err == nil && len(cfg.AllowedOrigins) > 0 {
-            origin = cfg.AllowedOrigins[0] 
-            log.Printf("Origin header missing via proxy, falling back to config: %s", origin)
-        } else {
-            // Absolute last resort safety net
-            origin = "http://localhost:3000" 
-            log.Printf("Using absolute fallback origin: %s", origin)
-        }
-    }
+	// 2. Next.js proxies often strip the Origin. Let's use a bulletproof fallback.
+	if origin == "" {
+		cfg, err := config.LoadConfig()
+		// If we have allowed origins in our config, use the first one (e.g., http://localhost:3000)
+		if err == nil && len(cfg.AllowedOrigins) > 0 {
+			origin = cfg.AllowedOrigins[0]
+			log.Printf("Origin header missing via proxy, falling back to config: %s", origin)
+		} else {
+			// Absolute last resort safety net
+			origin = "http://localhost:3000"
+			log.Printf("Using absolute fallback origin: %s", origin)
+		}
+	}
 
-    // Now validate that the origin is allowed...
-    // (Keep the rest of your code below this intact)
-    cfg, err := config.LoadConfig()
+	// Now validate that the origin is allowed...
+	// (Keep the rest of your code below this intact)
+	cfg, err := config.LoadConfig()
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load config"})
@@ -378,12 +378,10 @@ func (h *AuthHandler) GoogleCallback(c *gin.Context) {
 		return
 	}
 
-
 	/*
 		There is no registration involved in this projcet. Members log in with their account, and per default they are
 		members. Only admin can create other admins. Members can edit their profiles later.
 	*/
-
 
 	// Redirect based on whether profile exists
 
@@ -397,8 +395,6 @@ func (h *AuthHandler) GoogleCallback(c *gin.Context) {
 	// 	dashboardURL = fmt.Sprintf("%s/auth/complete-registration?fname=%s&lname=%s", frontendURL, firstName, lastName)
 	// }
 
-
-	
 	// create JWT token with user data
 	// var roles []string
 	// if user.IsAdmin {
