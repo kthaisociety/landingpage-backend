@@ -7,8 +7,8 @@ import (
 	"backend/internal/models"
 	"backend/internal/utils"
 	"log"
-	"strings"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -78,51 +78,48 @@ func (h *ProfileHandler) Register(r *gin.RouterGroup) {
 // 	})
 // }
 
-
 // Added Roles to the response JSON
 
 func (h *ProfileHandler) GetMyProfile(c *gin.Context) {
-    token := utils.GetJWT(c)
-    claims := utils.GetClaims(token)
-    
-    userID, err := uuid.Parse(claims["user_id"].(string))
-    if err != nil {
-        log.Printf("Could not get userid")
-    }
+	token := utils.GetJWT(c)
+	claims := utils.GetClaims(token)
 
-    var roles []string
-    if rolesClaim, ok := claims["roles"].(string); ok && rolesClaim != "" {
-        roles = strings.Split(rolesClaim, ",") // Converts "user,admin" -> ["user", "admin"]
-    } else {
-        roles = []string{"user"} 
-    }
+	userID, err := uuid.Parse(claims["user_id"].(string))
+	if err != nil {
+		log.Printf("Could not get userid")
+	}
 
-    var profile models.Profile
-    if err := h.db.Where("user_uuid = ?", userID).First(&profile).Error; err != nil {
-        c.JSON(http.StatusOK, gin.H{
-            "userId": userID,
-            "exists": false,
-            "roles":  roles, 
-        })
-        return
-    }
+	var roles []string
+	if rolesClaim, ok := claims["roles"].(string); ok && rolesClaim != "" {
+		roles = strings.Split(rolesClaim, ",") // Converts "user,admin" -> ["user", "admin"]
+	} else {
+		roles = []string{"user"}
+	}
 
-    c.JSON(http.StatusOK, gin.H{
-        "userId":         userID,
-        "exists":         true,
-        "roles":          roles, 
-        "email":          profile.Email,
-        "firstName":      profile.FirstName,
-        "lastName":       profile.LastName,
-        "university":     profile.University,
-        "programme":      profile.Programme,
-        "graduationYear": profile.GraduationYear,
-        "githubLink":     profile.GitHubLink,
-        "linkedInLink":   profile.LinkedInLink,
-    })
+	var profile models.Profile
+	if err := h.db.Where("user_uuid = ?", userID).First(&profile).Error; err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"userId": userID,
+			"exists": false,
+			"roles":  roles,
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"userId":         userID,
+		"exists":         true,
+		"roles":          roles,
+		"email":          profile.Email,
+		"firstName":      profile.FirstName,
+		"lastName":       profile.LastName,
+		"university":     profile.University,
+		"programme":      profile.Programme,
+		"graduationYear": profile.GraduationYear,
+		"githubLink":     profile.GitHubLink,
+		"linkedInLink":   profile.LinkedInLink,
+	})
 }
-
-
 
 // UpdateMyProfile allows a user to update their own profile
 func (h *ProfileHandler) UpdateMyProfile(c *gin.Context) {

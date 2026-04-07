@@ -75,3 +75,18 @@ This project adheres to [Conventional Commits](https://www.conventionalcommits.o
 This project is licensed under the MIT license. See the [LICENSE](LICENSE) file for more information.
 
 This does **not** apply to logos, icons, and images used in this project. They are the property of KTH AI Society and are not licensed for public, commercial, or personal use. If you wish to use them, please contact us at [contact@kthais.com](mailto:contact@kthais.com).
+
+## Adding an admin to the postgres container:
+## Make a User Admin
+
+**1. Access the database:**
+```bash
+docker-compose exec db psql -U postgres -d kthais
+
+2. **Add the admin role:**
+UPDATE users SET roles = array_append(roles, 'admin') WHERE email = 'target@example.com';
+
+3. **Verify and exit:**
+
+SELECT email, roles FROM users WHERE email = 'target@example.com';
+\q

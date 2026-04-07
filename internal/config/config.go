@@ -93,11 +93,9 @@ func LoadConfig() (*Config, error) {
 	cfg.SessionKey = getEnv("SESSION_KEY", "")
 	cfg.DevelopmentMode = getEnv("DEVELOPMENT", "true") == "true"
 
-	
 	// Asymetric key (priate/public) is used for jwt
 	cfg.JwtSigningKey = getEnv("JWTSigningKey", "test123456")
 	cfg.JwtValidatingKey = getEnv("JWTValidatingKey", "test123456")
-
 
 	//Cloudflare R2
 	cfg.R2_bucket_name = getEnv("R2_Bucket", "")
