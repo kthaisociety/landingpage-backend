@@ -85,34 +85,33 @@ func ParseAndVerifyGoogle(jwtIn string) (bool, *jwt.Token) {
 // It uses public key to verify the signature
 
 func ParseAndVerify(jwtIn string, pemKey string) (bool, *jwt.Token) {
-    jwtParser := jwt.NewParser()
-    
-    kf := func(token *jwt.Token) (any, error) {
-        if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
-            return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-        }
-        
-        privateKey, err := jwt.ParseRSAPrivateKeyFromPEM([]byte(pemKey))
-        if err != nil {
-            pubKey, pubErr := jwt.ParseRSAPublicKeyFromPEM([]byte(pemKey))
-            if pubErr == nil {
-                return pubKey, nil
-            }
-            return nil, fmt.Errorf("could not parse pem key: %v", err)
-        }
-        
-        return &privateKey.PublicKey, nil
-    }
-    
-    token, err := jwtParser.Parse(jwtIn, kf)
-    if err != nil {
-        log.Printf("Error verifying token: %v\n", err)
-        return false, nil
-    }
-    
-    return token.Valid, token
-}
+	jwtParser := jwt.NewParser()
 
+	kf := func(token *jwt.Token) (any, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+
+		privateKey, err := jwt.ParseRSAPrivateKeyFromPEM([]byte(pemKey))
+		if err != nil {
+			pubKey, pubErr := jwt.ParseRSAPublicKeyFromPEM([]byte(pemKey))
+			if pubErr == nil {
+				return pubKey, nil
+			}
+			return nil, fmt.Errorf("could not parse pem key: %v", err)
+		}
+
+		return &privateKey.PublicKey, nil
+	}
+
+	token, err := jwtParser.Parse(jwtIn, kf)
+	if err != nil {
+		log.Printf("Error verifying token: %v\n", err)
+		return false, nil
+	}
+
+	return token.Valid, token
+}
 
 func GetJWTString(c *gin.Context) string {
 	for _, cookie := range c.Request.Cookies() {
@@ -197,11 +196,11 @@ func WriteJWT(email string, roles []string, Id uuid.UUID, key string, validMinut
 
 	privateKey, err := jwt.ParseRSAPrivateKeyFromPEM([]byte(key))
 	if err != nil {
-    log.Fatalf("Fatal error parsing private key: %v", err)
+		log.Fatalf("Fatal error parsing private key: %v", err)
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 	signedToken, err := token.SignedString(privateKey)
-		if err != nil {
+	if err != nil {
 		log.Printf("Failed to generate JWT token: %v\n", err)
 	}
 	return signedToken
