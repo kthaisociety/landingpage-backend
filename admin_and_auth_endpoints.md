@@ -22,6 +22,17 @@ All admin endpoints are grouped under `/admin` and require:
 - **Path Parameters**: `id` (UUID) - The user's unique identifier.
 - **Response**: JSON user object.
 
+### GET /admin/users/filter
+- **Description**: Retrieves a filtered list of users. All parameters are optional and combined with AND logic.
+- **Query Parameters**:
+  - `has_profile=true|false` — filter by whether a profile record exists
+  - `registered=true|false` — filter by whether the profile is marked as registered
+  - `created_after=YYYY-MM-DD` — filter users created on or after this date
+  - `created_before=YYYY-MM-DD` — filter users created on or before this date
+  - `team_id=<uuid>` — filter users who are members of the specified team
+  - `project_id=<uuid>` — filter users who are members of a team linked to the specified project
+- **Response**: JSON array of user objects.
+
 ### GET /admin/listadmins
 - **Description**: Retrieves a list of all users with admin role.
 - **Response**: JSON array of admin user objects.

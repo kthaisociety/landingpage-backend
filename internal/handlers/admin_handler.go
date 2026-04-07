@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -32,6 +33,7 @@ func (h *AdminHandler) Register(r *gin.RouterGroup) {
 
 	// Auth required endpoints
 	admin.GET("/users", h.ListAllUsers)
+	admin.GET("/users/filter", h.ListFilteredUsers)
 	admin.GET("/users/uuid", h.GetUUIDByLookup)
 	admin.GET("/users/:id", h.GetUserByUUID)
 	admin.GET("/listadmins", h.ListAdmins)
@@ -218,6 +220,96 @@ func (h *AdminHandler) DemoteAdmin(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"user_id": req.UserID, "status": "success"})
+}
+
+// ListFilteredUsers supports query params (More info in admin_and_auth_endpoints.md)
+func (h *AdminHandler) ListFilteredUsers(c *gin.Context) {
+	query := h.db.Model(&models.User{})
+
+	if teamIDStr := c.Query("team_id"); teamIDStr != "" {
+		teamID, err := uuid.Parse(teamIDStr)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid team_id, must be a UUID"})
+			return
+		}
+		query = query.Where(
+			`EXISTS (
+				SELECT 1 FROM team_user_pairs
+				JOIN teams ON teams.id = team_user_pairs.team_id
+				WHERE team_user_pairs.user_id = users.id
+				AND teams.team_id = ?
+				AND teams.deleted_at IS NULL
+			)`, teamID,
+		)
+	}
+
+	if projectIDStr := c.Query("project_id"); projectIDStr != "" {
+		projectID, err := uuid.Parse(projectIDStr)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid project_id, must be a UUID"})
+			return
+		}
+		query = query.Where(
+			`EXISTS (
+				SELECT 1 FROM team_user_pairs
+				JOIN team_project_pairs ON team_project_pairs.team_id = team_user_pairs.team_id
+				JOIN projects ON projects.id = team_project_pairs.project_id
+				WHERE team_user_pairs.user_id = users.id
+				AND projects.project_id = ?
+				AND projects.deleted_at IS NULL
+			)`, projectID,
+		)
+	}
+
+	if hasProfile := c.Query("has_profile"); hasProfile != "" {
+		if hasProfile != "true" && hasProfile != "false" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid has_profile, use true or false"})
+			return
+		}
+		exists := "EXISTS (SELECT 1 FROM profiles WHERE profiles.user_uuid = users.user_id AND profiles.deleted_at IS NULL)"
+		if hasProfile == "true" {
+			query = query.Where(exists)
+		} else {
+			query = query.Where("NOT " + exists)
+		}
+	}
+
+	if registered := c.Query("registered"); registered != "" {
+		if registered != "true" && registered != "false" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid registered, use true or false"})
+			return
+		}
+		val := registered == "true"
+		query = query.Where(
+			"EXISTS (SELECT 1 FROM profiles WHERE profiles.user_uuid = users.user_id AND profiles.registered = ? AND profiles.deleted_at IS NULL)",
+			val,
+		)
+	}
+
+	if after := c.Query("created_after"); after != "" {
+		t, err := time.Parse("2006-01-02", after) // Time format reference
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid created_after, use YYYY-MM-DD"})
+			return
+		}
+		query = query.Where("users.created_at >= ?", t)
+	}
+
+	if before := c.Query("created_before"); before != "" {
+		t, err := time.Parse("2006-01-02", before) // Time format reference
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid created_before, use YYYY-MM-DD"})
+			return
+		}
+		query = query.Where("users.created_at < ?", t)
+	}
+
+	var users []models.User
+	if err := query.Find(&users).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not retrieve users"})
+		return
+	}
+	c.JSON(http.StatusOK, users)
 }
 
 func (h *AdminHandler) AddUser(c *gin.Context) {
