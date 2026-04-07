@@ -43,6 +43,7 @@ func (h *ProjectHandler) Register(r *gin.RouterGroup) {
 // ProjectResponse includes all project details with members
 type ProjectResponse struct {
 	ID          uuid.UUID               `json:"id"`
+	TeamID      *uuid.UUID              `json:"team_id,omitempty"`
 	Name        string                  `json:"name"`
 	Description string                  `json:"description"`
 	Skills      []string                `json:"skills"`
@@ -521,14 +522,21 @@ func (h *ProjectHandler) RemoveMember(c *gin.Context) {
 func (h *ProjectHandler) buildProjectResponse(project models.Project) ProjectResponse {
 	members := make([]ProjectMemberResponse, 0)
 
-	// Find team associated with this project
-	var teamProjectPair models.TeamProjectPair
-	err := h.db.Where("project_id = ?", project.ID).First(&teamProjectPair).Error
+	// Fetch team info in one query by joining teams onto team_project_pairs
+	var teamInfo struct {
+		TeamInternalID uint
+		TeamUUID       uuid.UUID
+	}
+	err := h.db.Table("team_project_pairs").
+		Select("team_project_pairs.team_id as team_internal_id, teams.team_id as team_uuid").
+		Joins("JOIN teams ON teams.id = team_project_pairs.team_id AND teams.deleted_at IS NULL").
+		Where("team_project_pairs.project_id = ?", project.ID).
+		Scan(&teamInfo).Error
+
 	if err != nil {
 		log.Printf("Warning: could not find team for project %s: %v", project.ProjectId, err)
 	} else {
-		// Only query members if we found a team
-		if loaded := h.loadTeamMembers(teamProjectPair.TeamId, project.ProjectId); loaded != nil {
+		if loaded := h.loadTeamMembers(teamInfo.TeamInternalID, project.ProjectId); loaded != nil {
 			members = loaded
 		}
 	}
@@ -538,7 +546,7 @@ func (h *ProjectHandler) buildProjectResponse(project models.Project) ProjectRes
 		skills = []string{}
 	}
 
-	return ProjectResponse{
+	response := ProjectResponse{
 		ID:          project.ProjectId,
 		Name:        project.ProjectName,
 		Description: project.Description,
@@ -546,6 +554,12 @@ func (h *ProjectHandler) buildProjectResponse(project models.Project) ProjectRes
 		Status:      project.Status,
 		Members:     members,
 	}
+
+	if err == nil && teamInfo.TeamInternalID != 0 {
+		response.TeamID = &teamInfo.TeamUUID
+	}
+
+	return response
 }
 
 // loadTeamMembers fetches profiles for all users in the given team.

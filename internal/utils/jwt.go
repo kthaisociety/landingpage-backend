@@ -70,15 +70,46 @@ func ParseAndVerifyGoogle(jwtIn string) (bool, *jwt.Token) {
 	return token.Valid, token
 }
 
-func ParseAndVerify(jwtIn string, skey string) (bool, *jwt.Token) {
+// func ParseAndVerify(jwtIn string, skey string) (bool, *jwt.Token) {
+// 	jwtParser := jwt.NewParser()
+// 	kf := func(token *jwt.Token) (any, error) {
+// 		return []byte(skey), nil
+// 	}
+// 	token, err := jwtParser.Parse(jwtIn, kf)
+// 	if err != nil {
+// 		log.Printf("Error parsing encrypted token %v\n", err)
+// 	}
+// 	return token.Valid, token
+// }
+
+// It uses public key to verify the signature
+
+func ParseAndVerify(jwtIn string, pemKey string) (bool, *jwt.Token) {
 	jwtParser := jwt.NewParser()
+
 	kf := func(token *jwt.Token) (any, error) {
-		return []byte(skey), nil
+		if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+
+		privateKey, err := jwt.ParseRSAPrivateKeyFromPEM([]byte(pemKey))
+		if err != nil {
+			pubKey, pubErr := jwt.ParseRSAPublicKeyFromPEM([]byte(pemKey))
+			if pubErr == nil {
+				return pubKey, nil
+			}
+			return nil, fmt.Errorf("could not parse pem key: %v", err)
+		}
+
+		return &privateKey.PublicKey, nil
 	}
+
 	token, err := jwtParser.Parse(jwtIn, kf)
 	if err != nil {
-		log.Printf("Error parsing encrypted token %v\n", err)
+		log.Printf("Error verifying token: %v\n", err)
+		return false, nil
 	}
+
 	return token.Valid, token
 }
 
@@ -156,10 +187,21 @@ func WriteJWT(email string, roles []string, Id uuid.UUID, key string, validMinut
 		},
 	}
 
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	ss, err := token.SignedString([]byte(key))
+	// token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	// ss, err := token.SignedString([]byte(key))
+	// if err != nil {
+	// 	log.Printf("Failed to generate JWT token: %v\n", err)
+	// }
+	// return ss
+
+	privateKey, err := jwt.ParseRSAPrivateKeyFromPEM([]byte(key))
+	if err != nil {
+		log.Fatalf("Fatal error parsing private key: %v", err)
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	signedToken, err := token.SignedString(privateKey)
 	if err != nil {
 		log.Printf("Failed to generate JWT token: %v\n", err)
 	}
-	return ss
+	return signedToken
 }

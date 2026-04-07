@@ -17,7 +17,8 @@ func AuthRequiredJWT(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		for _, cookie := range c.Request.Cookies() {
 			if cookie.Name == "jwt" {
-				valid, _ := utils.ParseAndVerify(cookie.Value, cfg.JwtSigningKey)
+				// valid, _ := utils.ParseAndVerify(cookie.Value, cfg.JwtSigningKey)
+				valid, _ := utils.ParseAndVerify(cookie.Value, cfg.JwtValidatingKey)
 				if valid {
 					c.Next()
 					return
@@ -41,7 +42,8 @@ func RoleRequired(cfg *config.Config, role string) gin.HandlerFunc {
 		}
 		for _, cookie := range c.Request.Cookies() {
 			if cookie.Name == "jwt" {
-				valid, token := utils.ParseAndVerify(cookie.Value, cfg.JwtSigningKey)
+				// valid, token := utils.ParseAndVerify(cookie.Value, cfg.JwtSigningKey)
+				valid, token := utils.ParseAndVerify(cookie.Value, cfg.JwtValidatingKey)
 				if !valid {
 					log.Printf("JWT Token not Valid!\n")
 					abort()
