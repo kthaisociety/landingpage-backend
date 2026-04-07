@@ -29,6 +29,7 @@ type AuthHandler struct {
 	db            *gorm.DB
 	mailchimp     *mailchimp.MailchimpAPI
 	jwtSigningKey string
+	jwtValidatingKey string
 }
 
 func NewAuthHandler(db *gorm.DB, mailchimp *mailchimp.MailchimpAPI, skey string) *AuthHandler {
@@ -133,7 +134,8 @@ func InitAuth(cfg *config.Config) error {
 
 func (h *AuthHandler) Status(c *gin.Context) {
 	token_str := utils.GetJWTString(c)
-	valid, _ := utils.ParseAndVerify(token_str, h.jwtSigningKey)
+	// valid, _ := utils.ParseAndVerify(token_str, h.jwtSigningKey)
+	valid, _ := utils.ParseAndVerify(token_str, h.jwtValidatingKey)
 	if !valid {
 		c.JSON(401, gin.H{"authenticate": false})
 	} else {
@@ -150,22 +152,43 @@ func (h *AuthHandler) BeginGoogleAuth(c *gin.Context) {
 	}
 
 	// Get the origin from the request header
+	// origin := c.GetHeader("Origin")
+
+	// // If Origin header is missing, use the Host header or a default value
+	// if origin == "" {
+	// 	host := c.Request.Host
+	// 	// Determine scheme (http/https)
+	// 	scheme := "http"
+	// 	if c.Request.TLS != nil {
+	// 		scheme = "https"
+	// 	}
+	// 	origin = fmt.Sprintf("%s://%s", scheme, host)
+	// 	log.Printf("Origin header missing, using: %s", origin)
+	// }
+
+	// // Validate that the origin is in the allowed list
+	// cfg, err := config.LoadConfig()
+
 	origin := c.GetHeader("Origin")
 
-	// If Origin header is missing, use the Host header or a default value
-	if origin == "" {
-		host := c.Request.Host
-		// Determine scheme (http/https)
-		scheme := "http"
-		if c.Request.TLS != nil {
-			scheme = "https"
-		}
-		origin = fmt.Sprintf("%s://%s", scheme, host)
-		log.Printf("Origin header missing, using: %s", origin)
-	}
+    // 2. Next.js proxies often strip the Origin. Let's use a bulletproof fallback.
+    if origin == "" {
+        cfg, err := config.LoadConfig()
+        // If we have allowed origins in our config, use the first one (e.g., http://localhost:3000)
+        if err == nil && len(cfg.AllowedOrigins) > 0 {
+            origin = cfg.AllowedOrigins[0] 
+            log.Printf("Origin header missing via proxy, falling back to config: %s", origin)
+        } else {
+            // Absolute last resort safety net
+            origin = "http://localhost:3000" 
+            log.Printf("Using absolute fallback origin: %s", origin)
+        }
+    }
 
-	// Validate that the origin is in the allowed list
-	cfg, err := config.LoadConfig()
+    // Now validate that the origin is allowed...
+    // (Keep the rest of your code below this intact)
+    cfg, err := config.LoadConfig()
+
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load config"})
 		return
@@ -345,7 +368,8 @@ func (h *AuthHandler) GoogleCallback(c *gin.Context) {
 	// Set session for the user
 	session = sessions.Default(c)
 	session.Clear()
-	session.Set("user_id", user.UserId)
+	// changed uuid type to string
+	session.Set("user_id", user.UserId.String())
 	session.Set("authenticated", true)
 
 	if err := session.Save(); err != nil {
@@ -354,15 +378,27 @@ func (h *AuthHandler) GoogleCallback(c *gin.Context) {
 		return
 	}
 
+
+	/*
+		There is no registration involved in this projcet. Members log in with their account, and per default they are
+		members. Only admin can create other admins. Members can edit their profiles later.
+	*/
+
+
 	// Redirect based on whether profile exists
-	var dashboardURL string
-	if profileExists && profile.Registered {
-		// Profile exists, redirect to dashboard
-		dashboardURL = fmt.Sprintf("%s/dashboard?auth=success", frontendURL)
-	} else {
-		// Profile doesn't exist, redirect to complete registration
-		dashboardURL = fmt.Sprintf("%s/auth/complete-registration?fname=%s&lname=%s", frontendURL, firstName, lastName)
-	}
+
+	// var dashboardURL string
+
+	// if profileExists && profile.Registered {
+	// 	// Profile exists, redirect to dashboard
+	// 	dashboardURL = fmt.Sprintf("%s/dashboard?auth=success", frontendURL)
+	// } else {
+	// 	// Profile doesn't exist, redirect to complete registration
+	// 	dashboardURL = fmt.Sprintf("%s/auth/complete-registration?fname=%s&lname=%s", frontendURL, firstName, lastName)
+	// }
+
+
+	
 	// create JWT token with user data
 	// var roles []string
 	// if user.IsAdmin {
@@ -372,7 +408,9 @@ func (h *AuthHandler) GoogleCallback(c *gin.Context) {
 	// }
 	authJwt := utils.WriteJWT(email, user.Roles, user.UserId, h.jwtSigningKey, 15)
 	c.SetCookie("jwt", authJwt, 3600, "/", "localhost:3000", false, false)
-	c.Redirect(http.StatusTemporaryRedirect, dashboardURL)
+
+	// changed dashboardURL to frontendURL
+	c.Redirect(http.StatusTemporaryRedirect, frontendURL)
 }
 
 // Update the redirectWithError function to use the frontend URL from state
@@ -399,5 +437,7 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 	session := sessions.Default(c)
 	session.Clear()
 	session.Save()
+	// clear the jwt from cookies, also change the hardcoded url later
+	c.SetCookie("jwt", "", -1, "/", "localhost:3000", false, false)
 	c.JSON(http.StatusOK, gin.H{"message": "Successfully logged out"})
 }

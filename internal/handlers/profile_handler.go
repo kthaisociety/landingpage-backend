@@ -7,6 +7,7 @@ import (
 	"backend/internal/models"
 	"backend/internal/utils"
 	"log"
+	"strings"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -28,10 +29,11 @@ func (h *ProfileHandler) Register(r *gin.RouterGroup) {
 	profile := r.Group("/profile")
 	{
 		// Auth required endpoints
+		// changed the endpoints as there was a url parsing problem in frontend. (me, update, create) are added.
 		profile.Use(middleware.AuthRequiredJWT(h.cfg))
-		profile.GET("/", h.GetMyProfile)
-		profile.PUT("/", h.UpdateMyProfile)
-		profile.POST("/", h.CreateMyProfile)
+		profile.GET("/me", h.GetMyProfile)
+		profile.PUT("/update", h.UpdateMyProfile)
+		profile.POST("/create", h.CreateMyProfile)
 
 		// Admin-only endpoints
 		admin := profile.Group("/admin")
@@ -43,38 +45,84 @@ func (h *ProfileHandler) Register(r *gin.RouterGroup) {
 }
 
 // GetMyProfile returns the current user's profile
+// func (h *ProfileHandler) GetMyProfile(c *gin.Context) {
+// 	// get userId from jwt now
+// 	token := utils.GetJWT(c)
+// 	claims := utils.GetClaims(token)
+// 	userID, err := uuid.Parse(claims["user_id"].(string))
+// 	if err != nil {
+// 		log.Printf("Could not get userid")
+// 	}
+
+// 	var profile models.Profile
+// 	if err := h.db.Where("user_uuid = ?", userID).First(&profile).Error; err != nil {
+// 		// If profile doesn't exist, return empty profile
+// 		c.JSON(http.StatusOK, gin.H{
+// 			"userId": userID,
+// 			"exists": false,
+// 		})
+// 		return
+// 	}
+
+// 	c.JSON(http.StatusOK, gin.H{
+// 		"userId":         userID,
+// 		"exists":         true,
+// 		"email":          profile.Email,
+// 		"firstName":      profile.FirstName,
+// 		"lastName":       profile.LastName,
+// 		"university":     profile.University,
+// 		"programme":      profile.Programme,
+// 		"graduationYear": profile.GraduationYear,
+// 		"githubLink":     profile.GitHubLink,
+// 		"linkedInLink":   profile.LinkedInLink,
+// 	})
+// }
+
+
+// Added Roles to the response JSON
+
 func (h *ProfileHandler) GetMyProfile(c *gin.Context) {
-	// get userId from jwt now
-	token := utils.GetJWT(c)
-	claims := utils.GetClaims(token)
-	userID, err := uuid.Parse(claims["user_id"].(string))
-	if err != nil {
-		log.Printf("Could not get userid")
-	}
+    token := utils.GetJWT(c)
+    claims := utils.GetClaims(token)
+    
+    userID, err := uuid.Parse(claims["user_id"].(string))
+    if err != nil {
+        log.Printf("Could not get userid")
+    }
 
-	var profile models.Profile
-	if err := h.db.Where("user_uuid = ?", userID).First(&profile).Error; err != nil {
-		// If profile doesn't exist, return empty profile
-		c.JSON(http.StatusOK, gin.H{
-			"userId": userID,
-			"exists": false,
-		})
-		return
-	}
+    var roles []string
+    if rolesClaim, ok := claims["roles"].(string); ok && rolesClaim != "" {
+        roles = strings.Split(rolesClaim, ",") // Converts "user,admin" -> ["user", "admin"]
+    } else {
+        roles = []string{"user"} 
+    }
 
-	c.JSON(http.StatusOK, gin.H{
-		"userId":         userID,
-		"exists":         true,
-		"email":          profile.Email,
-		"firstName":      profile.FirstName,
-		"lastName":       profile.LastName,
-		"university":     profile.University,
-		"programme":      profile.Programme,
-		"graduationYear": profile.GraduationYear,
-		"githubLink":     profile.GitHubLink,
-		"linkedInLink":   profile.LinkedInLink,
-	})
+    var profile models.Profile
+    if err := h.db.Where("user_uuid = ?", userID).First(&profile).Error; err != nil {
+        c.JSON(http.StatusOK, gin.H{
+            "userId": userID,
+            "exists": false,
+            "roles":  roles, 
+        })
+        return
+    }
+
+    c.JSON(http.StatusOK, gin.H{
+        "userId":         userID,
+        "exists":         true,
+        "roles":          roles, 
+        "email":          profile.Email,
+        "firstName":      profile.FirstName,
+        "lastName":       profile.LastName,
+        "university":     profile.University,
+        "programme":      profile.Programme,
+        "graduationYear": profile.GraduationYear,
+        "githubLink":     profile.GitHubLink,
+        "linkedInLink":   profile.LinkedInLink,
+    })
 }
+
+
 
 // UpdateMyProfile allows a user to update their own profile
 func (h *ProfileHandler) UpdateMyProfile(c *gin.Context) {
