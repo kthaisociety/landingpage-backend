@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"backend/internal/config"
+	"backend/internal/middleware"
 	"backend/internal/models"
 	"backend/internal/utils"
 	"log"
@@ -24,11 +25,12 @@ func NewCompanyHandler(db *gorm.DB, cfg *config.Config) *CompanyHandler {
 func (h *CompanyHandler) Register(r *gin.RouterGroup) {
 	companies := r.Group("/company")
 	admin := companies.Group("/admin")
+	admin.Use(middleware.AuthRequiredJWT(h.cfg))
+	admin.Use(middleware.RoleRequired(h.cfg, "admin"))
 	{
 		// Define company-related routes here
 		_ = admin.POST("/addCompany", h.UploadCompany)
 		_ = admin.DELETE("/delete", h.DeleteCompany)
-		// upload.Use(middleware.RoleRequired(h.cfg, "admin"))
 		_ = companies.GET("/getCompany", h.GetCompany)
 		_ = companies.GET("/getAllCompanies", h.GetAllCompanies)
 		_ = companies.GET("/logo", h.GetLogo)
