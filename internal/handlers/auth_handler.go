@@ -29,6 +29,7 @@ type AuthHandler struct {
 	db            *gorm.DB
 	mailchimp     *mailchimp.MailchimpAPI
 	jwtSigningKey string
+	jwtValidatingKey string
 }
 
 func NewAuthHandler(db *gorm.DB, mailchimp *mailchimp.MailchimpAPI, skey string) *AuthHandler {
@@ -133,7 +134,8 @@ func InitAuth(cfg *config.Config) error {
 
 func (h *AuthHandler) Status(c *gin.Context) {
 	token_str := utils.GetJWTString(c)
-	valid, _ := utils.ParseAndVerify(token_str, h.jwtSigningKey)
+	// valid, _ := utils.ParseAndVerify(token_str, h.jwtSigningKey)
+	valid, _ := utils.ParseAndVerify(token_str, h.jwtValidatingKey)
 	if !valid {
 		c.JSON(401, gin.H{"authenticate": false})
 	} else {

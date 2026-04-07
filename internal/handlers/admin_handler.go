@@ -50,7 +50,8 @@ func (h *AdminHandler) IsAdmin(c *gin.Context) {
 	// Implementation for checking if the user is an admin
 	for _, cookie := range c.Request.Cookies() {
 		if cookie.Name == "jwt" {
-			valid, token := utils.ParseAndVerify(cookie.Value, h.cfg.JwtSigningKey)
+			// valid, token := utils.ParseAndVerify(cookie.Value, h.cfg.JwtSigningKey)
+			valid, token := utils.ParseAndVerify(cookie.Value, h.cfg.JwtValidatingKey)
 			if !valid {
 				retValid(false)
 				return
