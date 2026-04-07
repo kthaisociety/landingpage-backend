@@ -43,7 +43,35 @@ func TestKeyFetch(t *testing.T) {
 // }
 
 func TestParseAndVerify(t *testing.T) {
-	key := "testkey123456"
+	key := `-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCx+aR9uA0eX4B3
+cAYDdvJ0g4JSLfcxtvKS+rC64lyPVoNg4tX2JHdoYdar1p5jBnFrQQCqNQAqFZt7
+wYaJBBfPll5AN+JXt65/e/yTu4hzjn4GPp88lHnJ/CBg36CDuPGvm26h1pZ/r1mS
+BF4QpQeBK9THpApn2OPaw6jVvP/tE3OiX8ms/xhpBTXMJmQK29ThGBeb2uRReY+T
+kS8Z1O1DXGa5KRorkGJZAKiLbvCNqUuv4oaVg7jyr614ta+g4NtHnY6nlaTejWXi
+bS1fF7JT1+CtvdcxbfSfRlevoUb68hpujMxuVOBYviCZSRIHk2UGNc9wFzFTXbwQ
+qKpr3HPRAgMBAAECggEAE9XGx1wj2ia6opURloFDNEkT1STaT+gb0NWvrKRdvHvf
+2IRvZCdcR33f9vbMYCzvpwxvjoippAcUdQ50eADExpXzmySfTTdjc0HWPIDCDF7t
+HLUN+ipyCFjZIvLJaOTLys5/3fmUfFaGnQdvlFtQIs1HwZg+sKQzgMYdovSVcU5x
+uagAZzmJr78yWXzFt4m30ypDy3qBuo/vCNCF0mgIsvB9S/HCoEN9s6tY92jqTfRL
+mRo6ScAskW5MZP6Flkk4IVUbIFnJ9saTu+UfvASZPBwOlExkPwJg/oir8ec3avEO
+YcYf9usDO4AF3GkssXVYvPCEdN48FbmY115Q9vcjoQKBgQDx0/jXCJu6jt5tWXFP
+/MGyT+kHGMbBiqLNPPd94RRBfSslm24dNVXMLwOHchg8whEO2pJpNaLy6fJ9jv8Q
+3cF7SYqIrHq+RaM9vhjioZ4eym+Enp6HRhWSUxj3StaUJAxu6suwnNjQA2+3vxYr
+4ddlVmkcTO2U9s5QWL1T33dc2wKBgQC8Z7ehExNsG3PRZY9AxGDRFOVbdNaMBv2t
+kBjCORuwt5H7bEYdIuCmvJklfRfVe3NzmfIQVkIhGyUCX6g6xfflFyBTdXcRwh0Z
+wVHr7UU9JoX8tmngw5PT00TXwF6zUxhf/UmZieE19UweZHeOknSznqbMLyALQkjP
+yQ2I1ZL7wwKBgA5Le3AqoBn9DATmvp390O1bb+jtfAJA0bLUIcUdIvdkEMLeVzn+
+xx2Uwd6lzez5g8ye+vyhIQq+7YiihU1X7nH9POUrXO4Wa7ngnNP4vcIQMVtjjPdu
+GyRVKSqlD94d62Y7FuNPwjk5msb/0q2xYewpmXkEyx59IGD7feWRVhr1AoGABVgf
+0lbbLy7cKy1pUdoAMQ4Zr21yBIjSO1EiEqhSC8I5Rtt8ZakunCwvX+vbeDfHP5k3
+T5VSzOObOiUCfaBN9tagGR304bES6D8elsWlOCXWmSOHf1Os5s5QXppbVVTfFSH3
+K37Iv6IUpawN5CJtYwb2Dkar7wXTUOmQE7iTMccCgYEA4uuzOerUWPq78kFMqts8
+KKCzr1aFoVsLEc30MPEt8ezIbkjQwrGZLBSKgbA9aoI/TAhBfyNsQm7nWE+3fKVs
+S43+xKtc0XeDShR0hcuvSMnh7keedg641AaqfnNTI22/ivmCCrGI+8MFjZOJBdn3
+mQWo5Mg2hOqaTKRCpdodXb4=
+-----END PRIVATE KEY-----
+`
 	uuid, _ := uuid.Parse("50c06e4d-b594-4489-9d4b-a513f63c90bd")
 	newJwt := WriteJWT("vivienne@kthais.com", []string{"user", "admin", "queen"}, uuid, key, 15)
 	valid, _ := ParseAndVerify(newJwt, key)
@@ -53,7 +81,35 @@ func TestParseAndVerify(t *testing.T) {
 }
 
 func TestJWTCreate(t *testing.T) {
-	key := "testkey123456"
+	key := `-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCx+aR9uA0eX4B3
+cAYDdvJ0g4JSLfcxtvKS+rC64lyPVoNg4tX2JHdoYdar1p5jBnFrQQCqNQAqFZt7
+wYaJBBfPll5AN+JXt65/e/yTu4hzjn4GPp88lHnJ/CBg36CDuPGvm26h1pZ/r1mS
+BF4QpQeBK9THpApn2OPaw6jVvP/tE3OiX8ms/xhpBTXMJmQK29ThGBeb2uRReY+T
+kS8Z1O1DXGa5KRorkGJZAKiLbvCNqUuv4oaVg7jyr614ta+g4NtHnY6nlaTejWXi
+bS1fF7JT1+CtvdcxbfSfRlevoUb68hpujMxuVOBYviCZSRIHk2UGNc9wFzFTXbwQ
+qKpr3HPRAgMBAAECggEAE9XGx1wj2ia6opURloFDNEkT1STaT+gb0NWvrKRdvHvf
+2IRvZCdcR33f9vbMYCzvpwxvjoippAcUdQ50eADExpXzmySfTTdjc0HWPIDCDF7t
+HLUN+ipyCFjZIvLJaOTLys5/3fmUfFaGnQdvlFtQIs1HwZg+sKQzgMYdovSVcU5x
+uagAZzmJr78yWXzFt4m30ypDy3qBuo/vCNCF0mgIsvB9S/HCoEN9s6tY92jqTfRL
+mRo6ScAskW5MZP6Flkk4IVUbIFnJ9saTu+UfvASZPBwOlExkPwJg/oir8ec3avEO
+YcYf9usDO4AF3GkssXVYvPCEdN48FbmY115Q9vcjoQKBgQDx0/jXCJu6jt5tWXFP
+/MGyT+kHGMbBiqLNPPd94RRBfSslm24dNVXMLwOHchg8whEO2pJpNaLy6fJ9jv8Q
+3cF7SYqIrHq+RaM9vhjioZ4eym+Enp6HRhWSUxj3StaUJAxu6suwnNjQA2+3vxYr
+4ddlVmkcTO2U9s5QWL1T33dc2wKBgQC8Z7ehExNsG3PRZY9AxGDRFOVbdNaMBv2t
+kBjCORuwt5H7bEYdIuCmvJklfRfVe3NzmfIQVkIhGyUCX6g6xfflFyBTdXcRwh0Z
+wVHr7UU9JoX8tmngw5PT00TXwF6zUxhf/UmZieE19UweZHeOknSznqbMLyALQkjP
+yQ2I1ZL7wwKBgA5Le3AqoBn9DATmvp390O1bb+jtfAJA0bLUIcUdIvdkEMLeVzn+
+xx2Uwd6lzez5g8ye+vyhIQq+7YiihU1X7nH9POUrXO4Wa7ngnNP4vcIQMVtjjPdu
+GyRVKSqlD94d62Y7FuNPwjk5msb/0q2xYewpmXkEyx59IGD7feWRVhr1AoGABVgf
+0lbbLy7cKy1pUdoAMQ4Zr21yBIjSO1EiEqhSC8I5Rtt8ZakunCwvX+vbeDfHP5k3
+T5VSzOObOiUCfaBN9tagGR304bES6D8elsWlOCXWmSOHf1Os5s5QXppbVVTfFSH3
+K37Iv6IUpawN5CJtYwb2Dkar7wXTUOmQE7iTMccCgYEA4uuzOerUWPq78kFMqts8
+KKCzr1aFoVsLEc30MPEt8ezIbkjQwrGZLBSKgbA9aoI/TAhBfyNsQm7nWE+3fKVs
+S43+xKtc0XeDShR0hcuvSMnh7keedg641AaqfnNTI22/ivmCCrGI+8MFjZOJBdn3
+mQWo5Mg2hOqaTKRCpdodXb4=
+-----END PRIVATE KEY-----
+`
 	uuid, _ := uuid.Parse("50c06e4d-b594-4489-9d4b-a513f63c90bd")
 	newJwt := WriteJWT("vivienne@kthais.com", []string{"user", "admin", "queen"}, uuid, key, 15)
 	log.Printf("JWT Generated: %v\n", newJwt)
