@@ -40,6 +40,7 @@ func (h *ProfileHandler) Register(r *gin.RouterGroup) {
 		admin.Use(middleware.RoleRequired(h.cfg, "admin"))
 		admin.GET("", h.ListAllProfiles)
 		admin.PUT("/:userId", h.UpdateProfile)
+		admin.GET("/:userId", h.GetProfile)
 		admin.DELETE("/:userId", h.DeleteProfile)
 	}
 }
@@ -338,42 +339,67 @@ func (h *ProfileHandler) UpdateProfile(c *gin.Context) {
 		return
 	}
 
-	var profile models.Profile
-	if err := h.db.Where("user_uuid = ?", userUUID).First(&profile).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Profile not found"})
-		return
+	var existingProfile models.Profile
+	result := h.db.Where("user_uuid = ?", userUUID).First(&existingProfile)
+
+	log.Printf("Profile retrieved: %+v", existingProfile)
+
+	// Parse input
+	var input struct {
+		FirstName      string              `json:"firstName" binding:"required"`
+		LastName       string              `json:"lastName" binding:"required"`
+		Email          string              `json:"email" binding:"required,email"`
+		University     string              `json:"university"`
+		Programme      models.StudyProgram `json:"programme"`
+		GraduationYear int                 `json:"graduationYear"`
+		GitHubLink     string              `json:"githubLink"`
+		LinkedInLink   string              `json:"linkedinLink"`
+		AboutMe        string              `json:aboutMe`
 	}
 
-	log.Printf("Profile retrieved: %+v", profile)
-
 	// Update profile fields
-	if err := c.ShouldBindJSON(&profile); err != nil {
+	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	if result.Error == nil {
+		existingProfile.FirstName = input.FirstName
+		existingProfile.LastName = input.LastName
+		existingProfile.Email = input.Email
+		existingProfile.University = input.University
+		existingProfile.Programme = input.Programme
+		existingProfile.GraduationYear = input.GraduationYear
+		existingProfile.GitHubLink = input.GitHubLink
+		existingProfile.LinkedInLink = input.LinkedInLink
+		existingProfile.AboutMe = input.AboutMe
 
-	if err := h.db.Save(&profile).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		if err := h.db.Save(&existingProfile).Error; err != nil {
+			log.Printf("Exist profile error")
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		// Update member in Mailchimp
+		memberRequest := mailchimp.MemberRequest{
+			Email:  existingProfile.Email,
+			Status: mailchimp.Subscribed,
+			MergeFields: mailchimp.MergeFields{
+				FirstName:      existingProfile.FirstName,
+				LastName:       existingProfile.LastName,
+				Programme:      string(existingProfile.Programme),
+				GraduationYear: existingProfile.GraduationYear,
+			},
+		}
+		if _, err := h.mailchimp.UpdateMember(&existingProfile.Email, &memberRequest); err != nil {
+			log.Printf("Mailchimp Update Error: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, existingProfile)
 		return
 	}
-
-	// Update member in Mailchimp
-	memberRequest := mailchimp.MemberRequest{
-		Email:  profile.Email,
-		Status: mailchimp.Subscribed,
-		MergeFields: mailchimp.MergeFields{
-			FirstName:      profile.FirstName,
-			LastName:       profile.LastName,
-			Programme:      string(profile.Programme),
-			GraduationYear: profile.GraduationYear,
-		},
-	}
-	if _, err := h.mailchimp.UpdateMember(&profile.Email, &memberRequest); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, profile)
+	c.JSON(http.StatusInternalServerError, gin.H{"error": "User not exist"})
 }
 
 // DeleteProfile allows an admin to delete a profile
