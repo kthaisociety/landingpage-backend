@@ -118,6 +118,7 @@ func (h *ProfileHandler) GetMyProfile(c *gin.Context) {
 		"graduationYear": profile.GraduationYear,
 		"githubLink":     profile.GitHubLink,
 		"linkedInLink":   profile.LinkedInLink,
+		"AboutMe":        profile.AboutMe,
 	})
 }
 
@@ -130,11 +131,9 @@ func (h *ProfileHandler) UpdateMyProfile(c *gin.Context) {
 	if err != nil {
 		log.Printf("Could not get userid")
 	}
-
 	// Check if profile exists
 	var existingProfile models.Profile
 	result := h.db.Where("user_uuid = ?", userID).First(&existingProfile)
-
 	// Parse input
 	var input struct {
 		FirstName      string              `json:"firstName" binding:"required"`
@@ -145,6 +144,7 @@ func (h *ProfileHandler) UpdateMyProfile(c *gin.Context) {
 		GraduationYear int                 `json:"graduationYear"`
 		GitHubLink     string              `json:"githubLink"`
 		LinkedInLink   string              `json:"linkedinLink"`
+		AboutMe        string              `json:"aboutMe"`
 	}
 
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -162,8 +162,10 @@ func (h *ProfileHandler) UpdateMyProfile(c *gin.Context) {
 		existingProfile.GraduationYear = input.GraduationYear
 		existingProfile.GitHubLink = input.GitHubLink
 		existingProfile.LinkedInLink = input.LinkedInLink
+		existingProfile.AboutMe = input.AboutMe
 
 		if err := h.db.Save(&existingProfile).Error; err != nil {
+			log.Printf("Exist profile error")
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
@@ -180,6 +182,7 @@ func (h *ProfileHandler) UpdateMyProfile(c *gin.Context) {
 			},
 		}
 		if _, err := h.mailchimp.UpdateMember(&existingProfile.Email, &memberRequest); err != nil {
+			log.Printf("Mailchimp Update Error: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
@@ -206,6 +209,7 @@ func (h *ProfileHandler) UpdateMyProfile(c *gin.Context) {
 		GraduationYear: input.GraduationYear,
 		GitHubLink:     input.GitHubLink,
 		LinkedInLink:   input.LinkedInLink,
+		AboutMe:        input.AboutMe,
 	}
 
 	if err := h.db.Create(&newProfile).Error; err != nil {
@@ -253,6 +257,7 @@ func (h *ProfileHandler) CreateMyProfile(c *gin.Context) {
 		GraduationYear int                 `json:"graduationYear"`
 		GitHubLink     string              `json:"githubLink"`
 		LinkedInLink   string              `json:"linkedinLink"`
+		AboutMe        string              `json:aboutMe`
 	}
 
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -278,6 +283,7 @@ func (h *ProfileHandler) CreateMyProfile(c *gin.Context) {
 		GraduationYear: input.GraduationYear,
 		GitHubLink:     input.GitHubLink,
 		LinkedInLink:   input.LinkedInLink,
+		AboutMe:        input.AboutMe,
 	}
 
 	if err := h.db.Create(&newProfile).Error; err != nil {
@@ -337,6 +343,8 @@ func (h *ProfileHandler) UpdateProfile(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Profile not found"})
 		return
 	}
+
+	log.Printf("Profile retrieved: %+v", profile)
 
 	// Update profile fields
 	if err := c.ShouldBindJSON(&profile); err != nil {
