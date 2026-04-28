@@ -32,7 +32,8 @@ const (
 
 type Profile struct {
 	gorm.Model
-	Id             uuid.UUID      `gorm:"uniqueIndex" json:"id"`
+	// Id             uuid.UUID      `gorm:"uniqueIndex" json:"id"`
+	ID             uuid.UUID      `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
 	UserUUID       uuid.UUID      `gorm:"not null" json:"user_id"`
 	UserId         uint           `gorm:"not null" json:"-"`
 	User           User           `json:"user,omitempty"`
