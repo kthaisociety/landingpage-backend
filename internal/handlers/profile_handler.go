@@ -258,7 +258,7 @@ func (h *ProfileHandler) CreateMyProfile(c *gin.Context) {
 		GraduationYear int                 `json:"graduationYear"`
 		GitHubLink     string              `json:"githubLink"`
 		LinkedInLink   string              `json:"linkedinLink"`
-		AboutMe        string              `json:aboutMe`
+		AboutMe        string              `json:"aboutMe"`
 	}
 
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -342,7 +342,7 @@ func (h *ProfileHandler) UpdateProfile(c *gin.Context) {
 	var existingProfile models.Profile
 	result := h.db.Where("user_uuid = ?", userUUID).First(&existingProfile)
 
-	log.Printf("Profile retrieved: %+v", existingProfile)
+	// log.Printf("Profile retrieved: %+v", existingProfile)
 
 	// Parse input
 	var input struct {
@@ -354,7 +354,7 @@ func (h *ProfileHandler) UpdateProfile(c *gin.Context) {
 		GraduationYear int                 `json:"graduationYear"`
 		GitHubLink     string              `json:"githubLink"`
 		LinkedInLink   string              `json:"linkedinLink"`
-		AboutMe        string              `json:aboutMe`
+		AboutMe        string              `json:"aboutMe"`
 	}
 
 	// Update profile fields
