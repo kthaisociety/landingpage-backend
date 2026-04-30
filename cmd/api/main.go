@@ -124,7 +124,7 @@ func main() {
 		&models.Project{},
 		&models.Team{},
 		&models.TeamProjectPair{},
-		&models.TeamUserPair{},
+		&models.TeamMemberPair{},
 	)
 	if err != nil {
 		log.Fatal("Failed to migrate database:", err)
