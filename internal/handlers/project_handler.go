@@ -4,8 +4,10 @@ import (
 	"backend/internal/config"
 	"backend/internal/middleware"
 	"backend/internal/models"
+	"fmt"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -35,20 +37,31 @@ func (h *ProjectHandler) Register(r *gin.RouterGroup) {
 		authenticated.POST("", h.Create)
 		authenticated.PUT("/:id", h.Update)
 		authenticated.DELETE("/:id", h.Delete)
-		authenticated.POST("/:id/members", h.AddMember)
-		authenticated.DELETE("/:id/members/:userId", h.RemoveMember)
+
+		// not needed anymore
+		// authenticated.POST("/:id/members", h.AddMember)
+		// authenticated.DELETE("/:id/members/:userId", h.RemoveMember)
 	}
 }
 
 // ProjectResponse includes all project details with members
 type ProjectResponse struct {
-	ID          uuid.UUID               `json:"id"`
-	TeamID      *uuid.UUID              `json:"team_id,omitempty"`
-	Name        string                  `json:"name"`
-	Description string                  `json:"description"`
-	Skills      []string                `json:"skills"`
-	Status      models.ProjectStatus    `json:"status"`
-	Members     []ProjectMemberResponse `json:"members"`
+	ID                 uuid.UUID               `json:"id"`
+	TeamID             *uuid.UUID              `json:"team_id,omitempty"`
+	Name               string                  `json:"title"`
+	OneLineDescription string                  `json:"oneLineDescription"`
+	Categories         string                  `json:"categories"`
+	TechStack          string                  `json:"techStack"`
+	ProblemImpact      string                  `json:"problemImpact"`
+	KeyFeatures        string                  `json:"keyFeatures"`
+	Status             models.ProjectStatus    `json:"status"`
+	Screenshots        string                  `json:"screenshots"`
+	RepoUrl            string                  `json:"repoUrl"`
+	Affiliations       string                  `json:"affiliations"`
+	Timeline           string                  `json:"timeline"`
+	MaintenancePlan    string                  `json:"maintenancePlan"`
+	Contact            string                  `json:"contact"`
+	Members            []ProjectMemberResponse `json:"members"`
 }
 
 type ProjectMemberResponse struct {
@@ -57,6 +70,8 @@ type ProjectMemberResponse struct {
 	LastName       string    `json:"last_name"`
 	Email          string    `json:"email"`
 	ProfilePicture string    `json:"profile_picture,omitempty"`
+	Role           string    `json:"role,omitempty"`
+	Department     string    `json:"department,omitempty"`
 }
 
 // List returns all projects with their members
@@ -73,86 +88,10 @@ func (h *ProjectHandler) List(c *gin.Context) {
 		return
 	}
 
-	// Batch-load all team-project pairs
-	projectIDs := make([]uint, len(projects))
-	for i, p := range projects {
-		projectIDs[i] = p.ID
-	}
-
-	var teamProjectPairs []models.TeamProjectPair
-	if err := h.db.Where("project_id IN ?", projectIDs).Find(&teamProjectPairs).Error; err != nil {
-		log.Printf("Error loading team-project pairs: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list projects"})
-		return
-	}
-
-	// Map project_id -> team_id
-	projectToTeam := make(map[uint]uint)
-	teamIDs := make([]uint, 0, len(teamProjectPairs))
-	for _, tp := range teamProjectPairs {
-		projectToTeam[tp.ProjectId] = tp.TeamId
-		teamIDs = append(teamIDs, tp.TeamId)
-	}
-
-	// Batch-load all team-user pairs
-	var teamUserPairs []models.TeamUserPair
-	if len(teamIDs) > 0 {
-		if err := h.db.Where("team_id IN ?", teamIDs).Find(&teamUserPairs).Error; err != nil {
-			log.Printf("Error loading team-user pairs: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list projects"})
-			return
-		}
-	}
-
-	// Map team_id -> []user_id
-	teamToUsers := make(map[uint][]uint)
-	allUserIDs := make([]uint, 0)
-	for _, tu := range teamUserPairs {
-		teamToUsers[tu.TeamId] = append(teamToUsers[tu.TeamId], tu.UserId)
-		allUserIDs = append(allUserIDs, tu.UserId)
-	}
-
-	// Batch-load all profiles
-	profileMap := make(map[uint]models.Profile)
-	if len(allUserIDs) > 0 {
-		var profiles []models.Profile
-		h.db.Where("user_id IN ?", allUserIDs).Find(&profiles)
-		for _, p := range profiles {
-			profileMap[p.UserId] = p
-		}
-	}
-
-	// Build response
+	// Build responses independently using the robust builder
 	response := make([]ProjectResponse, 0, len(projects))
 	for _, project := range projects {
-		members := make([]ProjectMemberResponse, 0)
-		if teamID, ok := projectToTeam[project.ID]; ok {
-			for _, userID := range teamToUsers[teamID] {
-				if profile, ok := profileMap[userID]; ok {
-					members = append(members, ProjectMemberResponse{
-						UserID:         profile.UserUUID,
-						FirstName:      profile.FirstName,
-						LastName:       profile.LastName,
-						Email:          profile.Email,
-						ProfilePicture: profile.ProfilePicture,
-					})
-				}
-			}
-		}
-
-		skills := project.Skills
-		if skills == nil {
-			skills = []string{}
-		}
-
-		response = append(response, ProjectResponse{
-			ID:          project.ProjectId,
-			Name:        project.ProjectName,
-			Description: project.Description,
-			Skills:      skills,
-			Status:      project.Status,
-			Members:     members,
-		})
+		response = append(response, h.buildProjectResponse(project))
 	}
 
 	c.JSON(http.StatusOK, response)
@@ -183,14 +122,24 @@ func (h *ProjectHandler) Get(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
-// Creates a new project
+// Creates a new project, team, and sets up contributors via TeamMembers
 func (h *ProjectHandler) Create(c *gin.Context) {
 	var input struct {
-		Name        string               `json:"name" binding:"required"`
-		Description string               `json:"description"`
-		Skills      []string             `json:"skills"`
-		Status      models.ProjectStatus `json:"status"`
-		TeamID      *string              `json:"team_id"`
+		Title              string               `json:"title" binding:"required"`
+		OneLineDescription string               `json:"oneLineDescription"`
+		Categories         string               `json:"categories"`
+		TechStack          string               `json:"techStack"`
+		ProblemImpact      string               `json:"problemImpact"`
+		KeyFeatures        string               `json:"keyFeatures"`
+		Status             models.ProjectStatus `json:"status"`
+		Screenshots        string               `json:"screenshots"`
+		RepoUrl            string               `json:"repoUrl"`
+		Contributors       []string             `json:"contributors"`
+		Affiliations       string               `json:"affiliations"`
+		Timeline           string               `json:"timeline"`
+		MaintenancePlan    string               `json:"maintenancePlan"`
+		Contact            string               `json:"contact"`
+		TeamName           string               `json:"teamName"`
 	}
 
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -198,82 +147,111 @@ func (h *ProjectHandler) Create(c *gin.Context) {
 		return
 	}
 
-	// Default to planning if no status provided
+	// Default status if empty
 	if input.Status == "" {
-		input.Status = models.ProjectStatusPlanning
-	}
-
-	if !isValidProjectStatus(input.Status) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid status. Must be one of: planning, active, completed"})
-		return
-	}
-
-	var providedTeamID *uuid.UUID
-	if input.TeamID != nil {
-		parsedTeamID, err := uuid.Parse(*input.TeamID)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid team_id"})
-			return
-		}
-		providedTeamID = &parsedTeamID
+		input.Status = "Idea"
 	}
 
 	var project models.Project
 
-	// Use Transaction method - handles nested transactions via savepoints
+	// Handle transactions to ensure everything creates or rolls back together
 	err := h.db.Transaction(func(tx *gorm.DB) error {
 		project = models.Project{
-			ProjectId:   uuid.New(),
-			ProjectName: input.Name,
-			Description: input.Description,
-			Skills:      input.Skills,
-			Status:      input.Status,
+			ProjectId:          uuid.New(),
+			ProjectName:        input.Title,
+			OneLineDescription: input.OneLineDescription,
+			Categories:         input.Categories,
+			TechStack:          input.TechStack,
+			ProblemImpact:      input.ProblemImpact,
+			KeyFeatures:        input.KeyFeatures,
+			Status:             input.Status,
+			Screenshots:        input.Screenshots,
+			RepoUrl:            input.RepoUrl,
+			Affiliations:       input.Affiliations,
+			Timeline:           input.Timeline,
+			MaintenancePlan:    input.MaintenancePlan,
+			Contact:            input.Contact,
 		}
 
 		if err := tx.Create(&project).Error; err != nil {
 			return err
 		}
 
-		var teamInternalID uint
-		if providedTeamID != nil {
-			var team models.Team
-			if err := tx.First(&team, "team_id = ?", *providedTeamID).Error; err != nil {
-				return err
-			}
-			teamInternalID = team.ID
-		} else {
-			// Backward-compatible behavior: create a dedicated team when none is provided.
-			team := models.Team{
-				TeamId:   uuid.New(),
-				TeamName: input.Name + " Team",
-			}
+		// Resolve Team Name
+		teamName := input.TeamName
+		if teamName == "" {
+			teamName = input.Title + " Team"
+		}
 
-			if err := tx.Create(&team).Error; err != nil {
-				return err
-			}
-			teamInternalID = team.ID
+		// Create a dedicated team for this project
+		team := models.Team{
+			TeamId:   uuid.New(),
+			TeamName: teamName,
+		}
+		if err := tx.Create(&team).Error; err != nil {
+			return err
 		}
 
 		// Link team to project
 		teamProjectPair := models.TeamProjectPair{
-			TeamId:    teamInternalID,
+			TeamId:    team.ID,
 			ProjectId: project.ID,
 		}
-
 		if err := tx.Create(&teamProjectPair).Error; err != nil {
 			return err
+		}
+
+		// Process contributors payload formatting string ("email:role:team")
+		for _, contributorString := range input.Contributors {
+			parts := strings.Split(contributorString, ":")
+			if len(parts) == 0 || parts[0] == "" {
+				continue
+			}
+
+			email := parts[0]
+			role := ""
+			department := ""
+
+			if len(parts) > 1 {
+				role = parts[1]
+			}
+			if len(parts) > 2 {
+				department = parts[2]
+			}
+
+			// Look up the user by email
+			var user models.User
+			if err := tx.Where("email = ?", email).First(&user).Error; err != nil {
+				// Abort transaction if user provided by frontend doesn't actually exist
+				return fmt.Errorf("user with email %s not found: %w", email, err)
+			}
+
+			// Create TeamMember Entity
+			teamMember := models.TeamMember{
+				UserID:               user.ID,
+				TeamMemberRole:       role,
+				TeamMemberDepartment: department,
+			}
+			if err := tx.Create(&teamMember).Error; err != nil {
+				return fmt.Errorf("failed to create team member %s: %w", email, err)
+			}
+
+			// Pair the new TeamMember to the Team
+			teamMemberPair := models.TeamMemberPair{
+				TeamId:       team.ID,
+				TeamMemberId: teamMember.ID, // UserID removed per your schema, matching TeamMember
+			}
+			if err := tx.Create(&teamMemberPair).Error; err != nil {
+				return fmt.Errorf("failed to pair member to team: %w", err)
+			}
 		}
 
 		return nil
 	})
 
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Team not found"})
-			return
-		}
 		log.Printf("Error creating project: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create project"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -281,7 +259,7 @@ func (h *ProjectHandler) Create(c *gin.Context) {
 	c.JSON(http.StatusCreated, response)
 }
 
-// Updates a project
+// Updates a project fields and synchronizes contributors
 func (h *ProjectHandler) Update(c *gin.Context) {
 	projectID := c.Param("id")
 
@@ -302,11 +280,23 @@ func (h *ProjectHandler) Update(c *gin.Context) {
 		return
 	}
 
+	// Updated Input schema for the new DTO definition
 	var input struct {
-		Name        *string              `json:"name"`
-		Description *string              `json:"description"`
-		Skills      []string             `json:"skills"`
-		Status      models.ProjectStatus `json:"status"`
+		Title              *string               `json:"title"`
+		OneLineDescription *string               `json:"oneLineDescription"`
+		Categories         *string               `json:"categories"`
+		TechStack          *string               `json:"techStack"`
+		ProblemImpact      *string               `json:"problemImpact"`
+		KeyFeatures        *string               `json:"keyFeatures"`
+		Status             *models.ProjectStatus `json:"status"`
+		Screenshots        *string               `json:"screenshots"`
+		RepoUrl            *string               `json:"repoUrl"`
+		Affiliations       *string               `json:"affiliations"`
+		Timeline           *string               `json:"timeline"`
+		MaintenancePlan    *string               `json:"maintenancePlan"`
+		Contact            *string               `json:"contact"`
+		TeamName           *string               `json:"teamName"`
+		Contributors       []string              `json:"contributors"`
 	}
 
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -314,31 +304,187 @@ func (h *ProjectHandler) Update(c *gin.Context) {
 		return
 	}
 
-	// Update fields if provided
-	if input.Name != nil {
-		if *input.Name == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Name cannot be empty"})
-			return
-		}
-		project.ProjectName = *input.Name
-	}
-	if input.Description != nil {
-		project.Description = *input.Description
-	}
-	if input.Skills != nil {
-		project.Skills = input.Skills
-	}
-	if input.Status != "" {
-		if !isValidProjectStatus(input.Status) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid status. Must be one of: planning, active, completed"})
-			return
-		}
-		project.Status = input.Status
-	}
+	// Run all updates and deletions in a transaction
+	err = h.db.Transaction(func(tx *gorm.DB) error {
 
-	if err := h.db.Save(&project).Error; err != nil {
+		if input.Title != nil {
+			project.ProjectName = *input.Title
+		}
+		if input.OneLineDescription != nil {
+			project.OneLineDescription = *input.OneLineDescription
+		}
+		if input.Categories != nil {
+			project.Categories = *input.Categories
+		}
+		if input.TechStack != nil {
+			project.TechStack = *input.TechStack
+		}
+		if input.ProblemImpact != nil {
+			project.ProblemImpact = *input.ProblemImpact
+		}
+		if input.KeyFeatures != nil {
+			project.KeyFeatures = *input.KeyFeatures
+		}
+		if input.Status != nil {
+			project.Status = *input.Status
+		}
+		if input.Screenshots != nil {
+			project.Screenshots = *input.Screenshots
+		}
+		if input.RepoUrl != nil {
+			project.RepoUrl = *input.RepoUrl
+		}
+		if input.Affiliations != nil {
+			project.Affiliations = *input.Affiliations
+		}
+		if input.Timeline != nil {
+			project.Timeline = *input.Timeline
+		}
+		if input.MaintenancePlan != nil {
+			project.MaintenancePlan = *input.MaintenancePlan
+		}
+		if input.Contact != nil {
+			project.Contact = *input.Contact
+		}
+
+		if err := tx.Save(&project).Error; err != nil {
+			return err
+		}
+
+		var teamProjectPair models.TeamProjectPair
+		var team models.Team
+
+		// Check if a team is already linked to this project
+		err := tx.Where("project_id = ?", project.ID).First(&teamProjectPair).Error
+		if err == gorm.ErrRecordNotFound {
+			// Backward compatibility: If no team exists yet, create one
+			teamName := project.ProjectName + " Team"
+			if input.TeamName != nil && *input.TeamName != "" {
+				teamName = *input.TeamName
+			}
+			team = models.Team{
+				TeamId:   uuid.New(),
+				TeamName: teamName,
+			}
+			if err := tx.Create(&team).Error; err != nil {
+				return err
+			}
+			teamProjectPair = models.TeamProjectPair{
+				TeamId:    team.ID,
+				ProjectId: project.ID,
+			}
+			if err := tx.Create(&teamProjectPair).Error; err != nil {
+				return err
+			}
+		} else if err != nil {
+			return err
+		} else {
+			// Team exists, load it
+			if err := tx.First(&team, teamProjectPair.TeamId).Error; err != nil {
+				return err
+			}
+			// Update TeamName if requested
+			if input.TeamName != nil && *input.TeamName != "" && team.TeamName != *input.TeamName {
+				team.TeamName = *input.TeamName
+				if err := tx.Save(&team).Error; err != nil {
+					return err
+				}
+			}
+		}
+
+		if input.Contributors != nil {
+
+			// Parse incoming contributors into a map for fast lookup
+			type incomingContributor struct {
+				Role       string
+				Department string
+			}
+			newContributorsMap := make(map[string]incomingContributor)
+
+			for _, contributorString := range input.Contributors {
+				parts := strings.Split(contributorString, ":")
+				if len(parts) == 0 || parts[0] == "" {
+					continue
+				}
+				email := parts[0]
+				role := ""
+				dept := ""
+				if len(parts) > 1 {
+					role = parts[1]
+				}
+				if len(parts) > 2 {
+					dept = parts[2]
+				}
+				newContributorsMap[email] = incomingContributor{Role: role, Department: dept}
+			}
+
+			// Fetch existing team members associated with this team
+			type existingMemberData struct {
+				TeamMemberID uint
+				Email        string
+				Role         string
+				Department   string
+			}
+			var existingMembers []existingMemberData
+
+			tx.Table("team_members").
+				Select("team_members.id as team_member_id, users.email, team_members.team_member_role as role, team_members.team_member_department as department").
+				Joins("JOIN team_member_pairs ON team_member_pairs.team_member_id = team_members.id").
+				Joins("JOIN users ON users.id = team_members.user_id").
+				Where("team_member_pairs.team_id = ? AND team_members.deleted_at IS NULL", team.ID).
+				Scan(&existingMembers)
+
+			// Compare existing against incoming
+			for _, ext := range existingMembers {
+				if incoming, exists := newContributorsMap[ext.Email]; exists {
+					// User is in both lists. Check if role/department changed
+					if ext.Role != incoming.Role || ext.Department != incoming.Department {
+						tx.Model(&models.TeamMember{}).Where("id = ?", ext.TeamMemberID).Updates(map[string]interface{}{
+							"team_member_role":       incoming.Role,
+							"team_member_department": incoming.Department,
+						})
+					}
+					// Remove from map, so remaining entries in map are purely NEW members
+					delete(newContributorsMap, ext.Email)
+				} else {
+					// User is NOT in the new list. Remove them from the team.
+					tx.Where("team_id = ? AND team_member_id = ?", team.ID, ext.TeamMemberID).Delete(&models.TeamMemberPair{})
+					tx.Where("id = ?", ext.TeamMemberID).Delete(&models.TeamMember{})
+				}
+			}
+
+			// Add the remaining new contributors
+			for email, incoming := range newContributorsMap {
+				var user models.User
+				if err := tx.Where("email = ?", email).First(&user).Error; err != nil {
+					return fmt.Errorf("user with email %s not found: %w", email, err)
+				}
+
+				tm := models.TeamMember{
+					UserID:               user.ID,
+					TeamMemberRole:       incoming.Role,
+					TeamMemberDepartment: incoming.Department,
+				}
+				if err := tx.Create(&tm).Error; err != nil {
+					return fmt.Errorf("failed to create team member %s: %w", email, err)
+				}
+
+				tmp := models.TeamMemberPair{
+					TeamId:       team.ID,
+					TeamMemberId: tm.ID,
+				}
+				if err := tx.Create(&tmp).Error; err != nil {
+					return fmt.Errorf("failed to pair member %s to team: %w", email, err)
+				}
+			}
+		}
+
+		return nil
+	})
+
+	if err != nil {
 		log.Printf("Error updating project %s: %v", projectUUID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update project"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -392,131 +538,131 @@ func (h *ProjectHandler) Delete(c *gin.Context) {
 }
 
 // AddMember adds a member to a project
-func (h *ProjectHandler) AddMember(c *gin.Context) {
-	projectID := c.Param("id")
+// func (h *ProjectHandler) AddMember(c *gin.Context) {
+// 	projectID := c.Param("id")
 
-	projectUUID, err := uuid.Parse(projectID)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid project ID"})
-		return
-	}
+// 	projectUUID, err := uuid.Parse(projectID)
+// 	if err != nil {
+// 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid project ID"})
+// 		return
+// 	}
 
-	var input struct {
-		UserID string `json:"user_id" binding:"required"`
-	}
+// 	var input struct {
+// 		UserID string `json:"user_id" binding:"required"`
+// 	}
 
-	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
+// 	if err := c.ShouldBindJSON(&input); err != nil {
+// 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+// 		return
+// 	}
 
-	userUUID, err := uuid.Parse(input.UserID)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
-		return
-	}
+// 	userUUID, err := uuid.Parse(input.UserID)
+// 	if err != nil {
+// 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
+// 		return
+// 	}
 
-	// Find project and team associated with this project
-	var project models.Project
-	if err := h.db.First(&project, "project_id = ?", projectUUID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Project not found"})
-		return
-	}
+// 	// Find project and team associated with this project
+// 	var project models.Project
+// 	if err := h.db.First(&project, "project_id = ?", projectUUID).Error; err != nil {
+// 		c.JSON(http.StatusNotFound, gin.H{"error": "Project not found"})
+// 		return
+// 	}
 
-	var teamProjectPair models.TeamProjectPair
-	if err := h.db.Where("project_id = ?", project.ID).First(&teamProjectPair).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Project team not found"})
-		return
-	}
+// 	var teamProjectPair models.TeamProjectPair
+// 	if err := h.db.Where("project_id = ?", project.ID).First(&teamProjectPair).Error; err != nil {
+// 		c.JSON(http.StatusNotFound, gin.H{"error": "Project team not found"})
+// 		return
+// 	}
 
-	// Verify user exists
-	var user models.User
-	if err := h.db.First(&user, "user_id = ?", userUUID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
-		return
-	}
+// 	// Verify user exists
+// 	var user models.User
+// 	if err := h.db.First(&user, "user_id = ?", userUUID).Error; err != nil {
+// 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+// 		return
+// 	}
 
-	// Add user to team within a transaction to avoid race conditions
-	err = h.db.Transaction(func(tx *gorm.DB) error {
-		var count int64
-		if err := tx.Model(&models.TeamUserPair{}).
-			Where("team_id = ? AND user_id = ?", teamProjectPair.TeamId, user.ID).
-			Count(&count).Error; err != nil {
-			return err
-		}
-		if count > 0 {
-			return gorm.ErrDuplicatedKey
-		}
+// 	// Add user to team within a transaction to avoid race conditions
+// 	err = h.db.Transaction(func(tx *gorm.DB) error {
+// 		var count int64
+// 		if err := tx.Model(&models.TeamUserPair{}).
+// 			Where("team_id = ? AND user_id = ?", teamProjectPair.TeamId, user.ID).
+// 			Count(&count).Error; err != nil {
+// 			return err
+// 		}
+// 		if count > 0 {
+// 			return gorm.ErrDuplicatedKey
+// 		}
 
-		return tx.Create(&models.TeamUserPair{
-			TeamId: teamProjectPair.TeamId,
-			UserId: user.ID,
-		}).Error
-	})
+// 		return tx.Create(&models.TeamUserPair{
+// 			TeamId: teamProjectPair.TeamId,
+// 			UserId: user.ID,
+// 		}).Error
+// 	})
 
-	if err != nil {
-		if err == gorm.ErrDuplicatedKey {
-			c.JSON(http.StatusConflict, gin.H{"error": "User is already a member of this project"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add member"})
-		return
-	}
+// 	if err != nil {
+// 		if err == gorm.ErrDuplicatedKey {
+// 			c.JSON(http.StatusConflict, gin.H{"error": "User is already a member of this project"})
+// 			return
+// 		}
+// 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add member"})
+// 		return
+// 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Member added successfully"})
-}
+// 	c.JSON(http.StatusOK, gin.H{"message": "Member added successfully"})
+// }
 
-// RemoveMember removes a member from a project
-func (h *ProjectHandler) RemoveMember(c *gin.Context) {
-	projectID := c.Param("id")
-	userID := c.Param("userId")
+// // RemoveMember removes a member from a project
+// func (h *ProjectHandler) RemoveMember(c *gin.Context) {
+// 	projectID := c.Param("id")
+// 	userID := c.Param("userId")
 
-	projectUUID, err := uuid.Parse(projectID)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid project ID"})
-		return
-	}
+// 	projectUUID, err := uuid.Parse(projectID)
+// 	if err != nil {
+// 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid project ID"})
+// 		return
+// 	}
 
-	userUUID, err := uuid.Parse(userID)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
-		return
-	}
+// 	userUUID, err := uuid.Parse(userID)
+// 	if err != nil {
+// 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
+// 		return
+// 	}
 
-	// Find project and team associated with this project
-	var project models.Project
-	if err := h.db.First(&project, "project_id = ?", projectUUID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Project not found"})
-		return
-	}
+// 	// Find project and team associated with this project
+// 	var project models.Project
+// 	if err := h.db.First(&project, "project_id = ?", projectUUID).Error; err != nil {
+// 		c.JSON(http.StatusNotFound, gin.H{"error": "Project not found"})
+// 		return
+// 	}
 
-	var teamProjectPair models.TeamProjectPair
-	if err := h.db.Where("project_id = ?", project.ID).First(&teamProjectPair).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Project team not found"})
-		return
-	}
+// 	var teamProjectPair models.TeamProjectPair
+// 	if err := h.db.Where("project_id = ?", project.ID).First(&teamProjectPair).Error; err != nil {
+// 		c.JSON(http.StatusNotFound, gin.H{"error": "Project team not found"})
+// 		return
+// 	}
 
-	// Verify user exists
-	var user models.User
-	if err := h.db.First(&user, "user_id = ?", userUUID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
-		return
-	}
+// 	// Verify user exists
+// 	var user models.User
+// 	if err := h.db.First(&user, "user_id = ?", userUUID).Error; err != nil {
+// 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+// 		return
+// 	}
 
-	// Remove user from team
-	result := h.db.Where("team_id = ? AND user_id = ?", teamProjectPair.TeamId, user.ID).
-		Delete(&models.TeamUserPair{})
-	if result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to remove member"})
-		return
-	}
-	if result.RowsAffected == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "User is not a member of this project"})
-		return
-	}
+// 	// Remove user from team
+// 	result := h.db.Where("team_id = ? AND user_id = ?", teamProjectPair.TeamId, user.ID).
+// 		Delete(&models.TeamUserPair{})
+// 	if result.Error != nil {
+// 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to remove member"})
+// 		return
+// 	}
+// 	if result.RowsAffected == 0 {
+// 		c.JSON(http.StatusNotFound, gin.H{"error": "User is not a member of this project"})
+// 		return
+// 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Member removed successfully"})
-}
+// 	c.JSON(http.StatusOK, gin.H{"message": "Member removed successfully"})
+// }
 
 // buildProjectResponse constructs a ProjectResponse with all members
 func (h *ProjectHandler) buildProjectResponse(project models.Project) ProjectResponse {
@@ -526,9 +672,10 @@ func (h *ProjectHandler) buildProjectResponse(project models.Project) ProjectRes
 	var teamInfo struct {
 		TeamInternalID uint
 		TeamUUID       uuid.UUID
+		TeamName       string
 	}
 	err := h.db.Table("team_project_pairs").
-		Select("team_project_pairs.team_id as team_internal_id, teams.team_id as team_uuid").
+		Select("team_project_pairs.team_id as team_internal_id, teams.team_id as team_uuid, teams.team_name as team_name").
 		Joins("JOIN teams ON teams.id = team_project_pairs.team_id AND teams.deleted_at IS NULL").
 		Where("team_project_pairs.project_id = ?", project.ID).
 		Scan(&teamInfo).Error
@@ -541,18 +688,22 @@ func (h *ProjectHandler) buildProjectResponse(project models.Project) ProjectRes
 		}
 	}
 
-	skills := project.Skills
-	if skills == nil {
-		skills = []string{}
-	}
-
 	response := ProjectResponse{
-		ID:          project.ProjectId,
-		Name:        project.ProjectName,
-		Description: project.Description,
-		Skills:      skills,
-		Status:      project.Status,
-		Members:     members,
+		ID:                 project.ProjectId,
+		Name:               project.ProjectName,
+		OneLineDescription: project.OneLineDescription,
+		Categories:         project.Categories,
+		TechStack:          project.TechStack,
+		ProblemImpact:      project.ProblemImpact,
+		KeyFeatures:        project.KeyFeatures,
+		Status:             project.Status,
+		Screenshots:        project.Screenshots,
+		RepoUrl:            project.RepoUrl,
+		Affiliations:       project.Affiliations,
+		Timeline:           project.Timeline,
+		MaintenancePlan:    project.MaintenancePlan,
+		Contact:            project.Contact,
+		Members:            members,
 	}
 
 	if err == nil && teamInfo.TeamInternalID != 0 {
@@ -562,21 +713,27 @@ func (h *ProjectHandler) buildProjectResponse(project models.Project) ProjectRes
 	return response
 }
 
-// loadTeamMembers fetches profiles for all users in the given team.
+// loadTeamMembers fetches profiles via the new TeamMember relations
 func (h *ProjectHandler) loadTeamMembers(teamID uint, projectUUID uuid.UUID) []ProjectMemberResponse {
-	var teamUserPairs []models.TeamUserPair
-	if err := h.db.Where("team_id = ?", teamID).Find(&teamUserPairs).Error; err != nil {
+	var teamMembers []models.TeamMember
+
+	// Join team_user_pairs to get members tied strictly to this team via their TeamMemberId
+	if err := h.db.Table("team_members").
+		Joins("JOIN team_member_pairs ON team_member_pairs.team_member_id = team_members.id").
+		Where("team_member_pairs.team_id = ?", teamID).
+		Find(&teamMembers).Error; err != nil {
 		log.Printf("Warning: could not find team members for team %d: %v", teamID, err)
 		return nil
 	}
 
-	if len(teamUserPairs) == 0 {
+	if len(teamMembers) == 0 {
 		return nil
 	}
 
-	userIDs := make([]uint, len(teamUserPairs))
-	for i, pair := range teamUserPairs {
-		userIDs[i] = pair.UserId
+	// Fetch standard User profiles associated with the extracted user_ids
+	userIDs := make([]uint, len(teamMembers))
+	for i, m := range teamMembers {
+		userIDs[i] = m.UserID
 	}
 
 	var profiles []models.Profile
@@ -585,24 +742,26 @@ func (h *ProjectHandler) loadTeamMembers(teamID uint, projectUUID uuid.UUID) []P
 		return nil
 	}
 
-	members := make([]ProjectMemberResponse, 0, len(profiles))
-	for _, profile := range profiles {
-		members = append(members, ProjectMemberResponse{
-			UserID:         profile.UserUUID,
-			FirstName:      profile.FirstName,
-			LastName:       profile.LastName,
-			Email:          profile.Email,
-			ProfilePicture: profile.ProfilePicture,
-		})
+	// Map profiles to easily match them back to their TeamMember instance
+	profileMap := make(map[uint]models.Profile)
+	for _, p := range profiles {
+		profileMap[p.UserId] = p
 	}
-	return members
-}
 
-// isValidProjectStatus checks if a status string is one of the allowed values
-func isValidProjectStatus(status models.ProjectStatus) bool {
-	switch status {
-	case models.ProjectStatusPlanning, models.ProjectStatusActive, models.ProjectStatusCompleted:
-		return true
+	members := make([]ProjectMemberResponse, 0, len(teamMembers))
+	for _, tm := range teamMembers {
+		if profile, exists := profileMap[tm.UserID]; exists {
+			members = append(members, ProjectMemberResponse{
+				UserID:         profile.UserUUID,
+				FirstName:      profile.FirstName,
+				LastName:       profile.LastName,
+				Email:          profile.Email,
+				ProfilePicture: profile.ProfilePicture,
+				Role:           tm.TeamMemberRole,
+				Department:     tm.TeamMemberDepartment,
+			})
+		}
 	}
-	return false
+
+	return members
 }
