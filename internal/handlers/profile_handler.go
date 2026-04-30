@@ -119,7 +119,7 @@ func (h *ProfileHandler) GetMyProfile(c *gin.Context) {
 		"graduationYear": profile.GraduationYear,
 		"githubLink":     profile.GitHubLink,
 		"linkedInLink":   profile.LinkedInLink,
-		"AboutMe":        profile.AboutMe,
+		"aboutMe":        profile.AboutMe,
 	})
 }
 
