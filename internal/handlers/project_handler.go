@@ -500,7 +500,6 @@ func (h *ProjectHandler) Update(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
-// Deletes a project and removes its team-project links without deleting teams
 func (h *ProjectHandler) Delete(c *gin.Context) {
 	projectID := c.Param("id")
 
@@ -521,7 +520,12 @@ func (h *ProjectHandler) Delete(c *gin.Context) {
 			return err
 		}
 
+		var teamIds []uint
+
 		for _, tp := range teamPairs {
+			// Track the TeamId so we can delete the Team itself later
+			teamIds = append(teamIds, tp.TeamId)
+
 			var memberPairs []models.TeamMemberPair
 			if err := tx.Where("team_id = ?", tp.TeamId).Find(&memberPairs).Error; err != nil {
 				return err
@@ -547,6 +551,12 @@ func (h *ProjectHandler) Delete(c *gin.Context) {
 
 		if err := tx.Where("project_id = ?", project.ID).Delete(&models.TeamProjectPair{}).Error; err != nil {
 			return err
+		}
+
+		if len(teamIds) > 0 {
+			if err := tx.Where("id IN ?", teamIds).Delete(&models.Team{}).Error; err != nil {
+				return err
+			}
 		}
 
 		result := tx.Delete(&models.Project{}, "id = ?", project.ID)
