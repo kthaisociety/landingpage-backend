@@ -121,12 +121,13 @@ func (h *ProjectHandler) Get(c *gin.Context) {
 // Creates a new project, team, and sets up contributors via TeamMembers
 func (h *ProjectHandler) Create(c *gin.Context) {
 	var input struct {
+		// Enforce required fields based on DB constraints
 		Title              string               `json:"title" binding:"required"`
-		OneLineDescription string               `json:"oneLineDescription"`
-		Categories         string               `json:"categories"`
-		TechStack          string               `json:"techStack"`
-		ProblemImpact      string               `json:"problemImpact"`
-		KeyFeatures        string               `json:"keyFeatures"`
+		OneLineDescription string               `json:"oneLineDescription" binding:"required"`
+		Categories         string               `json:"categories" binding:"required"`
+		TechStack          string               `json:"techStack" binding:"required"`
+		ProblemImpact      string               `json:"problemImpact" binding:"required"`
+		KeyFeatures        string               `json:"keyFeatures" binding:"required"`
 		Status             models.ProjectStatus `json:"status"`
 		Screenshots        string               `json:"screenshots"`
 		RepoUrl            string               `json:"repoUrl"`
@@ -143,9 +144,12 @@ func (h *ProjectHandler) Create(c *gin.Context) {
 		return
 	}
 
-	// Default status if empty
+	// Validate Status against enum
 	if input.Status == "" {
-		input.Status = "Idea"
+		input.Status = models.ProjectStatusIdea
+	} else if !isValidProjectStatus(input.Status) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid project status: %s", input.Status)})
+		return
 	}
 
 	var project models.Project
@@ -300,6 +304,40 @@ func (h *ProjectHandler) Update(c *gin.Context) {
 		return
 	}
 
+	// Prevent passing empty strings to NOT NULL columns
+	if input.Title != nil && *input.Title == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "title cannot be empty"})
+		return
+	}
+	if input.OneLineDescription != nil && *input.OneLineDescription == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "oneLineDescription cannot be empty"})
+		return
+	}
+	if input.Categories != nil && *input.Categories == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "categories cannot be empty"})
+		return
+	}
+	if input.TechStack != nil && *input.TechStack == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "techStack cannot be empty"})
+		return
+	}
+	if input.ProblemImpact != nil && *input.ProblemImpact == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "problemImpact cannot be empty"})
+		return
+	}
+	if input.KeyFeatures != nil && *input.KeyFeatures == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "keyFeatures cannot be empty"})
+		return
+	}
+
+	// Validate Status against Enum if provided
+	if input.Status != nil {
+		if !isValidProjectStatus(*input.Status) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid project status: %s", *input.Status)})
+			return
+		}
+	}
+
 	// Run all updates and deletions in a transaction
 	err = h.db.Transaction(func(tx *gorm.DB) error {
 
@@ -423,7 +461,6 @@ func (h *ProjectHandler) Update(c *gin.Context) {
 			}
 			var existingMembers []existingMemberData
 
-			// Corrected: Added .Error checking to prevent silent DB failures
 			if err := tx.Table("team_members").
 				Select("team_members.id as team_member_id, users.email, team_members.team_member_role as role, team_members.team_member_department as department").
 				Joins("JOIN team_member_pairs ON team_member_pairs.team_member_id = team_members.id").
@@ -438,7 +475,6 @@ func (h *ProjectHandler) Update(c *gin.Context) {
 				if incoming, exists := newContributorsMap[ext.Email]; exists {
 					// User is in both lists. Check if role/department changed
 					if ext.Role != incoming.Role || ext.Department != incoming.Department {
-						// Corrected: Added .Error check on updates
 						if err := tx.Model(&models.TeamMember{}).Where("id = ?", ext.TeamMemberID).Updates(map[string]interface{}{
 							"team_member_role":       incoming.Role,
 							"team_member_department": incoming.Department,
@@ -450,7 +486,6 @@ func (h *ProjectHandler) Update(c *gin.Context) {
 					delete(newContributorsMap, ext.Email)
 				} else {
 					// User is NOT in the new list. Remove them from the team.
-					// Corrected: Added .Error check on deletes
 					if err := tx.Where("team_id = ? AND team_member_id = ?", team.ID, ext.TeamMemberID).Delete(&models.TeamMemberPair{}).Error; err != nil {
 						return err
 					}
@@ -500,6 +535,7 @@ func (h *ProjectHandler) Update(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
+// Deletes a project and its associated teams, team members, and links
 func (h *ProjectHandler) Delete(c *gin.Context) {
 	projectID := c.Param("id")
 
@@ -682,4 +718,17 @@ func (h *ProjectHandler) loadTeamMembers(teamID uint, projectUUID uuid.UUID) []P
 	}
 
 	return members
+}
+
+// isValidProjectStatus checks if the provided status matches the allowed enum values
+func isValidProjectStatus(status models.ProjectStatus) bool {
+	switch status {
+	case models.ProjectStatusIdea,
+		models.ProjectStatusPrototype,
+		models.ProjectStatusDevelopment,
+		models.ProjectStatusBeta,
+		models.ProjectStatusLive:
+		return true
+	}
+	return false
 }
