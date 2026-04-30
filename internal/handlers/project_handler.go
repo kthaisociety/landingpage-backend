@@ -37,10 +37,6 @@ func (h *ProjectHandler) Register(r *gin.RouterGroup) {
 		authenticated.POST("", h.Create)
 		authenticated.PUT("/:id", h.Update)
 		authenticated.DELETE("/:id", h.Delete)
-
-		// not needed anymore
-		// authenticated.POST("/:id/members", h.AddMember)
-		// authenticated.DELETE("/:id/members/:userId", h.RemoveMember)
 	}
 }
 
@@ -222,7 +218,6 @@ func (h *ProjectHandler) Create(c *gin.Context) {
 			// Look up the user by email
 			var user models.User
 			if err := tx.Where("email = ?", email).First(&user).Error; err != nil {
-				// Abort transaction if user provided by frontend doesn't actually exist
 				return fmt.Errorf("user with email %s not found: %w", email, err)
 			}
 
@@ -239,7 +234,7 @@ func (h *ProjectHandler) Create(c *gin.Context) {
 			// Pair the new TeamMember to the Team
 			teamMemberPair := models.TeamMemberPair{
 				TeamId:       team.ID,
-				TeamMemberId: teamMember.ID, // UserID removed per your schema, matching TeamMember
+				TeamMemberId: teamMember.ID,
 			}
 			if err := tx.Create(&teamMemberPair).Error; err != nil {
 				return fmt.Errorf("failed to pair member to team: %w", err)
@@ -251,7 +246,8 @@ func (h *ProjectHandler) Create(c *gin.Context) {
 
 	if err != nil {
 		log.Printf("Error creating project: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		// Ensure PII/Raw error strings are not returned to the client directly
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create project and synchronize contributors."})
 		return
 	}
 
@@ -427,29 +423,40 @@ func (h *ProjectHandler) Update(c *gin.Context) {
 			}
 			var existingMembers []existingMemberData
 
-			tx.Table("team_members").
+			// Corrected: Added .Error checking to prevent silent DB failures
+			if err := tx.Table("team_members").
 				Select("team_members.id as team_member_id, users.email, team_members.team_member_role as role, team_members.team_member_department as department").
 				Joins("JOIN team_member_pairs ON team_member_pairs.team_member_id = team_members.id").
 				Joins("JOIN users ON users.id = team_members.user_id").
 				Where("team_member_pairs.team_id = ? AND team_members.deleted_at IS NULL", team.ID).
-				Scan(&existingMembers)
+				Scan(&existingMembers).Error; err != nil {
+				return err
+			}
 
 			// Compare existing against incoming
 			for _, ext := range existingMembers {
 				if incoming, exists := newContributorsMap[ext.Email]; exists {
 					// User is in both lists. Check if role/department changed
 					if ext.Role != incoming.Role || ext.Department != incoming.Department {
-						tx.Model(&models.TeamMember{}).Where("id = ?", ext.TeamMemberID).Updates(map[string]interface{}{
+						// Corrected: Added .Error check on updates
+						if err := tx.Model(&models.TeamMember{}).Where("id = ?", ext.TeamMemberID).Updates(map[string]interface{}{
 							"team_member_role":       incoming.Role,
 							"team_member_department": incoming.Department,
-						})
+						}).Error; err != nil {
+							return err
+						}
 					}
 					// Remove from map, so remaining entries in map are purely NEW members
 					delete(newContributorsMap, ext.Email)
 				} else {
 					// User is NOT in the new list. Remove them from the team.
-					tx.Where("team_id = ? AND team_member_id = ?", team.ID, ext.TeamMemberID).Delete(&models.TeamMemberPair{})
-					tx.Where("id = ?", ext.TeamMemberID).Delete(&models.TeamMember{})
+					// Corrected: Added .Error check on deletes
+					if err := tx.Where("team_id = ? AND team_member_id = ?", team.ID, ext.TeamMemberID).Delete(&models.TeamMemberPair{}).Error; err != nil {
+						return err
+					}
+					if err := tx.Where("id = ?", ext.TeamMemberID).Delete(&models.TeamMember{}).Error; err != nil {
+						return err
+					}
 				}
 			}
 
@@ -484,7 +491,8 @@ func (h *ProjectHandler) Update(c *gin.Context) {
 
 	if err != nil {
 		log.Printf("Error updating project %s: %v", projectUUID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		// Ensure PII/Raw error strings are not returned to the client directly
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update project and synchronize contributors."})
 		return
 	}
 
@@ -508,12 +516,39 @@ func (h *ProjectHandler) Delete(c *gin.Context) {
 			return err
 		}
 
-		// Remove all links between this project and any teams.
+		var teamPairs []models.TeamProjectPair
+		if err := tx.Where("project_id = ?", project.ID).Find(&teamPairs).Error; err != nil {
+			return err
+		}
+
+		for _, tp := range teamPairs {
+			var memberPairs []models.TeamMemberPair
+			if err := tx.Where("team_id = ?", tp.TeamId).Find(&memberPairs).Error; err != nil {
+				return err
+			}
+
+			var memberIds []uint
+			for _, mp := range memberPairs {
+				memberIds = append(memberIds, mp.TeamMemberId)
+			}
+
+			// Delete the TeamMember rows
+			if len(memberIds) > 0 {
+				if err := tx.Where("id IN ?", memberIds).Delete(&models.TeamMember{}).Error; err != nil {
+					return err
+				}
+			}
+
+			// Delete the TeamMemberPair rows
+			if err := tx.Where("team_id = ?", tp.TeamId).Delete(&models.TeamMemberPair{}).Error; err != nil {
+				return err
+			}
+		}
+
 		if err := tx.Where("project_id = ?", project.ID).Delete(&models.TeamProjectPair{}).Error; err != nil {
 			return err
 		}
 
-		// Delete the project
 		result := tx.Delete(&models.Project{}, "id = ?", project.ID)
 		if result.Error != nil {
 			return result.Error
@@ -536,133 +571,6 @@ func (h *ProjectHandler) Delete(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"message": "Project deleted successfully"})
 }
-
-// AddMember adds a member to a project
-// func (h *ProjectHandler) AddMember(c *gin.Context) {
-// 	projectID := c.Param("id")
-
-// 	projectUUID, err := uuid.Parse(projectID)
-// 	if err != nil {
-// 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid project ID"})
-// 		return
-// 	}
-
-// 	var input struct {
-// 		UserID string `json:"user_id" binding:"required"`
-// 	}
-
-// 	if err := c.ShouldBindJSON(&input); err != nil {
-// 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-// 		return
-// 	}
-
-// 	userUUID, err := uuid.Parse(input.UserID)
-// 	if err != nil {
-// 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
-// 		return
-// 	}
-
-// 	// Find project and team associated with this project
-// 	var project models.Project
-// 	if err := h.db.First(&project, "project_id = ?", projectUUID).Error; err != nil {
-// 		c.JSON(http.StatusNotFound, gin.H{"error": "Project not found"})
-// 		return
-// 	}
-
-// 	var teamProjectPair models.TeamProjectPair
-// 	if err := h.db.Where("project_id = ?", project.ID).First(&teamProjectPair).Error; err != nil {
-// 		c.JSON(http.StatusNotFound, gin.H{"error": "Project team not found"})
-// 		return
-// 	}
-
-// 	// Verify user exists
-// 	var user models.User
-// 	if err := h.db.First(&user, "user_id = ?", userUUID).Error; err != nil {
-// 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
-// 		return
-// 	}
-
-// 	// Add user to team within a transaction to avoid race conditions
-// 	err = h.db.Transaction(func(tx *gorm.DB) error {
-// 		var count int64
-// 		if err := tx.Model(&models.TeamUserPair{}).
-// 			Where("team_id = ? AND user_id = ?", teamProjectPair.TeamId, user.ID).
-// 			Count(&count).Error; err != nil {
-// 			return err
-// 		}
-// 		if count > 0 {
-// 			return gorm.ErrDuplicatedKey
-// 		}
-
-// 		return tx.Create(&models.TeamUserPair{
-// 			TeamId: teamProjectPair.TeamId,
-// 			UserId: user.ID,
-// 		}).Error
-// 	})
-
-// 	if err != nil {
-// 		if err == gorm.ErrDuplicatedKey {
-// 			c.JSON(http.StatusConflict, gin.H{"error": "User is already a member of this project"})
-// 			return
-// 		}
-// 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add member"})
-// 		return
-// 	}
-
-// 	c.JSON(http.StatusOK, gin.H{"message": "Member added successfully"})
-// }
-
-// // RemoveMember removes a member from a project
-// func (h *ProjectHandler) RemoveMember(c *gin.Context) {
-// 	projectID := c.Param("id")
-// 	userID := c.Param("userId")
-
-// 	projectUUID, err := uuid.Parse(projectID)
-// 	if err != nil {
-// 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid project ID"})
-// 		return
-// 	}
-
-// 	userUUID, err := uuid.Parse(userID)
-// 	if err != nil {
-// 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
-// 		return
-// 	}
-
-// 	// Find project and team associated with this project
-// 	var project models.Project
-// 	if err := h.db.First(&project, "project_id = ?", projectUUID).Error; err != nil {
-// 		c.JSON(http.StatusNotFound, gin.H{"error": "Project not found"})
-// 		return
-// 	}
-
-// 	var teamProjectPair models.TeamProjectPair
-// 	if err := h.db.Where("project_id = ?", project.ID).First(&teamProjectPair).Error; err != nil {
-// 		c.JSON(http.StatusNotFound, gin.H{"error": "Project team not found"})
-// 		return
-// 	}
-
-// 	// Verify user exists
-// 	var user models.User
-// 	if err := h.db.First(&user, "user_id = ?", userUUID).Error; err != nil {
-// 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
-// 		return
-// 	}
-
-// 	// Remove user from team
-// 	result := h.db.Where("team_id = ? AND user_id = ?", teamProjectPair.TeamId, user.ID).
-// 		Delete(&models.TeamUserPair{})
-// 	if result.Error != nil {
-// 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to remove member"})
-// 		return
-// 	}
-// 	if result.RowsAffected == 0 {
-// 		c.JSON(http.StatusNotFound, gin.H{"error": "User is not a member of this project"})
-// 		return
-// 	}
-
-// 	c.JSON(http.StatusOK, gin.H{"message": "Member removed successfully"})
-// }
 
 // buildProjectResponse constructs a ProjectResponse with all members
 func (h *ProjectHandler) buildProjectResponse(project models.Project) ProjectResponse {
