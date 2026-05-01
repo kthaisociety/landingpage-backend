@@ -210,11 +210,15 @@ func (h *JobListingHandler) SingleUpload(c *gin.Context) {
 	if v, ok := payload["company_description"].(string); ok {
 		cdesc = v
 	}
+	var cwebsite string
+	if v, ok := payload["company_website"].(string); ok {
+		cwebsite = v
+	}
 
 	// company may exist in database
 	if v, exists := payload["company"]; exists {
 		cv := v.(string)
-		comp, err := models.NewCompany(cv, cdesc, file, h.db, h.cfg)
+		comp, err := models.NewCompany(cv, cdesc, cwebsite, file, h.db, h.cfg)
 		if err != nil {
 			log.Printf("Error creating company: %s\n", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err})
