@@ -82,3 +82,11 @@ func (r2 R2Client) PutObject(key string, obj []byte) error {
 	})
 	return err
 }
+
+func (r2 R2Client) DeleteObject(key string) error {
+	_, err := r2.R2_client.DeleteObject(context.TODO(), &s3.DeleteObjectInput{
+		Bucket: aws.String(r2.BucketName),
+		Key:    aws.String(key),
+	})
+	return err
+}
