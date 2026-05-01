@@ -2,6 +2,7 @@ package models
 
 import (
 	"backend/internal/utils"
+	"log"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -45,4 +46,16 @@ func NewBlobData(name string, ftype string, association_id uuid.UUID, blob []byt
 		return bd, err
 	}
 	return bd, nil
+}
+
+func (bd BlobData) DeleteData(blobId *uuid.UUID, db *gorm.DB, r2 utils.R2Client) error {
+	if err := r2.DeleteObject(bd.BlobId.String()); err != nil {
+		log.Printf("Warning: Failed to delete physical file from R2: %s\n", err)
+	}
+
+	if err := db.Where("blob_id=?", blobId).Delete(&bd).Error; err != nil {
+		return err
+	}
+
+	return nil
 }
