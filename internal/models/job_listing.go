@@ -9,7 +9,7 @@ import (
 
 type JobListing struct {
 	gorm.Model
-	Id          uuid.UUID `gorm:"uniqueIndex" json:"id"`
+	Id          uuid.UUID `gorm:"uniqueIndex;default:gen_random_uuid()" json:"id"`
 	Name        string    `json:"title"`
 	Description string    `json:"description"`
 	Salary      string    `json:"salary"` // usually a range, or list of ints?
