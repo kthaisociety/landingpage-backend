@@ -93,9 +93,9 @@ func LoadConfig() (*Config, error) {
 	cfg.SessionKey = getEnv("SESSION_KEY", "")
 	cfg.DevelopmentMode = getEnv("DEVELOPMENT", "true") == "true"
 
-	// Asymetric key (priate/public) is used for jwt
-	cfg.JwtSigningKey = getEnv("JWTSigningKey", "test123456")
-	cfg.JwtValidatingKey = getEnv("JWTValidatingKey", "test123456")
+	// Asymmetric keys (PEM). Dokploy/single-line env often uses \n escapes or wrapping quotes.
+	cfg.JwtSigningKey = normalizePEMEnv(getEnv("JWTSigningKey", "test123456"))
+	cfg.JwtValidatingKey = normalizePEMEnv(getEnv("JWTValidatingKey", "test123456"))
 
 	//Cloudflare R2
 	cfg.R2_bucket_name = getEnv("R2_Bucket", "")
@@ -124,6 +124,16 @@ func LoadConfig() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func normalizePEMEnv(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) >= 2 && ((s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '\'' && s[len(s)-1] == '\'')) {
+		s = s[1 : len(s)-1]
+	}
+	// Env files and some hosts store PEM as one line with literal \n sequences.
+	s = strings.ReplaceAll(s, "\\n", "\n")
+	return strings.TrimSpace(s)
 }
 
 func getEnv(key, defaultValue string) string {
