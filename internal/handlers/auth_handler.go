@@ -103,8 +103,8 @@ func InitAuth(cfg *config.Config) error {
 	clientID := cfg.OAuth.GoogleClientID
 	clientSecret := cfg.OAuth.GoogleClientSecret
 
-	fmt.Printf("InitAuth - Client ID length: %d\n", len(clientID))
-	fmt.Printf("InitAuth - Client Secret length: %d\n", len(clientSecret))
+	log.Printf("InitAuth - Client ID length: %d", len(clientID))
+	log.Printf("InitAuth - Client Secret length: %d", len(clientSecret))
 
 	goth.UseProviders(
 		google.New(
@@ -235,6 +235,8 @@ func (h *AuthHandler) BeginGoogleAuth(c *gin.Context) {
 }
 
 func (h *AuthHandler) GoogleCallback(c *gin.Context) {
+	log.Printf("oauth: google callback received from %s", c.ClientIP())
+
 	provider, err := goth.GetProvider("google")
 	if err != nil {
 		log.Printf("Failed to get provider: %v", err)

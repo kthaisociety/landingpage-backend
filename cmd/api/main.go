@@ -182,6 +182,8 @@ func main() {
 	// Initialize handlers
 	setupRoutes(r, db, mailchimpApi, cfg)
 
+	log.Printf("listening on :%s", cfg.Server.Port)
+
 	// Run the server
 	r.Run(":" + cfg.Server.Port)
 }
