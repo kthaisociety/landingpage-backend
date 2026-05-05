@@ -172,7 +172,7 @@ type UserClaims struct {
 	jwt.RegisteredClaims
 }
 
-func WriteJWT(email string, roles []string, Id uuid.UUID, key string, validMinutes int) string {
+func WriteJWT(email string, roles []string, Id uuid.UUID, key string, validMinutes int) (string, error) {
 	// Create claims with multiple fields populated
 	claims := UserClaims{
 		email,
@@ -187,21 +187,14 @@ func WriteJWT(email string, roles []string, Id uuid.UUID, key string, validMinut
 		},
 	}
 
-	// token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	// ss, err := token.SignedString([]byte(key))
-	// if err != nil {
-	// 	log.Printf("Failed to generate JWT token: %v\n", err)
-	// }
-	// return ss
-
 	privateKey, err := jwt.ParseRSAPrivateKeyFromPEM([]byte(key))
 	if err != nil {
-		log.Fatalf("Fatal error parsing private key: %v", err)
+		return "", fmt.Errorf("JWT signing key must be PEM-encoded PKCS1/PK8 RSA private key: %w", err)
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 	signedToken, err := token.SignedString(privateKey)
 	if err != nil {
-		log.Printf("Failed to generate JWT token: %v\n", err)
+		return "", fmt.Errorf("sign JWT: %w", err)
 	}
-	return signedToken
+	return signedToken, nil
 }

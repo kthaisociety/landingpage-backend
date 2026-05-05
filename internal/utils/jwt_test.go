@@ -73,7 +73,10 @@ mQWo5Mg2hOqaTKRCpdodXb4=
 -----END PRIVATE KEY-----
 `
 	uuid, _ := uuid.Parse("50c06e4d-b594-4489-9d4b-a513f63c90bd")
-	newJwt := WriteJWT("vivienne@kthais.com", []string{"user", "admin", "queen"}, uuid, key, 15)
+	newJwt, err := WriteJWT("vivienne@kthais.com", []string{"user", "admin", "queen"}, uuid, key, 15)
+	if err != nil {
+		t.Fatalf("WriteJWT: %v", err)
+	}
 	valid, _ := ParseAndVerify(newJwt, key)
 	if !valid {
 		t.Errorf("Could not validate JWT: \n")
@@ -111,6 +114,9 @@ mQWo5Mg2hOqaTKRCpdodXb4=
 -----END PRIVATE KEY-----
 `
 	uuid, _ := uuid.Parse("50c06e4d-b594-4489-9d4b-a513f63c90bd")
-	newJwt := WriteJWT("vivienne@kthais.com", []string{"user", "admin", "queen"}, uuid, key, 15)
+	newJwt, err := WriteJWT("vivienne@kthais.com", []string{"user", "admin", "queen"}, uuid, key, 15)
+	if err != nil {
+		t.Fatalf("WriteJWT: %v", err)
+	}
 	log.Printf("JWT Generated: %v\n", newJwt)
 }

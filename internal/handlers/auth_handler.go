@@ -95,7 +95,12 @@ func (h *AuthHandler) RefreshToken(c *gin.Context) {
 	if result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not retreive user info"})
 	}
-	newToken := utils.WriteJWT(user.Email, user.Roles, user.UserId, h.jwtSigningKey, 15)
+	newToken, err := utils.WriteJWT(user.Email, user.Roles, user.UserId, h.jwtSigningKey, 15)
+	if err != nil {
+		log.Printf("Refresh failed: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not refresh token"})
+		return
+	}
 	c.SetCookie("jwt", newToken, 3600, "/", "localhost:3000", false, false)
 }
 
@@ -404,7 +409,12 @@ func (h *AuthHandler) GoogleCallback(c *gin.Context) {
 	// } else {
 	// 	roles = []string{"user"}
 	// }
-	authJwt := utils.WriteJWT(email, user.Roles, user.UserId, h.jwtSigningKey, 15)
+	authJwt, err := utils.WriteJWT(email, user.Roles, user.UserId, h.jwtSigningKey, 15)
+	if err != nil {
+		log.Printf("JWT signing failed after OAuth: %v", err)
+		redirectWithError(c, "Server misconfigured: invalid JWT signing key")
+		return
+	}
 	c.SetCookie("jwt", authJwt, 3600, "/", "localhost:3000", false, false)
 
 	// changed dashboardURL to frontendURL
