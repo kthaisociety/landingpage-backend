@@ -198,7 +198,8 @@ func setupRoutes(r *gin.Engine, db *gorm.DB, mailchimpApi *mailchimp.MailchimpAP
 
 	// Register all handlers
 	allHandlers := []handlers.Handler{
-		handlers.NewAuthHandler(db, mailchimpApi, cfg.JwtSigningKey),
+		handlers.NewAuthHandler(db, mailchimpApi, cfg),
+		handlers.NewNewsletterHandler(mailchimpApi),
 		handlers.NewProfileHandler(db, mailchimpApi, cfg),
 		handlers.NewAdminHandler(db, cfg),
 		handlers.NewCompanyHandler(db, cfg),

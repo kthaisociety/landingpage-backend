@@ -28,12 +28,19 @@ import (
 type AuthHandler struct {
 	db               *gorm.DB
 	mailchimp        *mailchimp.MailchimpAPI
+	cfg              *config.Config
 	jwtSigningKey    string
 	jwtValidatingKey string
 }
 
-func NewAuthHandler(db *gorm.DB, mailchimp *mailchimp.MailchimpAPI, skey string) *AuthHandler {
-	return &AuthHandler{db: db, mailchimp: mailchimp, jwtSigningKey: skey}
+func NewAuthHandler(db *gorm.DB, mailchimp *mailchimp.MailchimpAPI, cfg *config.Config) *AuthHandler {
+	return &AuthHandler{
+		db:               db,
+		mailchimp:        mailchimp,
+		cfg:              cfg,
+		jwtSigningKey:    cfg.JwtSigningKey,
+		jwtValidatingKey: cfg.JwtValidatingKey,
+	}
 }
 
 // Update Register method to match the Handler interface
@@ -101,7 +108,7 @@ func (h *AuthHandler) RefreshToken(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not refresh token"})
 		return
 	}
-	c.SetCookie("jwt", newToken, 3600, "/", "localhost:3000", false, false)
+	h.setJWTCookie(c, newToken, 3600)
 }
 
 func InitAuth(cfg *config.Config) error {
@@ -415,7 +422,7 @@ func (h *AuthHandler) GoogleCallback(c *gin.Context) {
 		redirectWithError(c, "Server misconfigured: invalid JWT signing key")
 		return
 	}
-	c.SetCookie("jwt", authJwt, 3600, "/", "localhost:3000", false, false)
+	h.setJWTCookie(c, authJwt, 3600)
 
 	// changed dashboardURL to frontendURL
 	c.Redirect(http.StatusTemporaryRedirect, frontendURL)
@@ -445,7 +452,15 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 	session := sessions.Default(c)
 	session.Clear()
 	session.Save()
-	// clear the jwt from cookies, also change the hardcoded url later
-	c.SetCookie("jwt", "", -1, "/", "localhost:3000", false, false)
+	h.setJWTCookie(c, "", -1)
 	c.JSON(http.StatusOK, gin.H{"message": "Successfully logged out"})
+}
+
+func (h *AuthHandler) setJWTCookie(c *gin.Context, value string, maxAge int) {
+	sameSite := http.SameSiteLaxMode
+	if !h.cfg.DevelopmentMode {
+		sameSite = http.SameSiteStrictMode
+	}
+	c.SetSameSite(sameSite)
+	c.SetCookie("jwt", value, maxAge, "/", h.cfg.CookieDomain, h.cfg.JwtCookieSecure, false)
 }

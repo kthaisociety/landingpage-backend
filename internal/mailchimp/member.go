@@ -127,3 +127,21 @@ func (api *MailchimpAPI) SubscribeMember(profile *models.Profile) error {
 
 	return nil
 }
+
+// SubscribeNewsletter adds an email-only signup (e.g. landing page form). Existing members are left unchanged.
+func (api *MailchimpAPI) SubscribeNewsletter(email string) error {
+	_, memberResErr := api.GetMember(&email)
+	if memberResErr != nil {
+		serr, ok := memberResErr.(*MailchimpAPIError)
+		if ok && serr.Status == http.StatusNotFound {
+			req := &MemberRequest{
+				Email:  email,
+				Status: Subscribed,
+			}
+			_, addErr := api.AddMember(req)
+			return addErr
+		}
+		return memberResErr
+	}
+	return nil
+}

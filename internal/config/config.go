@@ -2,6 +2,7 @@ package config
 
 import (
 	"log"
+	"net"
 	"os"
 	"strings"
 )
@@ -31,6 +32,10 @@ type Config struct {
 	}
 	SessionKey      string
 	DevelopmentMode bool
+	// CookieDomain is the Domain attribute for JWT cookies. Empty means omit Domain (host-only for the API host).
+	// Never include a port; see normalizeCookieDomain.
+	CookieDomain    string
+	JwtCookieSecure bool
 
 	Mailchimp struct {
 		APIKey string
@@ -93,6 +98,9 @@ func LoadConfig() (*Config, error) {
 	cfg.SessionKey = getEnv("SESSION_KEY", "")
 	cfg.DevelopmentMode = getEnv("DEVELOPMENT", "true") == "true"
 
+	cfg.CookieDomain = normalizeCookieDomain(getEnv("COOKIE_DOMAIN", ""))
+	cfg.JwtCookieSecure = strings.EqualFold(getEnv("SECURE_COOKIE", "false"), "true")
+
 	// Asymetric key (priate/public) is used for jwt
 	cfg.JwtSigningKey = getEnv("JWTSigningKey", "test123456")
 	cfg.JwtValidatingKey = getEnv("JWTValidatingKey", "test123456")
@@ -124,6 +132,18 @@ func LoadConfig() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// normalizeCookieDomain strips an accidental :port suffix. Cookie Domain attributes must not contain ports.
+func normalizeCookieDomain(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(raw); err == nil {
+		return host
+	}
+	return raw
 }
 
 func getEnv(key, defaultValue string) string {
