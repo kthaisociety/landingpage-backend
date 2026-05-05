@@ -24,6 +24,38 @@ import (
 	"gorm.io/gorm"
 )
 
+// assertPostgresCanMigrate exits if the DB role cannot CREATE in public (common after PostgreSQL 15).
+func assertPostgresCanMigrate(db *gorm.DB, cfg *config.Config) {
+	var canCreate bool
+	err := db.Raw("SELECT has_schema_privilege(current_user, 'public', 'CREATE')").Scan(&canCreate).Error
+	if err != nil {
+		log.Printf("warning: could not check schema privileges: %v", err)
+		return
+	}
+	if !canCreate {
+		log.Fatalf(
+			"migration blocked: user %q cannot CREATE on schema public (PostgreSQL 15+ tightened defaults). "+
+				"Connect as superuser and run: GRANT CREATE ON SCHEMA public TO %s; GRANT USAGE ON SCHEMA public TO %s; "+
+				"(or ALTER DATABASE %s OWNER TO %s;)",
+			cfg.Database.User, cfg.Database.User, cfg.Database.User, cfg.Database.DBName, cfg.Database.User,
+		)
+	}
+}
+
+func verifyPublicTablesAfterMigrate(db *gorm.DB) {
+	var n int64
+	err := db.Raw(`
+		SELECT COUNT(*) FROM information_schema.tables
+		WHERE table_schema = 'public' AND table_type = 'BASE TABLE'`).Scan(&n).Error
+	if err != nil {
+		log.Fatal("failed to verify migrated tables:", err)
+	}
+	log.Printf("database: %d tables in schema public after AutoMigrate", n)
+	if n == 0 {
+		log.Fatal("AutoMigrate reported success but schema public has no tables; wrong DB_NAME or migration did not run")
+	}
+}
+
 func generateSecureKey() ([]byte, error) {
 	key := make([]byte, 32) // 256 bits
 	_, err := rand.Read(key)
@@ -111,6 +143,8 @@ func main() {
 		log.Fatal("Failed to connect to database:", err)
 	}
 
+	assertPostgresCanMigrate(db, cfg)
+
 	// Auto migrate the schema
 	err = db.AutoMigrate(
 		&models.User{},
@@ -129,6 +163,8 @@ func main() {
 	if err != nil {
 		log.Fatal("Failed to migrate database:", err)
 	}
+
+	verifyPublicTablesAfterMigrate(db)
 
 	// Initialize auth
 	if err := handlers.InitAuth(cfg); err != nil {
