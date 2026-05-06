@@ -27,22 +27,28 @@ func NewProfileHandler(db *gorm.DB, mailchimp *mailchimp.MailchimpAPI, cfg *conf
 
 func (h *ProfileHandler) Register(r *gin.RouterGroup) {
 	profile := r.Group("/profile")
-	{
-		// Auth required endpoints
-		// changed the endpoints as there was a url parsing problem in frontend. (me, update, create) are added.
-		profile.Use(middleware.AuthRequiredJWT(h.cfg))
-		profile.GET("/me", h.GetMyProfile)
-		profile.PUT("/update", h.UpdateMyProfile)
-		profile.POST("/create", h.CreateMyProfile)
 
-		// Admin-only endpoints
-		admin := profile.Group("/admin")
-		admin.Use(middleware.RoleRequired(h.cfg, "admin"))
-		admin.GET("", h.ListAllProfiles)
-		admin.PUT("/:userId", h.UpdateProfile)
-		admin.GET("/:userId", h.GetProfile)
-		admin.DELETE("/:userId", h.DeleteProfile)
-	}
+	// Public endpoint — no auth needed to serve profile pictures
+	profile.GET("/picture", h.GetProfilePicture)
+
+	// Public profile page endpoint
+	profile.GET("/public/:profileId", h.GetPublicProfile)
+
+	// Auth-required endpoints
+	protected := profile.Group("")
+	protected.Use(middleware.AuthRequiredJWT(h.cfg))
+	protected.GET("/me", h.GetMyProfile)
+	protected.PUT("/update", h.UpdateMyProfile)
+	protected.POST("/create", h.CreateMyProfile)
+	protected.POST("/picture", h.UploadProfilePicture)
+
+	// Admin-only endpoints
+	admin := protected.Group("/admin")
+	admin.Use(middleware.RoleRequired(h.cfg, "admin"))
+	admin.GET("", h.ListAllProfiles)
+	admin.PUT("/:userId", h.UpdateProfile)
+	admin.GET("/:userId", h.GetProfile)
+	admin.DELETE("/:userId", h.DeleteProfile)
 }
 
 // GetMyProfile returns the current user's profile
@@ -120,6 +126,7 @@ func (h *ProfileHandler) GetMyProfile(c *gin.Context) {
 		"githubLink":     profile.GitHubLink,
 		"linkedInLink":   profile.LinkedInLink,
 		"aboutMe":        profile.AboutMe,
+		"profilePicture": profile.ProfilePicture,
 	})
 }
 
@@ -400,6 +407,181 @@ func (h *ProfileHandler) UpdateProfile(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusInternalServerError, gin.H{"error": "User not exist"})
+}
+
+// UploadProfilePicture handles profile picture uploads for the authenticated user
+func (h *ProfileHandler) UploadProfilePicture(c *gin.Context) {
+	token := utils.GetJWT(c)
+	claims := utils.GetClaims(token)
+	userID, err := uuid.Parse(claims["user_id"].(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
+		return
+	}
+
+	file, err := c.FormFile("picture")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Picture file is required"})
+		return
+	}
+
+	f, err := file.Open()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to open file"})
+		return
+	}
+	defer f.Close()
+
+	fdata := make([]byte, file.Size)
+	if _, err := f.Read(fdata); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read file"})
+		return
+	}
+
+	parts := strings.Split(file.Filename, ".")
+	if len(parts) < 2 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid file name"})
+		return
+	}
+	name := strings.Join(parts[:len(parts)-1], ".")
+	ftype := parts[len(parts)-1]
+
+	r2, err := utils.InitS3SDK(h.cfg)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Storage unavailable"})
+		return
+	}
+
+	var profile models.Profile
+	if err := h.db.Where("user_uuid = ?", userID).First(&profile).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Profile not found. Create your profile first."})
+		return
+	}
+
+	// Delete old picture if one exists
+	if profile.ProfilePicture != "" {
+		oldUUID, parseErr := uuid.Parse(profile.ProfilePicture)
+		if parseErr == nil {
+			var oldBlob models.BlobData
+			if h.db.First(&oldBlob, "blob_id = ?", oldUUID).Error == nil {
+				_ = oldBlob.DeleteData(&oldUUID, h.db, r2)
+			}
+		}
+	}
+
+	blob, err := models.NewBlobData(name, ftype, userID, fdata, h.db, r2)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload picture"})
+		return
+	}
+
+	profile.ProfilePicture = blob.BlobId.String()
+	if err := h.db.Save(&profile).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":        "Profile picture updated",
+		"profilePicture": profile.ProfilePicture,
+	})
+}
+
+// GetProfilePicture serves a profile picture by blob UUID
+func (h *ProfileHandler) GetProfilePicture(c *gin.Context) {
+	pictureID := c.Query("id")
+	picUUID, err := uuid.Parse(pictureID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid picture ID"})
+		return
+	}
+
+	var blob models.BlobData
+	if err := h.db.First(&blob, "blob_id = ?", picUUID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Picture not found"})
+		return
+	}
+
+	r2, err := utils.InitS3SDK(h.cfg)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Storage unavailable"})
+		return
+	}
+
+	data, err := blob.GetData(r2)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch picture"})
+		return
+	}
+
+	contentType := "image/jpeg"
+	switch strings.ToLower(blob.FType) {
+	case "png":
+		contentType = "image/png"
+	case "gif":
+		contentType = "image/gif"
+	case "webp":
+		contentType = "image/webp"
+	}
+
+	c.Data(http.StatusOK, contentType, data)
+}
+
+// GetPublicProfile returns a public-safe profile by profile UUID (no auth required)
+func (h *ProfileHandler) GetPublicProfile(c *gin.Context) {
+	profileID := c.Param("profileId")
+
+	// Accept either the profile UUID (profiles.id) or the user UUID (profiles.user_uuid)
+	var profile models.Profile
+	if err := h.db.Where("id = ? OR user_uuid = ?", profileID, profileID).First(&profile).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Profile not found"})
+		return
+	}
+
+	// Fetch team history
+	type teamRow struct {
+		ID           uint   `gorm:"column:id"`
+		Role         string `gorm:"column:role"`
+		Department   string `gorm:"column:department"`
+		AcademicYear string `gorm:"column:academic_year"`
+	}
+	var teamHistory []teamRow
+	h.db.Table("team_members").
+		Select("id, team_member_role AS role, team_member_department AS department, academic_year").
+		Where("user_id = ? AND deleted_at IS NULL", profile.UserId).
+		Order("academic_year DESC").
+		Scan(&teamHistory)
+
+	// Fetch contributed projects
+	type projectRow struct {
+		ProjectID          string `gorm:"column:project_id" json:"id"`
+		ProjectName        string `gorm:"column:project_name" json:"title"`
+		OneLineDescription string `gorm:"column:one_line_description" json:"oneLineDescription"`
+		Status             string `gorm:"column:status" json:"status"`
+		CoverImage         string `gorm:"column:cover_image" json:"coverImage"`
+	}
+	var projects []projectRow
+	h.db.Table("team_member_pairs").
+		Select("projects.project_id, projects.project_name, projects.one_line_description, projects.status, projects.cover_image").
+		Joins("JOIN team_member_pairs ON team_member_pairs.team_member_id = ?", profile.UserId).
+		Joins("JOIN projects ON projects.id = team_member_pairs.project_id").
+		Where("projects.deleted_at IS NULL").
+		Scan(&projects)
+
+	c.JSON(http.StatusOK, gin.H{
+		"id":             profile.Id,
+		"firstName":      profile.FirstName,
+		"lastName":       profile.LastName,
+		"profilePicture": profile.ProfilePicture,
+		"university":     profile.University,
+		"programme":      profile.Programme,
+		"graduationYear": profile.GraduationYear,
+		"githubLink":     profile.GitHubLink,
+		"linkedinLink":   profile.LinkedInLink,
+		"aboutMe":        profile.AboutMe,
+		"teamHistory":    teamHistory,
+		"projects":       projects,
+	})
 }
 
 // DeleteProfile allows an admin to delete a profile

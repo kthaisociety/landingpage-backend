@@ -16,4 +16,5 @@ type TeamMember struct {
 	DeletedAt            gorm.DeletedAt `gorm:"index" json:"-"`
 	TeamMemberRole       string         `gorm:"type:text" json:"role"`
 	TeamMemberDepartment string         `gorm:"type:text" json:"team"`
+	AcademicYear         string         `gorm:"type:varchar(20)" json:"academic_year"` // e.g. "2024/2025"
 }

@@ -10,14 +10,14 @@ import (
 type JobListing struct {
 	gorm.Model
 	Id          uuid.UUID `gorm:"uniqueIndex;default:gen_random_uuid()" json:"id"`
-	Name        string    `json:"title"`
-	Description string    `json:"description"`
-	Salary      string    `json:"salary"` // usually a range, or list of ints?
-	Location    string    `json:"location"`
-	JobType     string    `json:"jobType"` // full-time, part-time, internship, etc.
-	CompanyId   uuid.UUID `json:"company"`
-	StartDate   time.Time `json:"startdate"`
-	EndDate     time.Time `json:"enddate"`
+	Name        string    `gorm:"not null" json:"title"`
+	Description string    `gorm:"type:text;not null" json:"description"`
+	Salary      string    `json:"salary"`
+	Location    string    `gorm:"not null" json:"location"`
+	JobType     string    `gorm:"not null" json:"jobType"`
+	CompanyId   uuid.UUID `gorm:"not null" json:"company"`
+	StartDate   time.Time `gorm:"not null" json:"startdate"`
+	EndDate     time.Time `gorm:"not null" json:"enddate"`
 	AppUrl      string    `json:"appurl"`
 	ContactInfo string    `json:"contact"`
 }

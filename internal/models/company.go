@@ -14,9 +14,9 @@ import (
 type Company struct {
 	gorm.Model
 	Id          uuid.UUID `gorm:"uniqueIndex" json:"id"`
-	Name        string    `json:"name"`
-	Description string    `json:"description"`
-	WebsiteUrl  string    `json:"websiteUrl"`
+	Name        string    `gorm:"not null" json:"name"`
+	Description string    `gorm:"not null" json:"description"`
+	WebsiteUrl  string    `gorm:"not null" json:"websiteUrl"`
 	Logo        uuid.UUID `json:"logo"` // reference to a blob_data object
 }
 

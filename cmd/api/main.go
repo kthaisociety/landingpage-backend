@@ -205,6 +205,7 @@ func setupRoutes(r *gin.Engine, db *gorm.DB, mailchimpApi *mailchimp.MailchimpAP
 		handlers.NewCompanyHandler(db, cfg),
 		handlers.NewJobListingHandler(db, cfg),
 		handlers.NewProjectHandler(db, cfg),
+		handlers.NewTeamHandler(db, cfg),
 	}
 
 	for _, h := range allHandlers {
