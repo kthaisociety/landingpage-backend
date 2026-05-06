@@ -540,10 +540,10 @@ func (h *ProfileHandler) GetPublicProfile(c *gin.Context) {
 
 	// Fetch team history
 	type teamRow struct {
-		ID           uint   `gorm:"column:id"`
-		Role         string `gorm:"column:role"`
-		Department   string `gorm:"column:department"`
-		AcademicYear string `gorm:"column:academic_year"`
+		ID           uint   `gorm:"column:id" json:"id"`
+		Role         string `gorm:"column:role" json:"role"`
+		Department   string `gorm:"column:department" json:"department"`
+		AcademicYear string `gorm:"column:academic_year" json:"academicYear"`
 	}
 	var teamHistory []teamRow
 	h.db.Table("team_members").
