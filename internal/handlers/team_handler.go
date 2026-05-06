@@ -27,6 +27,7 @@ type PublicTeamMember struct {
 	FirstName      string `json:"firstName"`
 	LastName       string `json:"lastName"`
 	ProfilePicture string `json:"profilePicture"`
+	GraduationYear int    `json:"graduationYear"`
 	Role           string `json:"role"`
 	Department     string `json:"department"`
 	AcademicYear   string `json:"academicYear"`
@@ -68,6 +69,7 @@ func (h *TeamHandler) GetTeamMembers(c *gin.Context) {
 			profiles.first_name AS first_name,
 			profiles.last_name  AS last_name,
 			profiles.profile_picture AS profile_picture,
+			profiles.graduation_year AS graduation_year,
 			profiles.about_me   AS about_me,
 			profiles.git_hub_link  AS git_hub_link,
 			profiles.linked_in_link AS linked_in_link,
@@ -90,6 +92,7 @@ func (h *TeamHandler) GetTeamMembers(c *gin.Context) {
 		FirstName      string `gorm:"column:first_name"`
 		LastName       string `gorm:"column:last_name"`
 		ProfilePicture string `gorm:"column:profile_picture"`
+		GraduationYear int    `gorm:"column:graduation_year"`
 		AboutMe        string `gorm:"column:about_me"`
 		GitHubLink     string `gorm:"column:git_hub_link"`
 		LinkedInLink   string `gorm:"column:linked_in_link"`
@@ -112,6 +115,7 @@ func (h *TeamHandler) GetTeamMembers(c *gin.Context) {
 			FirstName:      r.FirstName,
 			LastName:       r.LastName,
 			ProfilePicture: r.ProfilePicture,
+			GraduationYear: r.GraduationYear,
 			Role:           r.Role,
 			Department:     r.Department,
 			AcademicYear:   r.AcademicYear,

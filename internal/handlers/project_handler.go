@@ -4,8 +4,12 @@ import (
 	"backend/internal/config"
 	"backend/internal/middleware"
 	"backend/internal/models"
+	"backend/internal/utils"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"mime"
 	"net/http"
 	"strings"
 
@@ -28,16 +32,238 @@ func (h *ProjectHandler) Register(r *gin.RouterGroup) {
 	{
 		// Public endpoints
 		projects.GET("", h.List)
+		projects.GET("/media", h.GetProjectMedia)
 		projects.GET("/:id", h.Get)
 
-		// Authenticated endpoints — admin only for writes
+		// Authenticated member endpoint for project media updates
 		authenticated := projects.Group("")
 		authenticated.Use(middleware.AuthRequiredJWT(h.cfg))
-		authenticated.Use(middleware.RoleRequired(h.cfg, "admin"))
-		authenticated.POST("", h.Create)
-		authenticated.PUT("/:id", h.Update)
-		authenticated.DELETE("/:id", h.Delete)
+		authenticated.PUT("/:id/media", h.UpdateProjectMedia)
+
+		// Admin-only write endpoints
+		admin := authenticated.Group("")
+		admin.Use(middleware.RoleRequired(h.cfg, "admin"))
+		admin.POST("", h.Create)
+		admin.PUT("/:id", h.Update)
+		admin.DELETE("/:id", h.Delete)
 	}
+}
+
+type projectScreenshot struct {
+	Image   string `json:"image"`
+	Caption string `json:"caption"`
+	Alt     string `json:"alt,omitempty"`
+}
+
+func parseProjectScreenshots(raw string) []projectScreenshot {
+	if raw == "" {
+		return []projectScreenshot{}
+	}
+	var screenshots []projectScreenshot
+	if err := json.Unmarshal([]byte(raw), &screenshots); err != nil {
+		return []projectScreenshot{}
+	}
+	return screenshots
+}
+
+func (h *ProjectHandler) UpdateProjectMedia(c *gin.Context) {
+	projectID := c.Param("id")
+	projectUUID, err := uuid.Parse(projectID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid project ID"})
+		return
+	}
+
+	token := utils.GetJWT(c)
+	claims := utils.GetClaims(token)
+	userUUIDStr, ok := claims["user_id"].(string)
+	if !ok || userUUIDStr == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid token"})
+		return
+	}
+
+	userUUID, err := uuid.Parse(userUUIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user"})
+		return
+	}
+
+	var project models.Project
+	if err := h.db.First(&project, "project_id = ?", projectUUID).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Project not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load project"})
+		return
+	}
+
+	var profile models.Profile
+	if err := h.db.Where("user_uuid = ?", userUUID).First(&profile).Error; err != nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Profile not found for user"})
+		return
+	}
+
+	// Allow only contributors on this project to update media.
+	var contributorCount int64
+	if err := h.db.Table("team_members").
+		Joins("JOIN team_member_pairs ON team_member_pairs.team_member_id = team_members.id").
+		Joins("JOIN team_project_pairs ON team_project_pairs.team_id = team_member_pairs.team_id").
+		Where("team_project_pairs.project_id = ? AND team_members.user_id = ? AND team_members.deleted_at IS NULL", project.ID, profile.UserId).
+		Count(&contributorCount).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to validate project contributor"})
+		return
+	}
+	if contributorCount == 0 {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Only project contributors can update project media"})
+		return
+	}
+
+	r2, err := utils.InitS3SDK(h.cfg)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Storage unavailable"})
+		return
+	}
+
+	existingScreenshots := parseProjectScreenshots(project.Screenshots)
+	form, err := c.MultipartForm()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Expected multipart form data"})
+		return
+	}
+
+	newCoverUploaded := false
+	if coverFiles := form.File["coverImage"]; len(coverFiles) > 0 {
+		coverFile := coverFiles[0]
+		reader, openErr := coverFile.Open()
+		if openErr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to open cover image"})
+			return
+		}
+		defer reader.Close()
+
+		data, readErr := io.ReadAll(reader)
+		if readErr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read cover image"})
+			return
+		}
+
+		parts := strings.Split(coverFile.Filename, ".")
+		if len(parts) < 2 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid cover image filename"})
+			return
+		}
+		name := strings.Join(parts[:len(parts)-1], ".")
+		ext := parts[len(parts)-1]
+
+		blob, blobErr := models.NewBlobData(name, ext, userUUID, data, h.db, r2)
+		if blobErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store cover image"})
+			return
+		}
+
+		coverURL := fmt.Sprintf("/api/v1/projects/media?id=%s", blob.BlobId.String())
+		coverEntry := projectScreenshot{
+			Image:   coverURL,
+			Caption: "Cover image",
+			Alt:     "Project cover image",
+		}
+		existingScreenshots = append([]projectScreenshot{coverEntry}, existingScreenshots...)
+		newCoverUploaded = true
+	}
+
+	if screenshotFiles := form.File["screenshots"]; len(screenshotFiles) > 0 {
+		for _, shotFile := range screenshotFiles {
+			reader, openErr := shotFile.Open()
+			if openErr != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to open screenshot"})
+				return
+			}
+
+			data, readErr := io.ReadAll(reader)
+			if readErr != nil {
+				_ = reader.Close()
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read screenshot"})
+				return
+			}
+			_ = reader.Close()
+
+			parts := strings.Split(shotFile.Filename, ".")
+			if len(parts) < 2 {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid screenshot filename"})
+				return
+			}
+			name := strings.Join(parts[:len(parts)-1], ".")
+			ext := parts[len(parts)-1]
+
+			blob, blobErr := models.NewBlobData(name, ext, userUUID, data, h.db, r2)
+			if blobErr != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store screenshot"})
+				return
+			}
+
+			shotURL := fmt.Sprintf("/api/v1/projects/media?id=%s", blob.BlobId.String())
+			existingScreenshots = append(existingScreenshots, projectScreenshot{
+				Image:   shotURL,
+				Caption: "Project screenshot",
+			})
+		}
+	}
+
+	if !newCoverUploaded && len(form.File["screenshots"]) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "No media files were provided"})
+		return
+	}
+
+	serialized, err := json.Marshal(existingScreenshots)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to serialize project media"})
+		return
+	}
+
+	project.Screenshots = string(serialized)
+	if err := h.db.Save(&project).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update project media"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":     "Project media updated successfully",
+		"screenshots": existingScreenshots,
+	})
+}
+
+func (h *ProjectHandler) GetProjectMedia(c *gin.Context) {
+	mediaID := c.Query("id")
+	mediaUUID, err := uuid.Parse(mediaID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid media ID"})
+		return
+	}
+
+	var blob models.BlobData
+	if err := h.db.First(&blob, "blob_id = ?", mediaUUID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Media not found"})
+		return
+	}
+
+	r2, err := utils.InitS3SDK(h.cfg)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Storage unavailable"})
+		return
+	}
+
+	data, err := blob.GetData(r2)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch media"})
+		return
+	}
+
+	contentType := mime.TypeByExtension("." + strings.ToLower(blob.FType))
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	c.Data(http.StatusOK, contentType, data)
 }
 
 // ProjectResponse includes all project details with members

@@ -540,15 +540,15 @@ func (h *ProfileHandler) GetPublicProfile(c *gin.Context) {
 
 	// Fetch team history
 	type teamRow struct {
-		ID           uint   `gorm:"column:id"`
-		Role         string `gorm:"column:role"`
-		Department   string `gorm:"column:department"`
-		AcademicYear string `gorm:"column:academic_year"`
+		ID           uint   `gorm:"column:id" json:"id"`
+		Role         string `gorm:"column:role" json:"role"`
+		Department   string `gorm:"column:department" json:"department"`
+		AcademicYear string `gorm:"column:academic_year" json:"academicYear"`
 	}
 	var teamHistory []teamRow
 	h.db.Table("team_members").
 		Select("id, team_member_role AS role, team_member_department AS department, academic_year").
-		Where("user_id = ? AND deleted_at IS NULL", profile.UserId).
+		Where("user_id = ? AND deleted_at IS NULL AND academic_year IS NOT NULL AND academic_year != ''", profile.UserId).
 		Order("academic_year DESC").
 		Scan(&teamHistory)
 
@@ -561,11 +561,12 @@ func (h *ProfileHandler) GetPublicProfile(c *gin.Context) {
 		CoverImage         string `gorm:"column:cover_image" json:"coverImage"`
 	}
 	var projects []projectRow
-	h.db.Table("team_member_pairs").
-		Select("projects.project_id, projects.project_name, projects.one_line_description, projects.status, projects.cover_image").
-		Joins("JOIN team_member_pairs ON team_member_pairs.team_member_id = ?", profile.UserId).
-		Joins("JOIN projects ON projects.id = team_member_pairs.project_id").
-		Where("projects.deleted_at IS NULL").
+	h.db.Table("team_members").
+		Select("DISTINCT projects.project_id, projects.project_name, projects.one_line_description, projects.status, projects.cover_image").
+		Joins("JOIN team_member_pairs ON team_member_pairs.team_member_id = team_members.id").
+		Joins("JOIN team_project_pairs ON team_project_pairs.team_id = team_member_pairs.team_id").
+		Joins("JOIN projects ON projects.id = team_project_pairs.project_id").
+		Where("team_members.user_id = ? AND team_members.deleted_at IS NULL AND projects.deleted_at IS NULL", profile.UserId).
 		Scan(&projects)
 
 	c.JSON(http.StatusOK, gin.H{
