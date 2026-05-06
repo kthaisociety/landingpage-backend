@@ -562,7 +562,7 @@ func (h *ProfileHandler) GetPublicProfile(c *gin.Context) {
 	}
 	var projects []projectRow
 	h.db.Table("team_members").
-		Select("DISTINCT projects.project_id, projects.project_name, projects.one_line_description, projects.status, projects.cover_image").
+		Select("DISTINCT projects.project_id, projects.project_name, projects.one_line_description, projects.status, '' AS cover_image").
 		Joins("JOIN team_member_pairs ON team_member_pairs.team_member_id = team_members.id").
 		Joins("JOIN team_project_pairs ON team_project_pairs.team_id = team_member_pairs.team_id").
 		Joins("JOIN projects ON projects.id = team_project_pairs.project_id").

@@ -81,6 +81,16 @@ func (h *ProjectHandler) UpdateProjectMedia(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid token"})
 		return
 	}
+	rolesClaim, _ := claims["roles"].(string)
+	isAdmin := false
+	if rolesClaim != "" {
+		for _, role := range strings.Split(rolesClaim, ",") {
+			if strings.TrimSpace(role) == "admin" {
+				isAdmin = true
+				break
+			}
+		}
+	}
 
 	userUUID, err := uuid.Parse(userUUIDStr)
 	if err != nil {
@@ -98,25 +108,27 @@ func (h *ProjectHandler) UpdateProjectMedia(c *gin.Context) {
 		return
 	}
 
-	var profile models.Profile
-	if err := h.db.Where("user_uuid = ?", userUUID).First(&profile).Error; err != nil {
-		c.JSON(http.StatusForbidden, gin.H{"error": "Profile not found for user"})
-		return
-	}
+	if !isAdmin {
+		var profile models.Profile
+		if err := h.db.Where("user_uuid = ?", userUUID).First(&profile).Error; err != nil {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Profile not found for user"})
+			return
+		}
 
-	// Allow only contributors on this project to update media.
-	var contributorCount int64
-	if err := h.db.Table("team_members").
-		Joins("JOIN team_member_pairs ON team_member_pairs.team_member_id = team_members.id").
-		Joins("JOIN team_project_pairs ON team_project_pairs.team_id = team_member_pairs.team_id").
-		Where("team_project_pairs.project_id = ? AND team_members.user_id = ? AND team_members.deleted_at IS NULL", project.ID, profile.UserId).
-		Count(&contributorCount).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to validate project contributor"})
-		return
-	}
-	if contributorCount == 0 {
-		c.JSON(http.StatusForbidden, gin.H{"error": "Only project contributors can update project media"})
-		return
+		// Allow contributors to update project media.
+		var contributorCount int64
+		if err := h.db.Table("team_members").
+			Joins("JOIN team_member_pairs ON team_member_pairs.team_member_id = team_members.id").
+			Joins("JOIN team_project_pairs ON team_project_pairs.team_id = team_member_pairs.team_id").
+			Where("team_project_pairs.project_id = ? AND team_members.user_id = ? AND team_members.deleted_at IS NULL", project.ID, profile.UserId).
+			Count(&contributorCount).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to validate project contributor"})
+			return
+		}
+		if contributorCount == 0 {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Only project contributors can update project media"})
+			return
+		}
 	}
 
 	r2, err := utils.InitS3SDK(h.cfg)
