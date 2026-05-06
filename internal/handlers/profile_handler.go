@@ -51,42 +51,6 @@ func (h *ProfileHandler) Register(r *gin.RouterGroup) {
 	admin.DELETE("/:userId", h.DeleteProfile)
 }
 
-// GetMyProfile returns the current user's profile
-// func (h *ProfileHandler) GetMyProfile(c *gin.Context) {
-// 	// get userId from jwt now
-// 	token := utils.GetJWT(c)
-// 	claims := utils.GetClaims(token)
-// 	userID, err := uuid.Parse(claims["user_id"].(string))
-// 	if err != nil {
-// 		log.Printf("Could not get userid")
-// 	}
-
-// 	var profile models.Profile
-// 	if err := h.db.Where("user_uuid = ?", userID).First(&profile).Error; err != nil {
-// 		// If profile doesn't exist, return empty profile
-// 		c.JSON(http.StatusOK, gin.H{
-// 			"userId": userID,
-// 			"exists": false,
-// 		})
-// 		return
-// 	}
-
-// 	c.JSON(http.StatusOK, gin.H{
-// 		"userId":         userID,
-// 		"exists":         true,
-// 		"email":          profile.Email,
-// 		"firstName":      profile.FirstName,
-// 		"lastName":       profile.LastName,
-// 		"university":     profile.University,
-// 		"programme":      profile.Programme,
-// 		"graduationYear": profile.GraduationYear,
-// 		"githubLink":     profile.GitHubLink,
-// 		"linkedInLink":   profile.LinkedInLink,
-// 	})
-// }
-
-// Added Roles to the response JSON
-
 func (h *ProfileHandler) GetMyProfile(c *gin.Context) {
 	token := utils.GetJWT(c)
 	claims := utils.GetClaims(token)
@@ -348,8 +312,6 @@ func (h *ProfileHandler) UpdateProfile(c *gin.Context) {
 
 	var existingProfile models.Profile
 	result := h.db.Where("user_uuid = ?", userUUID).First(&existingProfile)
-
-	// log.Printf("Profile retrieved: %+v", existingProfile)
 
 	// Parse input
 	var input struct {

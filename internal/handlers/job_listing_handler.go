@@ -19,14 +19,6 @@ type JobListingHandler struct {
 	cfg *config.Config
 }
 
-// type SmallJobListing struct {
-// 	Id      uuid.UUID `json:"id"`
-// 	Name    string    `json:"title"`
-// 	Company string    `json:"company"`
-// 	CompanyId uuid.UUID `json:"companyId`
-// 	Salary  string    `json:"salary"`
-
-// }
 type SmallJobListing struct {
 	Id        uuid.UUID `json:"id"`
 	Name      string    `json:"title"`
@@ -130,12 +122,6 @@ func (h *JobListingHandler) GetJobListing(c *gin.Context) {
 // Get with Query Params
 func (h *JobListingHandler) GetAllListings(c *gin.Context) {
 	var shortListings []SmallJobListing
-	// h.db.Table("job_listings").Select(
-	// 	"job_listings.name",
-	// 	"job_listings.salary",
-	// 	"job_listings.id",
-	// 	"companies.name as company").Joins("left join companies on companies.id = job_listings.company_id").Scan(&shortListings)
-	// c.JSON(http.StatusOK, shortListings)
 	h.db.Table("job_listings").Select(
 		"job_listings.id",
 		"job_listings.name",
