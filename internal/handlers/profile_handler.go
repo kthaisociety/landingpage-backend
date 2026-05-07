@@ -486,6 +486,10 @@ func (h *ProfileHandler) GetProfilePicture(c *gin.Context) {
 		contentType = "image/webp"
 	}
 
+	// Public, content-addressed by blob UUID — safe to cache aggressively so
+	// grids like About Us do not re-hit R2/DB on every navigation.
+	c.Header("Cache-Control", "public, max-age=31536000, immutable")
+
 	c.Data(http.StatusOK, contentType, data)
 }
 
