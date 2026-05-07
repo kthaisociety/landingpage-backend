@@ -154,9 +154,8 @@ func (h *ProfileHandler) UpdateMyProfile(c *gin.Context) {
 			},
 		}
 		if _, err := h.mailchimp.UpdateMember(&existingProfile.Email, &memberRequest); err != nil {
-			log.Printf("Mailchimp Update Error: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
+			// Non-fatal: DB save already succeeded; log and continue.
+			log.Printf("Mailchimp UpdateMember warning (profile saved): %v", err)
 		}
 
 		c.JSON(http.StatusOK, existingProfile)
@@ -189,10 +188,9 @@ func (h *ProfileHandler) UpdateMyProfile(c *gin.Context) {
 		return
 	}
 
-	// Add member to Mailchimp
+	// Add member to Mailchimp (non-fatal)
 	if err := h.mailchimp.SubscribeMember(&newProfile); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+		log.Printf("Mailchimp SubscribeMember warning (profile created): %v", err)
 	}
 
 	c.JSON(http.StatusCreated, newProfile)
@@ -263,10 +261,9 @@ func (h *ProfileHandler) CreateMyProfile(c *gin.Context) {
 		return
 	}
 
-	// Add member to Mailchimp
+	// Add member to Mailchimp (non-fatal)
 	if err := h.mailchimp.SubscribeMember(&newProfile); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+		log.Printf("Mailchimp SubscribeMember warning (profile created): %v", err)
 	}
 
 	c.JSON(http.StatusCreated, newProfile)
@@ -360,9 +357,8 @@ func (h *ProfileHandler) UpdateProfile(c *gin.Context) {
 			},
 		}
 		if _, err := h.mailchimp.UpdateMember(&existingProfile.Email, &memberRequest); err != nil {
-			log.Printf("Mailchimp Update Error: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
+			// Non-fatal: DB save already succeeded; log and continue.
+			log.Printf("Mailchimp UpdateMember warning (profile saved): %v", err)
 		}
 
 		c.JSON(http.StatusOK, existingProfile)
