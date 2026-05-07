@@ -35,7 +35,7 @@ func (h *ProjectHandler) Register(r *gin.RouterGroup) {
 		projects.GET("/media", h.GetProjectMedia)
 		projects.GET("/:id", h.Get)
 
-		// Authenticated member endpoint for project media updates
+		// Authenticated member endpoints
 		authenticated := projects.Group("")
 		authenticated.Use(middleware.AuthRequiredJWT(h.cfg))
 		authenticated.PUT("/:id/media", h.UpdateProjectMedia)
@@ -48,7 +48,37 @@ func (h *ProjectHandler) Register(r *gin.RouterGroup) {
 		admin.POST("", h.Create)
 		admin.PUT("/:id", h.Update)
 		admin.DELETE("/:id", h.Delete)
+		admin.POST("/:id/members", h.AdminAddMember)
+		admin.DELETE("/:id/members", h.AdminRemoveMember)
 	}
+}
+
+// ProjectResponse includes all project details with members.
+type ProjectResponse struct {
+	ID                 uuid.UUID               `json:"id"`
+	Name               string                  `json:"title"`
+	OneLineDescription string                  `json:"oneLineDescription"`
+	Categories         string                  `json:"categories"`
+	TechStack          string                  `json:"techStack"`
+	ProblemImpact      string                  `json:"problemImpact"`
+	KeyFeatures        string                  `json:"keyFeatures"`
+	Status             models.ProjectStatus    `json:"status"`
+	Screenshots        string                  `json:"screenshots"`
+	RepoUrl            string                  `json:"repoUrl"`
+	Affiliations       string                  `json:"affiliations"`
+	Timeline           string                  `json:"timeline"`
+	MaintenancePlan    string                  `json:"maintenancePlan"`
+	Contact            string                  `json:"contact"`
+	Members            []ProjectMemberResponse `json:"members"`
+}
+
+// ProjectMemberResponse — no role/department, projects carry no elaboration on what a member did.
+type ProjectMemberResponse struct {
+	UserID         uuid.UUID `json:"user_id"`
+	FirstName      string    `json:"first_name"`
+	LastName       string    `json:"last_name"`
+	Email          string    `json:"email"`
+	ProfilePicture string    `json:"profile_picture,omitempty"`
 }
 
 type projectScreenshot struct {
@@ -68,271 +98,110 @@ func parseProjectScreenshots(raw string) []projectScreenshot {
 	return screenshots
 }
 
-func parseProjectContributorInput(contributorString string) (email string, department string, ok bool) {
-	parts := strings.Split(contributorString, ":")
-	if len(parts) == 0 {
-		return "", "", false
+// buildProjectResponse constructs a ProjectResponse with members from project_members.
+func (h *ProjectHandler) buildProjectResponse(project models.Project) ProjectResponse {
+	return ProjectResponse{
+		ID:                 project.ProjectId,
+		Name:               project.ProjectName,
+		OneLineDescription: project.OneLineDescription,
+		Categories:         project.Categories,
+		TechStack:          project.TechStack,
+		ProblemImpact:      project.ProblemImpact,
+		KeyFeatures:        project.KeyFeatures,
+		Status:             project.Status,
+		Screenshots:        project.Screenshots,
+		RepoUrl:            project.RepoUrl,
+		Affiliations:       project.Affiliations,
+		Timeline:           project.Timeline,
+		MaintenancePlan:    project.MaintenancePlan,
+		Contact:            project.Contact,
+		Members:            h.loadProjectMembers(project.ID, project.ProjectId),
 	}
-
-	email = strings.TrimSpace(parts[0])
-	if email == "" {
-		return "", "", false
-	}
-
-	// New format: "email:team"
-	// Backward compatibility: "email:role:team" -> ignore role and keep team.
-	if len(parts) > 2 {
-		department = strings.TrimSpace(parts[2])
-	} else if len(parts) > 1 {
-		department = strings.TrimSpace(parts[1])
-	}
-
-	return email, department, true
 }
 
-func (h *ProjectHandler) UpdateProjectMedia(c *gin.Context) {
-	projectID := c.Param("id")
-	projectUUID, err := uuid.Parse(projectID)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid project ID"})
-		return
+// loadProjectMembers fetches contributors via the project_members join table.
+func (h *ProjectHandler) loadProjectMembers(projectID uint, projectUUID uuid.UUID) []ProjectMemberResponse {
+	type memberRow struct {
+		UserUUID       uuid.UUID `gorm:"column:user_uuid"`
+		FirstName      string    `gorm:"column:first_name"`
+		LastName       string    `gorm:"column:last_name"`
+		Email          string    `gorm:"column:email"`
+		ProfilePicture string    `gorm:"column:profile_picture"`
 	}
-
-	token := utils.GetJWT(c)
-	claims := utils.GetClaims(token)
-	userUUIDStr, ok := claims["user_id"].(string)
-	if !ok || userUUIDStr == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid token"})
-		return
+	var rows []memberRow
+	if err := h.db.Table("project_members").
+		Select("profiles.user_uuid, profiles.first_name, profiles.last_name, profiles.email, profiles.profile_picture").
+		Joins("JOIN profiles ON profiles.user_id = project_members.user_id AND profiles.deleted_at IS NULL").
+		Where("project_members.project_id = ?", projectID).
+		Scan(&rows).Error; err != nil {
+		log.Printf("Warning: could not load members for project %s: %v", projectUUID, err)
+		return nil
 	}
-	rolesClaim, _ := claims["roles"].(string)
-	isAdmin := false
-	if rolesClaim != "" {
-		for _, role := range strings.Split(rolesClaim, ",") {
-			if strings.TrimSpace(role) == "admin" {
-				isAdmin = true
-				break
-			}
-		}
+	members := make([]ProjectMemberResponse, 0, len(rows))
+	for _, r := range rows {
+		members = append(members, ProjectMemberResponse{
+			UserID:         r.UserUUID,
+			FirstName:      r.FirstName,
+			LastName:       r.LastName,
+			Email:          r.Email,
+			ProfilePicture: r.ProfilePicture,
+		})
 	}
-
-	userUUID, err := uuid.Parse(userUUIDStr)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user"})
-		return
-	}
-
-	var project models.Project
-	if err := h.db.First(&project, "project_id = ?", projectUUID).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Project not found"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load project"})
-		return
-	}
-
-	if !isAdmin {
-		var profile models.Profile
-		if err := h.db.Where("user_uuid = ?", userUUID).First(&profile).Error; err != nil {
-			c.JSON(http.StatusForbidden, gin.H{"error": "Profile not found for user"})
-			return
-		}
-
-		// Allow contributors to update project media.
-		var contributorCount int64
-		if err := h.db.Table("team_members").
-			Joins("JOIN team_member_pairs ON team_member_pairs.team_member_id = team_members.id").
-			Joins("JOIN team_project_pairs ON team_project_pairs.team_id = team_member_pairs.team_id").
-			Where("team_project_pairs.project_id = ? AND team_members.user_id = ? AND team_members.deleted_at IS NULL", project.ID, profile.UserId).
-			Count(&contributorCount).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to validate project contributor"})
-			return
-		}
-		if contributorCount == 0 {
-			c.JSON(http.StatusForbidden, gin.H{"error": "Only project contributors can update project media"})
-			return
-		}
-	}
-
-	r2, err := utils.InitS3SDK(h.cfg)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Storage unavailable"})
-		return
-	}
-
-	existingScreenshots := parseProjectScreenshots(project.Screenshots)
-	form, err := c.MultipartForm()
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Expected multipart form data"})
-		return
-	}
-
-	newCoverUploaded := false
-	if coverFiles := form.File["coverImage"]; len(coverFiles) > 0 {
-		coverFile := coverFiles[0]
-		reader, openErr := coverFile.Open()
-		if openErr != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to open cover image"})
-			return
-		}
-		defer reader.Close()
-
-		data, readErr := io.ReadAll(reader)
-		if readErr != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read cover image"})
-			return
-		}
-
-		parts := strings.Split(coverFile.Filename, ".")
-		if len(parts) < 2 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid cover image filename"})
-			return
-		}
-		name := strings.Join(parts[:len(parts)-1], ".")
-		ext := parts[len(parts)-1]
-
-		blob, blobErr := models.NewBlobData(name, ext, userUUID, data, h.db, r2)
-		if blobErr != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store cover image"})
-			return
-		}
-
-		coverURL := fmt.Sprintf("/api/v1/projects/media?id=%s", blob.BlobId.String())
-		coverEntry := projectScreenshot{
-			Image:   coverURL,
-			Caption: "Cover image",
-			Alt:     "Project cover image",
-		}
-		existingScreenshots = append([]projectScreenshot{coverEntry}, existingScreenshots...)
-		newCoverUploaded = true
-	}
-
-	if screenshotFiles := form.File["screenshots"]; len(screenshotFiles) > 0 {
-		for _, shotFile := range screenshotFiles {
-			reader, openErr := shotFile.Open()
-			if openErr != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to open screenshot"})
-				return
-			}
-
-			data, readErr := io.ReadAll(reader)
-			if readErr != nil {
-				_ = reader.Close()
-				c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read screenshot"})
-				return
-			}
-			_ = reader.Close()
-
-			parts := strings.Split(shotFile.Filename, ".")
-			if len(parts) < 2 {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid screenshot filename"})
-				return
-			}
-			name := strings.Join(parts[:len(parts)-1], ".")
-			ext := parts[len(parts)-1]
-
-			blob, blobErr := models.NewBlobData(name, ext, userUUID, data, h.db, r2)
-			if blobErr != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store screenshot"})
-				return
-			}
-
-			shotURL := fmt.Sprintf("/api/v1/projects/media?id=%s", blob.BlobId.String())
-			existingScreenshots = append(existingScreenshots, projectScreenshot{
-				Image:   shotURL,
-				Caption: "Project screenshot",
-			})
-		}
-	}
-
-	if !newCoverUploaded && len(form.File["screenshots"]) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "No media files were provided"})
-		return
-	}
-
-	serialized, err := json.Marshal(existingScreenshots)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to serialize project media"})
-		return
-	}
-
-	project.Screenshots = string(serialized)
-	if err := h.db.Save(&project).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update project media"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"message":     "Project media updated successfully",
-		"screenshots": existingScreenshots,
-	})
+	return members
 }
 
-func (h *ProjectHandler) GetProjectMedia(c *gin.Context) {
-	mediaID := c.Query("id")
-	mediaUUID, err := uuid.Parse(mediaID)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid media ID"})
-		return
+// syncProjectMembers diffs desired emails against current project_members rows.
+// Unknown emails are skipped with a warning — one bad email won't fail the whole operation.
+func (h *ProjectHandler) syncProjectMembers(tx *gorm.DB, projectID uint, emails []string) error {
+	desired := map[string]bool{}
+	for _, e := range emails {
+		e = strings.TrimSpace(strings.ToLower(e))
+		if e != "" {
+			desired[e] = true
+		}
 	}
 
-	var blob models.BlobData
-	if err := h.db.First(&blob, "blob_id = ?", mediaUUID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Media not found"})
-		return
+	type currentRow struct {
+		UserID uint   `gorm:"column:user_id"`
+		Email  string `gorm:"column:email"`
+	}
+	var current []currentRow
+	if err := tx.Table("project_members").
+		Select("project_members.user_id, users.email").
+		Joins("JOIN users ON users.id = project_members.user_id").
+		Where("project_members.project_id = ?", projectID).
+		Scan(&current).Error; err != nil {
+		return err
 	}
 
-	r2, err := utils.InitS3SDK(h.cfg)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Storage unavailable"})
-		return
+	// Remove members not in the desired set
+	for _, cm := range current {
+		lower := strings.ToLower(cm.Email)
+		if !desired[lower] {
+			if err := tx.Where("project_id = ? AND user_id = ?", projectID, cm.UserID).
+				Delete(&models.ProjectMember{}).Error; err != nil {
+				return err
+			}
+		}
+		delete(desired, lower) // already present
 	}
 
-	data, err := blob.GetData(r2)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch media"})
-		return
+	// Add new members; skip emails not in users table
+	for email := range desired {
+		var user models.User
+		if err := tx.Where("LOWER(email) = ?", email).First(&user).Error; err != nil {
+			log.Printf("Warning: contributor %q not found, skipping: %v", email, err)
+			continue
+		}
+		pm := models.ProjectMember{ProjectID: projectID, UserID: user.ID}
+		if err := tx.Where(pm).FirstOrCreate(&pm).Error; err != nil {
+			return err
+		}
 	}
-
-	contentType := mime.TypeByExtension("." + strings.ToLower(blob.FType))
-	if contentType == "" {
-		contentType = "application/octet-stream"
-	}
-	c.Data(http.StatusOK, contentType, data)
+	return nil
 }
 
-// ProjectResponse includes all project details with members
-type ProjectResponse struct {
-	ID                 uuid.UUID               `json:"id"`
-	TeamID             *uuid.UUID              `json:"team_id,omitempty"`
-	Name               string                  `json:"title"`
-	OneLineDescription string                  `json:"oneLineDescription"`
-	Categories         string                  `json:"categories"`
-	TechStack          string                  `json:"techStack"`
-	ProblemImpact      string                  `json:"problemImpact"`
-	KeyFeatures        string                  `json:"keyFeatures"`
-	Status             models.ProjectStatus    `json:"status"`
-	Screenshots        string                  `json:"screenshots"`
-	RepoUrl            string                  `json:"repoUrl"`
-	Affiliations       string                  `json:"affiliations"`
-	Timeline           string                  `json:"timeline"`
-	MaintenancePlan    string                  `json:"maintenancePlan"`
-	Contact            string                  `json:"contact"`
-	Members            []ProjectMemberResponse `json:"members"`
-}
-
-type ProjectMemberResponse struct {
-	UserID         uuid.UUID `json:"user_id"`
-	FirstName      string    `json:"first_name"`
-	LastName       string    `json:"last_name"`
-	Email          string    `json:"email"`
-	ProfilePicture string    `json:"profile_picture,omitempty"`
-	Role           string    `json:"role,omitempty"`
-	Department     string    `json:"department,omitempty"`
-}
-
-// List returns all projects with their members
+// List returns all projects with their members.
 func (h *ProjectHandler) List(c *gin.Context) {
 	var projects []models.Project
 	if err := h.db.Find(&projects).Error; err != nil {
@@ -340,31 +209,25 @@ func (h *ProjectHandler) List(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list projects"})
 		return
 	}
-
 	if len(projects) == 0 {
 		c.JSON(http.StatusOK, []ProjectResponse{})
 		return
 	}
-
-	// Build responses independently using the robust builder
 	response := make([]ProjectResponse, 0, len(projects))
 	for _, project := range projects {
 		response = append(response, h.buildProjectResponse(project))
 	}
-
 	c.JSON(http.StatusOK, response)
 }
 
-// Get returns a single project with all details
+// Get returns a single project with all details.
 func (h *ProjectHandler) Get(c *gin.Context) {
 	projectID := c.Param("id")
-
 	projectUUID, err := uuid.Parse(projectID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid project ID"})
 		return
 	}
-
 	var project models.Project
 	if err := h.db.First(&project, "project_id = ?", projectUUID).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
@@ -375,15 +238,12 @@ func (h *ProjectHandler) Get(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch project"})
 		return
 	}
-
-	response := h.buildProjectResponse(project)
-	c.JSON(http.StatusOK, response)
+	c.JSON(http.StatusOK, h.buildProjectResponse(project))
 }
 
-// Creates a new project, team, and sets up contributors via TeamMembers
+// Create creates a new project and records contributors in project_members.
 func (h *ProjectHandler) Create(c *gin.Context) {
 	var input struct {
-		// Enforce required fields based on DB constraints
 		Title              string               `json:"title" binding:"required"`
 		OneLineDescription string               `json:"oneLineDescription" binding:"required"`
 		Categories         string               `json:"categories" binding:"required"`
@@ -398,7 +258,7 @@ func (h *ProjectHandler) Create(c *gin.Context) {
 		Timeline           string               `json:"timeline"`
 		MaintenancePlan    string               `json:"maintenancePlan"`
 		Contact            string               `json:"contact"`
-		TeamName           string               `json:"teamName"`
+		TeamName           string               `json:"teamName"` // accepted for API compat
 	}
 
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -406,7 +266,6 @@ func (h *ProjectHandler) Create(c *gin.Context) {
 		return
 	}
 
-	// Validate Status against enum
 	if input.Status == "" {
 		input.Status = models.ProjectStatusIdea
 	} else if !isValidProjectStatus(input.Status) {
@@ -415,8 +274,6 @@ func (h *ProjectHandler) Create(c *gin.Context) {
 	}
 
 	var project models.Project
-
-	// Handle transactions to ensure everything creates or rolls back together
 	err := h.db.Transaction(func(tx *gorm.DB) error {
 		project = models.Project{
 			ProjectId:          uuid.New(),
@@ -434,86 +291,23 @@ func (h *ProjectHandler) Create(c *gin.Context) {
 			MaintenancePlan:    input.MaintenancePlan,
 			Contact:            input.Contact,
 		}
-
 		if err := tx.Create(&project).Error; err != nil {
 			return err
 		}
-
-		// Resolve Team Name
-		teamName := input.TeamName
-		if teamName == "" {
-			teamName = input.Title + " Team"
-		}
-
-		// Create a dedicated team for this project
-		team := models.Team{
-			TeamId:   uuid.New(),
-			TeamName: teamName,
-		}
-		if err := tx.Create(&team).Error; err != nil {
-			return err
-		}
-
-		// Link team to project
-		teamProjectPair := models.TeamProjectPair{
-			TeamId:    team.ID,
-			ProjectId: project.ID,
-		}
-		if err := tx.Create(&teamProjectPair).Error; err != nil {
-			return err
-		}
-
-		// Process contributors payload formatting string ("email:team")
-		for _, contributorString := range input.Contributors {
-			email, department, ok := parseProjectContributorInput(contributorString)
-			if !ok {
-				continue
-			}
-
-			// Look up the user by email
-			var user models.User
-			if err := tx.Where("email = ?", email).First(&user).Error; err != nil {
-				return fmt.Errorf("user with email %s not found: %w", email, err)
-			}
-
-			// Create TeamMember Entity
-			teamMember := models.TeamMember{
-				UserID:               user.ID,
-				TeamMemberRole:       "",
-				TeamMemberDepartment: department,
-			}
-			if err := tx.Create(&teamMember).Error; err != nil {
-				return fmt.Errorf("failed to create team member %s: %w", email, err)
-			}
-
-			// Pair the new TeamMember to the Team
-			teamMemberPair := models.TeamMemberPair{
-				TeamId:       team.ID,
-				TeamMemberId: teamMember.ID,
-			}
-			if err := tx.Create(&teamMemberPair).Error; err != nil {
-				return fmt.Errorf("failed to pair member to team: %w", err)
-			}
-		}
-
-		return nil
+		return h.syncProjectMembers(tx, project.ID, input.Contributors)
 	})
 
 	if err != nil {
 		log.Printf("Error creating project: %v", err)
-		// Ensure PII/Raw error strings are not returned to the client directly
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create project and synchronize contributors."})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create project"})
 		return
 	}
-
-	response := h.buildProjectResponse(project)
-	c.JSON(http.StatusCreated, response)
+	c.JSON(http.StatusCreated, h.buildProjectResponse(project))
 }
 
-// Updates a project fields and synchronizes contributors
+// Update updates project fields and syncs contributors via project_members.
 func (h *ProjectHandler) Update(c *gin.Context) {
 	projectID := c.Param("id")
-
 	projectUUID, err := uuid.Parse(projectID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid project ID"})
@@ -531,7 +325,6 @@ func (h *ProjectHandler) Update(c *gin.Context) {
 		return
 	}
 
-	// Updated Input schema for the new DTO definition
 	var input struct {
 		Title              *string               `json:"title"`
 		OneLineDescription *string               `json:"oneLineDescription"`
@@ -546,7 +339,7 @@ func (h *ProjectHandler) Update(c *gin.Context) {
 		Timeline           *string               `json:"timeline"`
 		MaintenancePlan    *string               `json:"maintenancePlan"`
 		Contact            *string               `json:"contact"`
-		TeamName           *string               `json:"teamName"`
+		TeamName           *string               `json:"teamName"` // accepted for API compat
 		Contributors       []string              `json:"contributors"`
 	}
 
@@ -555,7 +348,7 @@ func (h *ProjectHandler) Update(c *gin.Context) {
 		return
 	}
 
-	// Prevent passing empty strings to NOT NULL columns
+	// Guard against blanking NOT NULL columns
 	if input.Title != nil && *input.Title == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "title cannot be empty"})
 		return
@@ -580,18 +373,12 @@ func (h *ProjectHandler) Update(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "keyFeatures cannot be empty"})
 		return
 	}
-
-	// Validate Status against Enum if provided
-	if input.Status != nil {
-		if !isValidProjectStatus(*input.Status) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid project status: %s", *input.Status)})
-			return
-		}
+	if input.Status != nil && !isValidProjectStatus(*input.Status) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid project status: %s", *input.Status)})
+		return
 	}
 
-	// Run all updates and deletions in a transaction
 	err = h.db.Transaction(func(tx *gorm.DB) error {
-
 		if input.Title != nil {
 			project.ProjectName = *input.Title
 		}
@@ -636,148 +423,23 @@ func (h *ProjectHandler) Update(c *gin.Context) {
 			return err
 		}
 
-		var teamProjectPair models.TeamProjectPair
-		var team models.Team
-
-		// Check if a team is already linked to this project
-		err := tx.Where("project_id = ?", project.ID).First(&teamProjectPair).Error
-		if err == gorm.ErrRecordNotFound {
-			// Backward compatibility: If no team exists yet, create one
-			teamName := project.ProjectName + " Team"
-			if input.TeamName != nil && *input.TeamName != "" {
-				teamName = *input.TeamName
-			}
-			team = models.Team{
-				TeamId:   uuid.New(),
-				TeamName: teamName,
-			}
-			if err := tx.Create(&team).Error; err != nil {
-				return err
-			}
-			teamProjectPair = models.TeamProjectPair{
-				TeamId:    team.ID,
-				ProjectId: project.ID,
-			}
-			if err := tx.Create(&teamProjectPair).Error; err != nil {
-				return err
-			}
-		} else if err != nil {
-			return err
-		} else {
-			// Team exists, load it
-			if err := tx.First(&team, teamProjectPair.TeamId).Error; err != nil {
-				return err
-			}
-			// Update TeamName if requested
-			if input.TeamName != nil && *input.TeamName != "" && team.TeamName != *input.TeamName {
-				team.TeamName = *input.TeamName
-				if err := tx.Save(&team).Error; err != nil {
-					return err
-				}
-			}
-		}
-
 		if input.Contributors != nil {
-
-			// Parse incoming contributors into a map for fast lookup
-			type incomingContributor struct {
-				Department string
-			}
-			newContributorsMap := make(map[string]incomingContributor)
-
-			for _, contributorString := range input.Contributors {
-				email, dept, ok := parseProjectContributorInput(contributorString)
-				if !ok {
-					continue
-				}
-				newContributorsMap[email] = incomingContributor{Department: dept}
-			}
-
-			// Fetch existing team members associated with this team
-			type existingMemberData struct {
-				TeamMemberID uint
-				Email        string
-				Department   string
-			}
-			var existingMembers []existingMemberData
-
-			if err := tx.Table("team_members").
-				Select("team_members.id as team_member_id, users.email, team_members.team_member_department as department").
-				Joins("JOIN team_member_pairs ON team_member_pairs.team_member_id = team_members.id").
-				Joins("JOIN users ON users.id = team_members.user_id").
-				Where("team_member_pairs.team_id = ? AND team_members.deleted_at IS NULL", team.ID).
-				Scan(&existingMembers).Error; err != nil {
-				return err
-			}
-
-			// Compare existing against incoming
-			for _, ext := range existingMembers {
-				if incoming, exists := newContributorsMap[ext.Email]; exists {
-					// User is in both lists. Only team association may change.
-					if ext.Department != incoming.Department {
-						if err := tx.Model(&models.TeamMember{}).Where("id = ?", ext.TeamMemberID).Updates(map[string]interface{}{
-							"team_member_department": incoming.Department,
-						}).Error; err != nil {
-							return err
-						}
-					}
-					// Remove from map, so remaining entries in map are purely NEW members
-					delete(newContributorsMap, ext.Email)
-				} else {
-					// User is NOT in the new list. Remove them from the team.
-					if err := tx.Where("team_id = ? AND team_member_id = ?", team.ID, ext.TeamMemberID).Delete(&models.TeamMemberPair{}).Error; err != nil {
-						return err
-					}
-					if err := tx.Where("id = ?", ext.TeamMemberID).Delete(&models.TeamMember{}).Error; err != nil {
-						return err
-					}
-				}
-			}
-
-			// Add the remaining new contributors
-			for email, incoming := range newContributorsMap {
-				var user models.User
-				if err := tx.Where("email = ?", email).First(&user).Error; err != nil {
-					return fmt.Errorf("user with email %s not found: %w", email, err)
-				}
-
-				tm := models.TeamMember{
-					UserID:               user.ID,
-					TeamMemberRole:       "",
-					TeamMemberDepartment: incoming.Department,
-				}
-				if err := tx.Create(&tm).Error; err != nil {
-					return fmt.Errorf("failed to create team member %s: %w", email, err)
-				}
-
-				tmp := models.TeamMemberPair{
-					TeamId:       team.ID,
-					TeamMemberId: tm.ID,
-				}
-				if err := tx.Create(&tmp).Error; err != nil {
-					return fmt.Errorf("failed to pair member %s to team: %w", email, err)
-				}
-			}
+			return h.syncProjectMembers(tx, project.ID, input.Contributors)
 		}
-
 		return nil
 	})
 
 	if err != nil {
 		log.Printf("Error updating project %s: %v", projectUUID, err)
-		// Ensure PII/Raw error strings are not returned to the client directly
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update project and synchronize contributors."})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update project"})
 		return
 	}
-
-	response := h.buildProjectResponse(project)
-	c.JSON(http.StatusOK, response)
+	c.JSON(http.StatusOK, h.buildProjectResponse(project))
 }
 
-// Deletes a project and its associated teams, team members, and links
+// Delete removes a project and its project_members entries.
 func (h *ProjectHandler) Delete(c *gin.Context) {
 	projectID := c.Param("id")
-
 	projectUUID, err := uuid.Parse(projectID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid project ID"})
@@ -789,51 +451,9 @@ func (h *ProjectHandler) Delete(c *gin.Context) {
 		if err := tx.First(&project, "project_id = ?", projectUUID).Error; err != nil {
 			return err
 		}
-
-		var teamPairs []models.TeamProjectPair
-		if err := tx.Where("project_id = ?", project.ID).Find(&teamPairs).Error; err != nil {
+		if err := tx.Where("project_id = ?", project.ID).Delete(&models.ProjectMember{}).Error; err != nil {
 			return err
 		}
-
-		var teamIds []uint
-
-		for _, tp := range teamPairs {
-			// Track the TeamId so we can delete the Team itself later
-			teamIds = append(teamIds, tp.TeamId)
-
-			var memberPairs []models.TeamMemberPair
-			if err := tx.Where("team_id = ?", tp.TeamId).Find(&memberPairs).Error; err != nil {
-				return err
-			}
-
-			var memberIds []uint
-			for _, mp := range memberPairs {
-				memberIds = append(memberIds, mp.TeamMemberId)
-			}
-
-			// Delete the TeamMember rows
-			if len(memberIds) > 0 {
-				if err := tx.Where("id IN ?", memberIds).Delete(&models.TeamMember{}).Error; err != nil {
-					return err
-				}
-			}
-
-			// Delete the TeamMemberPair rows
-			if err := tx.Where("team_id = ?", tp.TeamId).Delete(&models.TeamMemberPair{}).Error; err != nil {
-				return err
-			}
-		}
-
-		if err := tx.Where("project_id = ?", project.ID).Delete(&models.TeamProjectPair{}).Error; err != nil {
-			return err
-		}
-
-		if len(teamIds) > 0 {
-			if err := tx.Where("id IN ?", teamIds).Delete(&models.Team{}).Error; err != nil {
-				return err
-			}
-		}
-
 		result := tx.Delete(&models.Project{}, "id = ?", project.ID)
 		if result.Error != nil {
 			return result.Error
@@ -853,125 +473,76 @@ func (h *ProjectHandler) Delete(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete project"})
 		return
 	}
-
 	c.JSON(http.StatusOK, gin.H{"message": "Project deleted successfully"})
 }
 
-// buildProjectResponse constructs a ProjectResponse with all members
-func (h *ProjectHandler) buildProjectResponse(project models.Project) ProjectResponse {
-	members := make([]ProjectMemberResponse, 0)
-
-	// Fetch team info in one query by joining teams onto team_project_pairs
-	var teamInfo struct {
-		TeamInternalID uint
-		TeamUUID       uuid.UUID
-		TeamName       string
-	}
-	err := h.db.Table("team_project_pairs").
-		Select("team_project_pairs.team_id as team_internal_id, teams.team_id as team_uuid, teams.team_name as team_name").
-		Joins("JOIN teams ON teams.id = team_project_pairs.team_id AND teams.deleted_at IS NULL").
-		Where("team_project_pairs.project_id = ?", project.ID).
-		Scan(&teamInfo).Error
-
+// AdminAddMember lets an admin add a user (by email) to a project.
+func (h *ProjectHandler) AdminAddMember(c *gin.Context) {
+	projectID := c.Param("id")
+	projectUUID, err := uuid.Parse(projectID)
 	if err != nil {
-		log.Printf("Warning: could not find team for project %s: %v", project.ProjectId, err)
-	} else {
-		if loaded := h.loadTeamMembers(teamInfo.TeamInternalID, project.ProjectId); loaded != nil {
-			members = loaded
-		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid project ID"})
+		return
 	}
-
-	response := ProjectResponse{
-		ID:                 project.ProjectId,
-		Name:               project.ProjectName,
-		OneLineDescription: project.OneLineDescription,
-		Categories:         project.Categories,
-		TechStack:          project.TechStack,
-		ProblemImpact:      project.ProblemImpact,
-		KeyFeatures:        project.KeyFeatures,
-		Status:             project.Status,
-		Screenshots:        project.Screenshots,
-		RepoUrl:            project.RepoUrl,
-		Affiliations:       project.Affiliations,
-		Timeline:           project.Timeline,
-		MaintenancePlan:    project.MaintenancePlan,
-		Contact:            project.Contact,
-		Members:            members,
+	var input struct {
+		Email string `json:"email" binding:"required"`
 	}
-
-	if err == nil && teamInfo.TeamInternalID != 0 {
-		response.TeamID = &teamInfo.TeamUUID
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
 	}
-
-	return response
+	var project models.Project
+	if err := h.db.First(&project, "project_id = ?", projectUUID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Project not found"})
+		return
+	}
+	var user models.User
+	if err := h.db.Where("LOWER(email) = LOWER(?)", input.Email).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+	pm := models.ProjectMember{ProjectID: project.ID, UserID: user.ID}
+	if err := h.db.Where(pm).FirstOrCreate(&pm).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add member"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "Member added"})
 }
 
-// loadTeamMembers fetches profiles via the new TeamMember relations
-func (h *ProjectHandler) loadTeamMembers(teamID uint, projectUUID uuid.UUID) []ProjectMemberResponse {
-	var teamMembers []models.TeamMember
-
-	// Join team_user_pairs to get members tied strictly to this team via their TeamMemberId
-	if err := h.db.Table("team_members").
-		Joins("JOIN team_member_pairs ON team_member_pairs.team_member_id = team_members.id").
-		Where("team_member_pairs.team_id = ?", teamID).
-		Find(&teamMembers).Error; err != nil {
-		log.Printf("Warning: could not find team members for team %d: %v", teamID, err)
-		return nil
+// AdminRemoveMember lets an admin remove a user (by email) from a project.
+func (h *ProjectHandler) AdminRemoveMember(c *gin.Context) {
+	projectID := c.Param("id")
+	projectUUID, err := uuid.Parse(projectID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid project ID"})
+		return
 	}
-
-	if len(teamMembers) == 0 {
-		return nil
+	var input struct {
+		Email string `json:"email" binding:"required"`
 	}
-
-	// Fetch standard User profiles associated with the extracted user_ids
-	userIDs := make([]uint, len(teamMembers))
-	for i, m := range teamMembers {
-		userIDs[i] = m.UserID
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
 	}
-
-	var profiles []models.Profile
-	if err := h.db.Where("user_id IN ?", userIDs).Find(&profiles).Error; err != nil {
-		log.Printf("Warning: could not load profiles for project %s: %v", projectUUID, err)
-		return nil
+	var project models.Project
+	if err := h.db.First(&project, "project_id = ?", projectUUID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Project not found"})
+		return
 	}
-
-	// Map profiles to easily match them back to their TeamMember instance
-	profileMap := make(map[uint]models.Profile)
-	for _, p := range profiles {
-		profileMap[p.UserId] = p
+	var user models.User
+	if err := h.db.Where("LOWER(email) = LOWER(?)", input.Email).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
 	}
-
-	members := make([]ProjectMemberResponse, 0, len(teamMembers))
-	for _, tm := range teamMembers {
-		if profile, exists := profileMap[tm.UserID]; exists {
-			members = append(members, ProjectMemberResponse{
-				UserID:         profile.UserUUID,
-				FirstName:      profile.FirstName,
-				LastName:       profile.LastName,
-				Email:          profile.Email,
-				ProfilePicture: profile.ProfilePicture,
-				Role:           tm.TeamMemberRole,
-				Department:     tm.TeamMemberDepartment,
-			})
-		}
+	if err := h.db.Where("project_id = ? AND user_id = ?", project.ID, user.ID).
+		Delete(&models.ProjectMember{}).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to remove member"})
+		return
 	}
-
-	return members
+	c.JSON(http.StatusOK, gin.H{"message": "Member removed"})
 }
 
-// isValidProjectStatus checks if the provided status matches the allowed enum values
-func isValidProjectStatus(status models.ProjectStatus) bool {
-	switch status {
-	case models.ProjectStatusIdea,
-		models.ProjectStatusPrototype,
-		models.ProjectStatusDevelopment,
-		models.ProjectStatusBeta,
-		models.ProjectStatusLive:
-		return true
-	}
-	return false
-}
-
+// GetMyProjectAssociations returns all projects, marking ones the current user is a member of.
 func (h *ProjectHandler) GetMyProjectAssociations(c *gin.Context) {
 	token := utils.GetJWT(c)
 	claims := utils.GetClaims(token)
@@ -980,35 +551,26 @@ func (h *ProjectHandler) GetMyProjectAssociations(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid token"})
 		return
 	}
-
 	var profile models.Profile
 	if err := h.db.Where("user_uuid = ?", userUUIDStr).First(&profile).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Profile not found"})
 		return
 	}
 
-	type selectedRow struct {
-		ProjectID uuid.UUID `gorm:"column:project_id"`
-	}
-	var selectedRows []selectedRow
-	if err := h.db.Table("team_members").
-		Select("DISTINCT projects.project_id").
-		Joins("JOIN team_member_pairs ON team_member_pairs.team_member_id = team_members.id").
-		Joins("JOIN team_project_pairs ON team_project_pairs.team_id = team_member_pairs.team_id").
-		Joins("JOIN projects ON projects.id = team_project_pairs.project_id").
-		Where("team_members.user_id = ? AND team_members.deleted_at IS NULL AND projects.deleted_at IS NULL", profile.UserId).
-		Scan(&selectedRows).Error; err != nil {
+	var memberProjectIDs []uint
+	if err := h.db.Table("project_members").
+		Where("user_id = ?", profile.UserId).
+		Pluck("project_id", &memberProjectIDs).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load current associations"})
 		return
 	}
-
-	selected := make(map[uuid.UUID]bool, len(selectedRows))
-	for _, row := range selectedRows {
-		selected[row.ProjectID] = true
+	selectedSet := make(map[uint]bool, len(memberProjectIDs))
+	for _, id := range memberProjectIDs {
+		selectedSet[id] = true
 	}
 
 	var projects []models.Project
-	if err := h.db.Where("deleted_at IS NULL").Order("project_name ASC").Find(&projects).Error; err != nil {
+	if err := h.db.Order("project_name ASC").Find(&projects).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load projects"})
 		return
 	}
@@ -1020,18 +582,18 @@ func (h *ProjectHandler) GetMyProjectAssociations(c *gin.Context) {
 		Selected bool                 `json:"selected"`
 	}
 	result := make([]responseRow, 0, len(projects))
-	for _, project := range projects {
+	for _, p := range projects {
 		result = append(result, responseRow{
-			ID:       project.ProjectId,
-			Title:    project.ProjectName,
-			Status:   project.Status,
-			Selected: selected[project.ProjectId],
+			ID:       p.ProjectId,
+			Title:    p.ProjectName,
+			Status:   p.Status,
+			Selected: selectedSet[p.ID],
 		})
 	}
-
 	c.JSON(http.StatusOK, result)
 }
 
+// UpdateMyProjectAssociations replaces the current user's full set of project memberships.
 func (h *ProjectHandler) UpdateMyProjectAssociations(c *gin.Context) {
 	token := utils.GetJWT(c)
 	claims := utils.GetClaims(token)
@@ -1040,7 +602,6 @@ func (h *ProjectHandler) UpdateMyProjectAssociations(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid token"})
 		return
 	}
-
 	var profile models.Profile
 	if err := h.db.Where("user_uuid = ?", userUUIDStr).First(&profile).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Profile not found"})
@@ -1055,100 +616,234 @@ func (h *ProjectHandler) UpdateMyProjectAssociations(c *gin.Context) {
 		return
 	}
 
-	desiredProjectIDs := map[uuid.UUID]bool{}
-	for _, pid := range input.ProjectIDs {
-		parsed, err := uuid.Parse(pid)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid project ID: %s", pid)})
-			return
-		}
-		desiredProjectIDs[parsed] = true
-	}
-
 	err := h.db.Transaction(func(tx *gorm.DB) error {
-		type existingAssoc struct {
-			TeamMemberID uint      `gorm:"column:team_member_id"`
-			TeamID       uint      `gorm:"column:team_id"`
-			ProjectID    uuid.UUID `gorm:"column:project_id"`
-		}
-		var existing []existingAssoc
-		if err := tx.Table("team_members").
-			Select("team_members.id AS team_member_id, team_member_pairs.team_id, projects.project_id").
-			Joins("JOIN team_member_pairs ON team_member_pairs.team_member_id = team_members.id").
-			Joins("JOIN team_project_pairs ON team_project_pairs.team_id = team_member_pairs.team_id").
-			Joins("JOIN projects ON projects.id = team_project_pairs.project_id").
-			Where("team_members.user_id = ? AND team_members.deleted_at IS NULL AND projects.deleted_at IS NULL", profile.UserId).
-			Scan(&existing).Error; err != nil {
+		// Delete all existing memberships for this user, then re-add desired ones
+		if err := tx.Where("user_id = ?", profile.UserId).Delete(&models.ProjectMember{}).Error; err != nil {
 			return err
 		}
-
-		existingProjectIDs := map[uuid.UUID]bool{}
-		for _, assoc := range existing {
-			existingProjectIDs[assoc.ProjectID] = true
-		}
-
-		// Member can unselect themselves from projects.
-		for _, assoc := range existing {
-			if desiredProjectIDs[assoc.ProjectID] {
-				continue
+		for _, pid := range input.ProjectIDs {
+			projectUUID, err := uuid.Parse(pid)
+			if err != nil {
+				return fmt.Errorf("invalid project ID: %s", pid)
 			}
-
-			if err := tx.Where("team_id = ? AND team_member_id = ?", assoc.TeamID, assoc.TeamMemberID).Delete(&models.TeamMemberPair{}).Error; err != nil {
-				return err
-			}
-
-			var pairCount int64
-			if err := tx.Model(&models.TeamMemberPair{}).Where("team_member_id = ?", assoc.TeamMemberID).Count(&pairCount).Error; err != nil {
-				return err
-			}
-			if pairCount == 0 {
-				if err := tx.Where("id = ?", assoc.TeamMemberID).Delete(&models.TeamMember{}).Error; err != nil {
-					return err
-				}
-			}
-		}
-
-		// Member can add themselves to a project's team.
-		for projectUUID := range desiredProjectIDs {
-			if existingProjectIDs[projectUUID] {
-				continue
-			}
-
 			var project models.Project
 			if err := tx.First(&project, "project_id = ?", projectUUID).Error; err != nil {
-				return fmt.Errorf("project not found: %s", projectUUID.String())
+				return fmt.Errorf("project not found: %s", pid)
 			}
-
-			var teamProjectPair models.TeamProjectPair
-			if err := tx.First(&teamProjectPair, "project_id = ?", project.ID).Error; err != nil {
-				return fmt.Errorf("team mapping not found for project %s", projectUUID.String())
-			}
-
-			newMember := models.TeamMember{
-				UserID:               profile.UserId,
-				TeamMemberRole:       "Contributor",
-				TeamMemberDepartment: "Member",
-			}
-			if err := tx.Create(&newMember).Error; err != nil {
-				return err
-			}
-
-			newPair := models.TeamMemberPair{
-				TeamId:       teamProjectPair.TeamId,
-				TeamMemberId: newMember.ID,
-			}
-			if err := tx.Create(&newPair).Error; err != nil {
+			pm := models.ProjectMember{ProjectID: project.ID, UserID: profile.UserId}
+			if err := tx.Create(&pm).Error; err != nil {
 				return err
 			}
 		}
-
 		return nil
 	})
+
 	if err != nil {
 		log.Printf("UpdateMyProjectAssociations error: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update project associations"})
 		return
 	}
-
 	c.JSON(http.StatusOK, gin.H{"message": "Project associations updated"})
+}
+
+// UpdateProjectMedia handles cover image and screenshot uploads for a project.
+func (h *ProjectHandler) UpdateProjectMedia(c *gin.Context) {
+	projectID := c.Param("id")
+	projectUUID, err := uuid.Parse(projectID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid project ID"})
+		return
+	}
+
+	token := utils.GetJWT(c)
+	claims := utils.GetClaims(token)
+	userUUIDStr, ok := claims["user_id"].(string)
+	if !ok || userUUIDStr == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid token"})
+		return
+	}
+
+	isAdmin := false
+	if rolesClaim, _ := claims["roles"].(string); rolesClaim != "" {
+		for _, role := range strings.Split(rolesClaim, ",") {
+			if strings.TrimSpace(role) == "admin" {
+				isAdmin = true
+				break
+			}
+		}
+	}
+
+	userUUID, err := uuid.Parse(userUUIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user"})
+		return
+	}
+
+	var project models.Project
+	if err := h.db.First(&project, "project_id = ?", projectUUID).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Project not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load project"})
+		return
+	}
+
+	if !isAdmin {
+		var profile models.Profile
+		if err := h.db.Where("user_uuid = ?", userUUID).First(&profile).Error; err != nil {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Profile not found for user"})
+			return
+		}
+		var count int64
+		if err := h.db.Table("project_members").
+			Where("project_id = ? AND user_id = ?", project.ID, profile.UserId).
+			Count(&count).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to validate project membership"})
+			return
+		}
+		if count == 0 {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Only project contributors can update project media"})
+			return
+		}
+	}
+
+	r2, err := utils.InitS3SDK(h.cfg)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Storage unavailable"})
+		return
+	}
+
+	existingScreenshots := parseProjectScreenshots(project.Screenshots)
+	form, err := c.MultipartForm()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Expected multipart form data"})
+		return
+	}
+
+	newCoverUploaded := false
+	if coverFiles := form.File["coverImage"]; len(coverFiles) > 0 {
+		coverFile := coverFiles[0]
+		reader, openErr := coverFile.Open()
+		if openErr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to open cover image"})
+			return
+		}
+		defer reader.Close()
+		data, readErr := io.ReadAll(reader)
+		if readErr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read cover image"})
+			return
+		}
+		parts := strings.Split(coverFile.Filename, ".")
+		if len(parts) < 2 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid cover image filename"})
+			return
+		}
+		name := strings.Join(parts[:len(parts)-1], ".")
+		ext := parts[len(parts)-1]
+		blob, blobErr := models.NewBlobData(name, ext, userUUID, data, h.db, r2)
+		if blobErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store cover image"})
+			return
+		}
+		coverURL := fmt.Sprintf("/api/v1/projects/media?id=%s", blob.BlobId.String())
+		existingScreenshots = append(
+			[]projectScreenshot{{Image: coverURL, Caption: "Cover image", Alt: "Project cover image"}},
+			existingScreenshots...,
+		)
+		newCoverUploaded = true
+	}
+
+	if screenshotFiles := form.File["screenshots"]; len(screenshotFiles) > 0 {
+		for _, shotFile := range screenshotFiles {
+			reader, openErr := shotFile.Open()
+			if openErr != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to open screenshot"})
+				return
+			}
+			data, readErr := io.ReadAll(reader)
+			_ = reader.Close()
+			if readErr != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read screenshot"})
+				return
+			}
+			parts := strings.Split(shotFile.Filename, ".")
+			if len(parts) < 2 {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid screenshot filename"})
+				return
+			}
+			name := strings.Join(parts[:len(parts)-1], ".")
+			ext := parts[len(parts)-1]
+			blob, blobErr := models.NewBlobData(name, ext, userUUID, data, h.db, r2)
+			if blobErr != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store screenshot"})
+				return
+			}
+			existingScreenshots = append(existingScreenshots, projectScreenshot{
+				Image:   fmt.Sprintf("/api/v1/projects/media?id=%s", blob.BlobId.String()),
+				Caption: "Project screenshot",
+			})
+		}
+	}
+
+	if !newCoverUploaded && len(form.File["screenshots"]) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "No media files were provided"})
+		return
+	}
+
+	serialized, err := json.Marshal(existingScreenshots)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to serialize project media"})
+		return
+	}
+	project.Screenshots = string(serialized)
+	if err := h.db.Save(&project).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update project media"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "Project media updated successfully", "screenshots": existingScreenshots})
+}
+
+// GetProjectMedia serves a stored blob by UUID.
+func (h *ProjectHandler) GetProjectMedia(c *gin.Context) {
+	mediaID := c.Query("id")
+	mediaUUID, err := uuid.Parse(mediaID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid media ID"})
+		return
+	}
+	var blob models.BlobData
+	if err := h.db.First(&blob, "blob_id = ?", mediaUUID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Media not found"})
+		return
+	}
+	r2, err := utils.InitS3SDK(h.cfg)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Storage unavailable"})
+		return
+	}
+	data, err := blob.GetData(r2)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch media"})
+		return
+	}
+	contentType := mime.TypeByExtension("." + strings.ToLower(blob.FType))
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	c.Data(http.StatusOK, contentType, data)
+}
+
+// isValidProjectStatus checks if the provided status matches the allowed enum values.
+func isValidProjectStatus(status models.ProjectStatus) bool {
+	switch status {
+	case models.ProjectStatusIdea,
+		models.ProjectStatusPrototype,
+		models.ProjectStatusDevelopment,
+		models.ProjectStatusBeta,
+		models.ProjectStatusLive:
+		return true
+	}
+	return false
 }

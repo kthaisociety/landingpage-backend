@@ -122,6 +122,7 @@ func main() {
 		&models.JobListing{},
 		&models.Company{},
 		&models.Project{},
+		&models.ProjectMember{},
 		&models.Team{},
 		&models.TeamProjectPair{},
 		&models.TeamMemberPair{},
