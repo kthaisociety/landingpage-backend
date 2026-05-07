@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
@@ -55,6 +56,7 @@ func (h *TeamHandler) Register(r *gin.RouterGroup) {
 	// Admin-only
 	admin := protected.Group("/admin")
 	admin.Use(middleware.RoleRequired(h.cfg, "admin"))
+	admin.GET("/user-entries", h.AdminGetUserTeamEntries)
 	admin.POST("/member", h.AdminAddTeamEntry)
 	admin.DELETE("/member/:id", h.AdminRemoveTeamEntry)
 	admin.GET("/members/all", h.AdminListAllEntries)
@@ -245,6 +247,35 @@ func (h *TeamHandler) RemoveMyTeamEntry(c *gin.Context) {
 
 	h.db.Delete(&entry)
 	c.JSON(http.StatusOK, gin.H{"message": "Removed"})
+}
+
+// AdminGetUserTeamEntries returns team_members rows for a user (by profiles.user_uuid).
+func (h *TeamHandler) AdminGetUserTeamEntries(c *gin.Context) {
+	userIDStr := strings.TrimSpace(c.Query("userId"))
+	if userIDStr == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "userId query parameter is required"})
+		return
+	}
+	userUUID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid userId"})
+		return
+	}
+
+	var profile models.Profile
+	if err := h.db.Where("user_uuid = ?", userUUID).First(&profile).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Profile not found"})
+		return
+	}
+
+	var entries []models.TeamMember
+	if err := h.db.Where("user_id = ? AND deleted_at IS NULL", profile.UserId).
+		Order("academic_year DESC").
+		Find(&entries).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, entries)
 }
 
 // AdminAddTeamEntry lets an admin add any member to a team
