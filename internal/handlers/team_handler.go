@@ -7,6 +7,8 @@ import (
 	"backend/internal/utils"
 	"log"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -62,6 +64,8 @@ func (h *TeamHandler) Register(r *gin.RouterGroup) {
 func (h *TeamHandler) GetTeamMembers(c *gin.Context) {
 	year := c.Query("year")
 	department := c.Query("department")
+	alumniParam := strings.ToLower(strings.TrimSpace(c.Query("alumni")))
+	isAlumni := alumniParam == "1" || alumniParam == "true" || alumniParam == "yes"
 
 	query := h.db.Table("team_members").
 		Select(`
@@ -80,10 +84,13 @@ func (h *TeamHandler) GetTeamMembers(c *gin.Context) {
 		Joins("JOIN profiles ON profiles.user_id = team_members.user_id").
 		Where("team_members.deleted_at IS NULL")
 
-	if year != "" {
+	if isAlumni {
+		calendarYear := time.Now().Year()
+		query = query.Where("profiles.graduation_year > 0 AND profiles.graduation_year < ?", calendarYear)
+	} else if year != "" {
 		query = query.Where("team_members.academic_year = ?", year)
 	}
-	if department != "" && department != "All" {
+	if department != "" && department != "All" && department != "Alumni" {
 		query = query.Where("team_members.team_member_department = ?", department)
 	}
 
