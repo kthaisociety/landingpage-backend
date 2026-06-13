@@ -121,6 +121,38 @@ func TestSendGeneralApplicationConfirmation(t *testing.T) {
 	assert.Contains(t, mailer.htmlBody, "6-8 hours")
 }
 
+func TestSendGeneralApplicationConfirmationDoesNotDependOnWorkingDirectory(t *testing.T) {
+	previousMailer := defaultMailer
+	mailer := &captureMailer{}
+	defaultMailer = mailer
+	t.Cleanup(func() {
+		defaultMailer = previousMailer
+	})
+
+	previousDir, err := os.Getwd()
+	assert.NoError(t, err)
+	tempDir := t.TempDir()
+	assert.NoError(t, os.Chdir(tempDir))
+	t.Cleanup(func() {
+		assert.NoError(t, os.Chdir(previousDir))
+	})
+
+	application := models.GeneralApplication{
+		ApplicationYear: 2026,
+		FirstName:       "Ada",
+		LastName:        "Lovelace",
+		Email:           "ada@example.com",
+		Teams:           pq.StringArray{"Development"},
+		Availability:    "6-8 hours",
+	}
+
+	err = SendGeneralApplicationConfirmation(application)
+
+	assert.Nil(t, err, "SendGeneralApplicationConfirmation should not depend on the process working directory")
+	assert.Equal(t, "ada@example.com", mailer.to)
+	assert.Contains(t, mailer.htmlBody, "Hello, Ada!")
+}
+
 func TestSendLoginEmail(t *testing.T) {
 	passwordResetURL := "http://kthais.com"
 
