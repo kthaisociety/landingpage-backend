@@ -172,13 +172,13 @@ func main() {
 
 	// Initialize SES
 	if err := email.InitEmailService(cfg); err != nil {
-		log.Fatal("Failed to initialize SES:", err)
+		log.Printf("Warning: SES disabled: %v", err)
 	}
 
 	// Initialize mailchimp client
 	mailchimpApi, err := mailchimp.InitMailchimpApi(cfg)
 	if err != nil {
-		log.Fatal("Failed to initialize mailchimp client:", err)
+		log.Printf("Warning: Mailchimp disabled: %v", err)
 	}
 
 	// Initialize handlers

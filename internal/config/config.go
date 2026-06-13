@@ -88,8 +88,8 @@ func LoadConfig() (*Config, error) {
 
 	// Mailchimp config
 	cfg.Mailchimp.APIKey = getEnv("MAILCHIMP_API_KEY", "")
-	cfg.Mailchimp.User = getEnv("MAILCHIMP_USER", "")
-	cfg.Mailchimp.ListID = getEnv("MAILCHIMP_LIST_ID", "")
+	cfg.Mailchimp.User = getEnv("MAILCHIMP_USER", "kthais")
+	cfg.Mailchimp.ListID = firstNonEmptyEnv("MAILCHIMP_LIST_ID", "MAILCHIMP_AUDIENCE_ID")
 
 	// OAuth config
 	cfg.OAuth.GoogleClientID = getEnv("GOOGLE_CLIENT_ID", "")
@@ -151,6 +151,15 @@ func getEnv(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+func firstNonEmptyEnv(keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // maskString returns a masked version of the string for secure logging

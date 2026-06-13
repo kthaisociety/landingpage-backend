@@ -57,6 +57,10 @@ type MemberResponse struct {
 }
 
 func (api *MailchimpAPI) GetMember(id *string) (*MemberResponse, error) {
+	if !api.IsConfigured() {
+		return nil, fmt.Errorf("mailchimp is not configured")
+	}
+
 	response := &MemberResponse{}
 
 	err := api.Request(Get, fmt.Sprintf(member_path, api.ListId, *id), nil, nil, response)
@@ -68,6 +72,10 @@ func (api *MailchimpAPI) GetMember(id *string) (*MemberResponse, error) {
 }
 
 func (api *MailchimpAPI) AddMember(request *MemberRequest) (*MemberResponse, error) {
+	if !api.IsConfigured() {
+		return nil, fmt.Errorf("mailchimp is not configured")
+	}
+
 	response := &MemberResponse{}
 
 	err := api.Request(Post, fmt.Sprintf(main_path, api.ListId), nil, request, response)
@@ -79,6 +87,10 @@ func (api *MailchimpAPI) AddMember(request *MemberRequest) (*MemberResponse, err
 }
 
 func (api *MailchimpAPI) UpdateMember(id *string, request *MemberRequest) (*MemberResponse, error) {
+	if !api.IsConfigured() {
+		return &MemberResponse{}, nil
+	}
+
 	response := &MemberResponse{}
 
 	err := api.Request(Patch, fmt.Sprintf(member_path, api.ListId, *id), nil, request, response)
@@ -90,6 +102,10 @@ func (api *MailchimpAPI) UpdateMember(id *string, request *MemberRequest) (*Memb
 }
 
 func (api *MailchimpAPI) DeleteMember(id *string) error {
+	if !api.IsConfigured() {
+		return nil
+	}
+
 	err := api.Request(Post, fmt.Sprintf(delete_path, api.ListId, *id), nil, nil, nil)
 	if err != nil {
 		return err
@@ -99,6 +115,10 @@ func (api *MailchimpAPI) DeleteMember(id *string) error {
 }
 
 func (api *MailchimpAPI) SubscribeMember(profile *models.Profile) error {
+	if !api.IsConfigured() {
+		return nil
+	}
+
 	// Check if user is subscribed to the mailing list
 	_, memberResErr := api.GetMember(&profile.Email)
 	if memberResErr != nil {
@@ -130,6 +150,10 @@ func (api *MailchimpAPI) SubscribeMember(profile *models.Profile) error {
 
 // SubscribeNewsletter adds an email-only signup (e.g. landing page form). Existing members are left unchanged.
 func (api *MailchimpAPI) SubscribeNewsletter(email string) error {
+	if !api.IsConfigured() {
+		return nil
+	}
+
 	_, memberResErr := api.GetMember(&email)
 	if memberResErr != nil {
 		serr, ok := memberResErr.(*MailchimpAPIError)

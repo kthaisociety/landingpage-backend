@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"reflect"
 	"regexp"
+	"strings"
 )
 
 // URIFormat defines the endpoint for
@@ -59,6 +60,9 @@ func InitMailchimpApi(cfg *config.Config) (*MailchimpAPI, error) {
 	if len(apiKey) == 0 {
 		return nil, fmt.Errorf("mailchimp API key is missing")
 	}
+	if strings.TrimSpace(listId) == "" {
+		return nil, fmt.Errorf("mailchimp list/audience id is missing")
+	}
 
 	u := url.URL{}
 	u.Scheme = "https"
@@ -73,8 +77,19 @@ func InitMailchimpApi(cfg *config.Config) (*MailchimpAPI, error) {
 	}, nil
 }
 
+func (api *MailchimpAPI) IsConfigured() bool {
+	return api != nil &&
+		strings.TrimSpace(api.Key) != "" &&
+		strings.TrimSpace(api.ListId) != "" &&
+		strings.TrimSpace(api.Endpoint) != ""
+}
+
 // Request will make a call to the MailchimpAPI
 func (api *MailchimpAPI) Request(method, path string, params QueryParams, body, response any) error {
+	if !api.IsConfigured() {
+		return fmt.Errorf("mailchimp is not configured")
+	}
+
 	client := &http.Client{}
 
 	requestURL := fmt.Sprintf("%s%s", api.Endpoint, path)
