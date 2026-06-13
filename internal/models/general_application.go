@@ -1,0 +1,43 @@
+package models
+
+import (
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/lib/pq"
+	"gorm.io/gorm"
+)
+
+type GeneralApplicationStatus string
+
+const (
+	GeneralApplicationStatusPending  GeneralApplicationStatus = "pending"
+	GeneralApplicationStatusReviewed GeneralApplicationStatus = "reviewed"
+	GeneralApplicationStatusAccepted GeneralApplicationStatus = "accepted"
+	GeneralApplicationStatusRejected GeneralApplicationStatus = "rejected"
+)
+
+type GeneralApplication struct {
+	gorm.Model
+	Id                 uuid.UUID                `gorm:"uniqueIndex" json:"id"`
+	ApplicationYear    int                      `gorm:"not null;uniqueIndex:idx_general_application_year_email" json:"application_year"`
+	FirstName          string                   `gorm:"not null" json:"first_name"`
+	LastName           string                   `gorm:"not null" json:"last_name"`
+	Email              string                   `gorm:"not null" json:"email"`
+	EmailNormalized    string                   `gorm:"not null;uniqueIndex:idx_general_application_year_email" json:"-"`
+	Programme          string                   `gorm:"not null" json:"programme"`
+	GraduationYear     int                      `gorm:"not null" json:"graduation_year"`
+	LinkedinURL        string                   `gorm:"not null" json:"linkedin_url"`
+	AdditionalLinks    pq.StringArray           `gorm:"type:text[]" json:"additional_links"`
+	ResumeBlobID       uuid.UUID                `gorm:"not null" json:"-"`
+	ResumeData         []byte                   `gorm:"type:bytea" json:"-"`
+	ResumeFileName     string                   `gorm:"not null" json:"resume_file_name"`
+	ResumeContentType  string                   `gorm:"not null" json:"resume_content_type"`
+	Teams              pq.StringArray           `gorm:"type:text[];not null" json:"teams"`
+	TeamInterestReason string                   `gorm:"type:text;not null" json:"team_interest_reason"`
+	Availability       string                   `gorm:"not null" json:"availability"`
+	Contribution       string                   `gorm:"type:text;not null" json:"contribution"`
+	Status             GeneralApplicationStatus `gorm:"not null;default:'pending'" json:"status"`
+	CreatedAt          time.Time                `json:"created_at"`
+	UpdatedAt          time.Time                `json:"updated_at"`
+}

@@ -1,0 +1,22 @@
+{{define "email_message_pre"}}
+<p>Thank you for applying to KTH AI Society. We have received your general application for {{.Application.ApplicationYear}}.</p>
+
+<p>Your application is registered with these preferences:</p>
+<ul>
+    {{range .Application.Teams}}
+    <li>{{.}}</li>
+    {{end}}
+</ul>
+
+<p>Availability: {{.Application.Availability}}</p>
+{{end}}
+
+{{define "email_button_url"}}{{.URL}}{{end}}
+
+{{define "email_button_text"}}Visit KTH AI Society{{end}}
+
+{{define "email_message_post"}}
+<p>We will review applications and contact you by email. If you did not submit this application, contact us at <a href="mailto:{{.AppEmailContact}}">{{.AppEmailContact}}</a>.</p>
+{{end}}
+
+{{template "base" .}}

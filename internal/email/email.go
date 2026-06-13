@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"html/template"
+	"os"
+	"path/filepath"
 	"time"
 
 	"backend/internal/config"
@@ -68,6 +70,11 @@ type EmailData struct {
 	Text     string // For custom text used in event survey and custom emails
 }
 
+type GeneralApplicationEmailData struct {
+	EmailData
+	Application models.GeneralApplication
+}
+
 // Helper function to create a new EmailData struct with default values
 func newEmailData() EmailData {
 	return EmailData{
@@ -127,6 +134,23 @@ func sendEmail(recipient, subject, body string) error {
 	return defaultMailer.Send(ctx, recipient, subject, body, "")
 }
 
+func emailTemplatePath(parts ...string) string {
+	relative := filepath.Join(append([]string{"templates"}, parts...)...)
+	candidates := []string{
+		relative,
+		filepath.Join(append([]string{"internal", "email", "templates"}, parts...)...),
+		filepath.Join(append([]string{"backend", "internal", "email", "templates"}, parts...)...),
+	}
+
+	for _, candidate := range candidates {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+
+	return relative
+}
+
 // Custom template functions for formatting
 var templateFuncs = template.FuncMap{
 	// formatDate formats a time.Time to a human-readable date string
@@ -146,6 +170,36 @@ var templateFuncs = template.FuncMap{
 	},
 }
 
+// SendGeneralApplicationConfirmation sends a confirmation email after a general application is received.
+func SendGeneralApplicationConfirmation(application models.GeneralApplication) error {
+	tmpl, err := template.New("base").Funcs(templateFuncs).ParseFiles(
+		emailTemplatePath("base.html"),
+		emailTemplatePath("application", "confirmation.html"),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to parse templates: %w", err)
+	}
+
+	data := GeneralApplicationEmailData{
+		EmailData:   newEmailData(),
+		Application: application,
+	}
+	data.Profile = models.Profile{
+		Email:     application.Email,
+		FirstName: application.FirstName,
+		LastName:  application.LastName,
+	}
+	data.URL = "https://kthais.com/"
+
+	var htmlBody bytes.Buffer
+	err = tmpl.ExecuteTemplate(&htmlBody, "base", data)
+	if err != nil {
+		return fmt.Errorf("failed to execute template: %w", err)
+	}
+
+	return sendEmail(application.Email, "KTH AI Society application received", htmlBody.String())
+}
+
 // Sends a registration confirmation email
 //
 // Parameters:
@@ -157,8 +211,8 @@ var templateFuncs = template.FuncMap{
 func SendRegistrationEmail(profile models.Profile, verificationURL string) error {
 	// Parse both base and registration templates
 	tmpl, err := template.New("base").Funcs(templateFuncs).ParseFiles(
-		"templates/base.html",
-		"templates/profile/register.html",
+		emailTemplatePath("base.html"),
+		emailTemplatePath("profile", "register.html"),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to parse templates: %w", err)
@@ -194,8 +248,8 @@ func SendRegistrationEmail(profile models.Profile, verificationURL string) error
 func sendLoginEmail(profile models.Profile, loginURL string) error {
 	// Parse both base and password templates
 	tmpl, err := template.New("base").Funcs(templateFuncs).ParseFiles(
-		"templates/base.html",
-		"templates/profile/login.html",
+		emailTemplatePath("base.html"),
+		emailTemplatePath("profile", "login.html"),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to parse templates: %w", err)
@@ -231,8 +285,8 @@ func sendLoginEmail(profile models.Profile, loginURL string) error {
 func sendEventRegistrationEmail(profile models.Profile, event models.Event) error {
 	// Parse both base and password templates
 	tmpl, err := template.New("base").Funcs(templateFuncs).ParseFiles(
-		"templates/base.html",
-		"templates/event/register.html",
+		emailTemplatePath("base.html"),
+		emailTemplatePath("event", "register.html"),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to parse templates: %w", err)
@@ -270,8 +324,8 @@ func sendEventRegistrationEmail(profile models.Profile, event models.Event) erro
 func sendEventReminderEmail(profile models.Profile, event models.Event) error {
 	// Parse both base and password templates
 	tmpl, err := template.New("base").Funcs(templateFuncs).ParseFiles(
-		"templates/base.html",
-		"templates/event/reminder.html",
+		emailTemplatePath("base.html"),
+		emailTemplatePath("event", "reminder.html"),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to parse templates: %w", err)
@@ -309,8 +363,8 @@ func sendEventReminderEmail(profile models.Profile, event models.Event) error {
 func sendEventCancelEmail(profile models.Profile, event models.Event) error {
 	// Parse both base and password templates
 	tmpl, err := template.New("base").Funcs(templateFuncs).ParseFiles(
-		"templates/base.html",
-		"templates/event/cancel.html",
+		emailTemplatePath("base.html"),
+		emailTemplatePath("event", "cancel.html"),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to parse templates: %w", err)
@@ -352,8 +406,8 @@ func sendEventCancelEmail(profile models.Profile, event models.Event) error {
 func sendCustomEmail(profile models.Profile, subject string, customText string, customButtonText string, customButtonURL string, customImageURL string) error {
 	// Parse both base and password templates
 	tmpl, err := template.New("base").Funcs(templateFuncs).ParseFiles(
-		"templates/base.html",
-		"templates/profile/custom.html",
+		emailTemplatePath("base.html"),
+		emailTemplatePath("profile", "custom.html"),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to parse templates: %w", err)

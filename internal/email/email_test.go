@@ -1,6 +1,7 @@
 package email
 
 import (
+	"context"
 	"log"
 	"os"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"backend/internal/models"
 
 	"github.com/joho/godotenv"
+	"github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -39,6 +41,21 @@ var (
 		CreatedBy:          1, // user ID (foreign key)
 	}
 )
+
+type captureMailer struct {
+	to       string
+	subject  string
+	htmlBody string
+	textBody string
+}
+
+func (m *captureMailer) Send(ctx context.Context, to, subject, htmlBody, textBody string) error {
+	m.to = to
+	m.subject = subject
+	m.htmlBody = htmlBody
+	m.textBody = textBody
+	return nil
+}
 
 func init() {
 	// Load .env file if it exists
@@ -73,6 +90,35 @@ func TestSendRegistrationEmail(t *testing.T) {
 
 	err := SendRegistrationEmail(mockProfile, verificationURL)
 	assert.Nil(t, err, "SendRegistrationEmail should not return an error")
+}
+
+func TestSendGeneralApplicationConfirmation(t *testing.T) {
+	previousMailer := defaultMailer
+	mailer := &captureMailer{}
+	defaultMailer = mailer
+	t.Cleanup(func() {
+		defaultMailer = previousMailer
+	})
+
+	application := models.GeneralApplication{
+		ApplicationYear: 2026,
+		FirstName:       "Ada",
+		LastName:        "Lovelace",
+		Email:           "ada@example.com",
+		Teams:           pq.StringArray{"Development", "Research"},
+		Availability:    "6-8 hours",
+	}
+
+	err := SendGeneralApplicationConfirmation(application)
+
+	assert.Nil(t, err, "SendGeneralApplicationConfirmation should not return an error")
+	assert.Equal(t, "ada@example.com", mailer.to)
+	assert.Equal(t, "KTH AI Society application received", mailer.subject)
+	assert.Contains(t, mailer.htmlBody, "Hello, Ada!")
+	assert.Contains(t, mailer.htmlBody, "general application for 2026")
+	assert.Contains(t, mailer.htmlBody, "Development")
+	assert.Contains(t, mailer.htmlBody, "Research")
+	assert.Contains(t, mailer.htmlBody, "6-8 hours")
 }
 
 func TestSendLoginEmail(t *testing.T) {
