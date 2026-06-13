@@ -24,11 +24,9 @@ RUN apk --no-cache add ca-certificates
 
 # Copy the binary from the builder stage
 COPY --from=builder /app/backend .
-COPY --from=builder /app/.env.example .env
 
 # Expose the port the app runs on
 EXPOSE 8080
 
 # Command to run the executable
 CMD ["./backend"]
-

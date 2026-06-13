@@ -6,7 +6,9 @@ import (
 	"embed"
 	"fmt"
 	"html/template"
+	"os"
 	"path"
+	"strings"
 	"time"
 
 	"backend/internal/config"
@@ -41,6 +43,9 @@ func InitEmailService(cfg *config.Config) error {
 	if cfg.SES.Sender == "" {
 		return fmt.Errorf("no SES sender set")
 	}
+	if err := validateAWSCredentialEnv(); err != nil {
+		return err
+	}
 
 	// Build AWS config load options
 	opts := []func(*awsconfig.LoadOptions) error{}
@@ -59,6 +64,16 @@ func InitEmailService(cfg *config.Config) error {
 		sender:  cfg.SES.Sender,
 		replyTo: cfg.SES.ReplyTo,
 		charset: "UTF-8",
+	}
+	return nil
+}
+
+func validateAWSCredentialEnv() error {
+	for _, key := range []string{"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"} {
+		value := strings.TrimSpace(os.Getenv(key))
+		if strings.HasPrefix(value, "<") && strings.HasSuffix(value, ">") {
+			return fmt.Errorf("%s is still set to a placeholder value; set real AWS credentials or remove it to use the default AWS credential chain", key)
+		}
 	}
 	return nil
 }

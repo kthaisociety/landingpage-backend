@@ -153,6 +153,18 @@ func TestSendGeneralApplicationConfirmationDoesNotDependOnWorkingDirectory(t *te
 	assert.Contains(t, mailer.htmlBody, "Hello, Ada!")
 }
 
+func TestValidateAWSCredentialEnvRejectsPlaceholders(t *testing.T) {
+	t.Setenv("AWS_ACCESS_KEY_ID", "<ACCESS_KEY>")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+	t.Setenv("AWS_SESSION_TOKEN", "")
+
+	err := validateAWSCredentialEnv()
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "AWS_ACCESS_KEY_ID")
+	assert.Contains(t, err.Error(), "placeholder")
+}
+
 func TestSendLoginEmail(t *testing.T) {
 	passwordResetURL := "http://kthais.com"
 
