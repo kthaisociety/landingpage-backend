@@ -9,17 +9,19 @@ import (
 
 func validGeneralApplicationInput() generalApplicationInput {
 	return generalApplicationInput{
-		FirstName:          "Ada",
-		LastName:           "Lovelace",
-		Email:              "ada@example.com",
-		Programme:          "Computer Science",
-		GraduationYear:     2027,
-		LinkedinURL:        "https://www.linkedin.com/in/adalovelace",
-		AdditionalLinks:    []string{"https://github.com/ada"},
-		Teams:              []string{"Development", "Research"},
-		TeamInterestReason: "I want to build useful AI systems with other students.",
-		Availability:       "6-8 hours",
-		Contribution:       "I can contribute by building products, writing clearly, and helping organize technical work.",
+		FirstName:            "Ada",
+		LastName:             "Lovelace",
+		Email:                "ada@example.com",
+		Gender:               "Woman",
+		Programme:            "Computer Science",
+		GraduationYear:       2027,
+		LinkedinURL:          "https://www.linkedin.com/in/adalovelace",
+		AdditionalLinks:      []string{"https://github.com/ada"},
+		Teams:                []string{"Development", "Research"},
+		TeamInterestReason:   "I want to build useful AI systems with other students.",
+		Availability:         "6-8 hours",
+		Contribution:         "I can contribute by building products, writing clearly, and helping organize technical work.",
+		DataRetentionConsent: true,
 	}
 }
 
@@ -45,6 +47,13 @@ func TestValidateGeneralApplicationInput(t *testing.T) {
 				input.Email = "not-an-email"
 			},
 			wantErr: "email",
+		},
+		{
+			name: "invalid gender",
+			mutate: func(input *generalApplicationInput) {
+				input.Gender = ""
+			},
+			wantErr: "gender",
 		},
 		{
 			name: "missing programme",
@@ -141,6 +150,13 @@ func TestValidateGeneralApplicationInput(t *testing.T) {
 				input.Contribution = "too short"
 			},
 			wantErr: "contribution",
+		},
+		{
+			name: "missing data retention consent",
+			mutate: func(input *generalApplicationInput) {
+				input.DataRetentionConsent = false
+			},
+			wantErr: "consent",
 		},
 	}
 
