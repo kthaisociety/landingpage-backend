@@ -42,6 +42,14 @@ var allowedApplicationAvailability = map[string]struct{}{
 	"8 hours or more": {},
 }
 
+var allowedApplicationGenders = map[string]struct{}{
+	"Woman":             {},
+	"Man":               {},
+	"Non-binary":        {},
+	"Prefer not to say": {},
+	"Other":             {},
+}
+
 var allowedApplicationStatuses = map[models.GeneralApplicationStatus]struct{}{
 	models.GeneralApplicationStatusPending:  {},
 	models.GeneralApplicationStatusReviewed: {},
@@ -67,17 +75,19 @@ type GeneralApplicationHandler struct {
 }
 
 type generalApplicationInput struct {
-	FirstName          string
-	LastName           string
-	Email              string
-	Programme          string
-	GraduationYear     int
-	LinkedinURL        string
-	AdditionalLinks    []string
-	Teams              []string
-	TeamInterestReason string
-	Availability       string
-	Contribution       string
+	FirstName            string
+	LastName             string
+	Email                string
+	Gender               string
+	Programme            string
+	GraduationYear       int
+	LinkedinURL          string
+	AdditionalLinks      []string
+	Teams                []string
+	TeamInterestReason   string
+	Availability         string
+	Contribution         string
+	DataRetentionConsent bool
 }
 
 func NewGeneralApplicationHandler(db *gorm.DB, cfg *config.Config) *GeneralApplicationHandler {
@@ -143,23 +153,25 @@ func (h *GeneralApplicationHandler) Create(c *gin.Context) {
 	var application models.GeneralApplication
 	err = h.db.Transaction(func(tx *gorm.DB) error {
 		application = models.GeneralApplication{
-			Id:                 applicationID,
-			ApplicationYear:    generalApplicationYear,
-			FirstName:          strings.TrimSpace(input.FirstName),
-			LastName:           strings.TrimSpace(input.LastName),
-			Email:              strings.TrimSpace(input.Email),
-			EmailNormalized:    emailNormalized,
-			Programme:          strings.TrimSpace(input.Programme),
-			GraduationYear:     input.GraduationYear,
-			LinkedinURL:        normalizeWebsiteLink(input.LinkedinURL),
-			AdditionalLinks:    pq.StringArray(normalizeWebsiteLinks(input.AdditionalLinks)),
-			ResumeFileName:     filepath.Base(fileHeader.Filename),
-			ResumeContentType:  resumeContentType,
-			Teams:              pq.StringArray(input.Teams),
-			TeamInterestReason: strings.TrimSpace(input.TeamInterestReason),
-			Availability:       strings.TrimSpace(input.Availability),
-			Contribution:       strings.TrimSpace(input.Contribution),
-			Status:             models.GeneralApplicationStatusPending,
+			Id:                   applicationID,
+			ApplicationYear:      generalApplicationYear,
+			FirstName:            strings.TrimSpace(input.FirstName),
+			LastName:             strings.TrimSpace(input.LastName),
+			Email:                strings.TrimSpace(input.Email),
+			EmailNormalized:      emailNormalized,
+			Gender:               strings.TrimSpace(input.Gender),
+			Programme:            strings.TrimSpace(input.Programme),
+			GraduationYear:       input.GraduationYear,
+			LinkedinURL:          normalizeWebsiteLink(input.LinkedinURL),
+			AdditionalLinks:      pq.StringArray(normalizeWebsiteLinks(input.AdditionalLinks)),
+			ResumeFileName:       filepath.Base(fileHeader.Filename),
+			ResumeContentType:    resumeContentType,
+			Teams:                pq.StringArray(input.Teams),
+			TeamInterestReason:   strings.TrimSpace(input.TeamInterestReason),
+			Availability:         strings.TrimSpace(input.Availability),
+			Contribution:         strings.TrimSpace(input.Contribution),
+			DataRetentionConsent: input.DataRetentionConsent,
+			Status:               models.GeneralApplicationStatusPending,
 		}
 
 		if shouldStoreResumeInDatabase(h.cfg) {
@@ -337,17 +349,19 @@ func parseGeneralApplicationForm(c *gin.Context) (generalApplicationInput, error
 	}
 
 	return generalApplicationInput{
-		FirstName:          strings.TrimSpace(c.PostForm("firstName")),
-		LastName:           strings.TrimSpace(c.PostForm("lastName")),
-		Email:              strings.TrimSpace(c.PostForm("email")),
-		Programme:          strings.TrimSpace(c.PostForm("programme")),
-		GraduationYear:     graduationYear,
-		LinkedinURL:        strings.TrimSpace(c.PostForm("linkedinUrl")),
-		AdditionalLinks:    normalizeLinks(c.PostFormArray("additionalLinks"), c.PostForm("additionalLinks")),
-		Teams:              normalizeRepeatedValues(c.PostFormArray("teams")),
-		TeamInterestReason: strings.TrimSpace(c.PostForm("teamInterestReason")),
-		Availability:       strings.TrimSpace(c.PostForm("availability")),
-		Contribution:       strings.TrimSpace(c.PostForm("contribution")),
+		FirstName:            strings.TrimSpace(c.PostForm("firstName")),
+		LastName:             strings.TrimSpace(c.PostForm("lastName")),
+		Email:                strings.TrimSpace(c.PostForm("email")),
+		Gender:               strings.TrimSpace(c.PostForm("gender")),
+		Programme:            strings.TrimSpace(c.PostForm("programme")),
+		GraduationYear:       graduationYear,
+		LinkedinURL:          strings.TrimSpace(c.PostForm("linkedinUrl")),
+		AdditionalLinks:      normalizeLinks(c.PostFormArray("additionalLinks"), c.PostForm("additionalLinks")),
+		Teams:                normalizeRepeatedValues(c.PostFormArray("teams")),
+		TeamInterestReason:   strings.TrimSpace(c.PostForm("teamInterestReason")),
+		Availability:         strings.TrimSpace(c.PostForm("availability")),
+		Contribution:         strings.TrimSpace(c.PostForm("contribution")),
+		DataRetentionConsent: strings.EqualFold(strings.TrimSpace(c.PostForm("dataRetentionConsent")), "true"),
 	}, nil
 }
 
@@ -360,6 +374,9 @@ func validateGeneralApplicationInput(input generalApplicationInput) error {
 	}
 	if !isValidEmail(input.Email) {
 		return fmt.Errorf("valid email is required")
+	}
+	if _, ok := allowedApplicationGenders[input.Gender]; !ok {
+		return fmt.Errorf("invalid gender")
 	}
 	if input.Programme == "" {
 		return fmt.Errorf("programme is required")
@@ -394,6 +411,9 @@ func validateGeneralApplicationInput(input generalApplicationInput) error {
 	}
 	if len(input.Contribution) < 20 || len(input.Contribution) > 2000 {
 		return fmt.Errorf("contribution must be between 20 and 2000 characters")
+	}
+	if !input.DataRetentionConsent {
+		return fmt.Errorf("data retention consent is required")
 	}
 	return nil
 }
