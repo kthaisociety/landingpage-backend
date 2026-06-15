@@ -12,7 +12,7 @@ func validGeneralApplicationInput() generalApplicationInput {
 		FirstName:            "Ada",
 		LastName:             "Lovelace",
 		Email:                "ada@example.com",
-		Gender:               "Woman",
+		Gender:               "Female",
 		Programme:            "Computer Science",
 		GraduationYear:       2027,
 		LinkedinURL:          "https://www.linkedin.com/in/adalovelace",

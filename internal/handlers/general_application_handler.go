@@ -43,8 +43,8 @@ var allowedApplicationAvailability = map[string]struct{}{
 }
 
 var allowedApplicationGenders = map[string]struct{}{
-	"Woman":             {},
-	"Man":               {},
+	"Female":            {},
+	"Male":              {},
 	"Non-binary":        {},
 	"Prefer not to say": {},
 	"Other":             {},
