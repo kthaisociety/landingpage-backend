@@ -17,7 +17,7 @@ Critical current constraint: startup initializes OAuth, Mailchimp, SES, sessions
 - `GOOGLE_CLIENT_ID`
 - `GOOGLE_CLIENT_SECRET`
 - `MAILCHIMP_API_KEY`
-- `SES_SENDER`
+- AWS credentials for SES, if email sending should be active outside an AWS runtime
 
 ## Working Rules for Claude
 

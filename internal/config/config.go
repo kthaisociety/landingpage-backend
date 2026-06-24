@@ -7,6 +7,11 @@ import (
 	"strings"
 )
 
+const (
+	defaultSESRegion = "eu-north-1"
+	defaultSESSender = "applications@kthais.com"
+)
+
 type Config struct {
 	Database struct {
 		Host     string
@@ -123,13 +128,9 @@ func LoadConfig() (*Config, error) {
 	}
 
 	// Amazon SES config
-	cfg.SES.Region = getEnv("SES_REGION", "")
-	cfg.SES.Sender = getEnv("SES_SENDER", "")
+	cfg.SES.Region = getEnv("SES_REGION", defaultSESRegion)
+	cfg.SES.Sender = getEnv("SES_SENDER", defaultSESSender)
 	cfg.SES.ReplyTo = getEnv("SES_REPLY_TO", cfg.SES.Sender)
-
-	if cfg.SES.Sender == "" {
-		log.Println("Warning: Sender email is not set.")
-	}
 
 	return cfg, nil
 }
