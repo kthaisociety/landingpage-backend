@@ -153,6 +153,10 @@ func (h *GeneralApplicationHandler) Create(c *gin.Context) {
 	applicationID := uuid.New()
 	var application models.GeneralApplication
 	err = h.db.Transaction(func(tx *gorm.DB) error {
+		if err := purgeSoftDeletedGeneralApplication(tx, generalApplicationYear, emailNormalized); err != nil {
+			return fmt.Errorf("failed to clear deleted application: %w", err)
+		}
+
 		application = models.GeneralApplication{
 			Id:                    applicationID,
 			ApplicationYear:       generalApplicationYear,
@@ -314,12 +318,19 @@ func (h *GeneralApplicationHandler) AdminDelete(c *gin.Context) {
 		return
 	}
 
-	if err := h.db.Delete(&application).Error; err != nil {
+	if err := h.db.Unscoped().Delete(&application).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete application"})
 		return
 	}
 
 	c.Status(http.StatusNoContent)
+}
+
+func purgeSoftDeletedGeneralApplication(db *gorm.DB, applicationYear int, emailNormalized string) error {
+	return db.Unscoped().
+		Where("application_year = ? AND email_normalized = ? AND deleted_at IS NOT NULL", applicationYear, emailNormalized).
+		Delete(&models.GeneralApplication{}).
+		Error
 }
 
 func (h *GeneralApplicationHandler) AdminDownloadResume(c *gin.Context) {
