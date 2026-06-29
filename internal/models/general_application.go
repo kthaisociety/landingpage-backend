@@ -26,6 +26,7 @@ type GeneralApplication struct {
 	Email                string                   `gorm:"not null" json:"email"`
 	EmailNormalized      string                   `gorm:"not null;uniqueIndex:idx_general_application_year_email" json:"-"`
 	Gender               string                   `gorm:"not null;default:'Prefer not to say'" json:"gender"`
+	University           string                   `gorm:"not null;default:''" json:"university"`
 	Programme            string                   `gorm:"not null" json:"programme"`
 	GraduationYear       int                      `gorm:"not null" json:"graduation_year"`
 	LinkedinURL          string                   `gorm:"not null" json:"linkedin_url"`

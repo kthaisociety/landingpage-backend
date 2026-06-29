@@ -79,12 +79,12 @@ type generalApplicationInput struct {
 	LastName             string
 	Email                string
 	Gender               string
+	University           string
 	Programme            string
 	GraduationYear       int
 	LinkedinURL          string
 	AdditionalLinks      []string
 	Teams                []string
-	TeamInterestReason   string
 	Availability         string
 	Contribution         string
 	DataRetentionConsent bool
@@ -160,6 +160,7 @@ func (h *GeneralApplicationHandler) Create(c *gin.Context) {
 			Email:                strings.TrimSpace(input.Email),
 			EmailNormalized:      emailNormalized,
 			Gender:               strings.TrimSpace(input.Gender),
+			University:           strings.TrimSpace(input.University),
 			Programme:            strings.TrimSpace(input.Programme),
 			GraduationYear:       input.GraduationYear,
 			LinkedinURL:          normalizeWebsiteLink(input.LinkedinURL),
@@ -167,7 +168,7 @@ func (h *GeneralApplicationHandler) Create(c *gin.Context) {
 			ResumeFileName:       filepath.Base(fileHeader.Filename),
 			ResumeContentType:    resumeContentType,
 			Teams:                pq.StringArray(input.Teams),
-			TeamInterestReason:   strings.TrimSpace(input.TeamInterestReason),
+			TeamInterestReason:   "",
 			Availability:         strings.TrimSpace(input.Availability),
 			Contribution:         strings.TrimSpace(input.Contribution),
 			DataRetentionConsent: input.DataRetentionConsent,
@@ -245,7 +246,8 @@ func (h *GeneralApplicationHandler) AdminList(c *gin.Context) {
 	if q := strings.TrimSpace(c.Query("q")); q != "" {
 		like := "%" + q + "%"
 		query = query.Where(
-			"first_name ILIKE ? OR last_name ILIKE ? OR email ILIKE ? OR programme ILIKE ? OR linkedin_url ILIKE ?",
+			"first_name ILIKE ? OR last_name ILIKE ? OR email ILIKE ? OR university ILIKE ? OR programme ILIKE ? OR linkedin_url ILIKE ?",
+			like,
 			like,
 			like,
 			like,
@@ -353,12 +355,12 @@ func parseGeneralApplicationForm(c *gin.Context) (generalApplicationInput, error
 		LastName:             strings.TrimSpace(c.PostForm("lastName")),
 		Email:                strings.TrimSpace(c.PostForm("email")),
 		Gender:               strings.TrimSpace(c.PostForm("gender")),
+		University:           strings.TrimSpace(c.PostForm("university")),
 		Programme:            strings.TrimSpace(c.PostForm("programme")),
 		GraduationYear:       graduationYear,
 		LinkedinURL:          strings.TrimSpace(c.PostForm("linkedinUrl")),
 		AdditionalLinks:      normalizeLinks(c.PostFormArray("additionalLinks"), c.PostForm("additionalLinks")),
 		Teams:                normalizeRepeatedValues(c.PostFormArray("teams")),
-		TeamInterestReason:   strings.TrimSpace(c.PostForm("teamInterestReason")),
 		Availability:         strings.TrimSpace(c.PostForm("availability")),
 		Contribution:         strings.TrimSpace(c.PostForm("contribution")),
 		DataRetentionConsent: strings.EqualFold(strings.TrimSpace(c.PostForm("dataRetentionConsent")), "true"),
@@ -377,6 +379,9 @@ func validateGeneralApplicationInput(input generalApplicationInput) error {
 	}
 	if _, ok := allowedApplicationGenders[input.Gender]; !ok {
 		return fmt.Errorf("invalid gender")
+	}
+	if input.University == "" {
+		return fmt.Errorf("university is required")
 	}
 	if input.Programme == "" {
 		return fmt.Errorf("programme is required")
@@ -402,9 +407,6 @@ func validateGeneralApplicationInput(input generalApplicationInput) error {
 		if _, ok := allowedApplicationTeams[team]; !ok {
 			return fmt.Errorf("invalid team")
 		}
-	}
-	if len(input.TeamInterestReason) < 20 || len(input.TeamInterestReason) > 2000 {
-		return fmt.Errorf("team interest reason must be between 20 and 2000 characters")
 	}
 	if _, ok := allowedApplicationAvailability[input.Availability]; !ok {
 		return fmt.Errorf("invalid availability")

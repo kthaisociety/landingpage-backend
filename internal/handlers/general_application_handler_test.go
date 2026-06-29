@@ -13,12 +13,12 @@ func validGeneralApplicationInput() generalApplicationInput {
 		LastName:             "Lovelace",
 		Email:                "ada@example.com",
 		Gender:               "Female",
+		University:           "KTH Royal Institute of Technology",
 		Programme:            "Computer Science",
 		GraduationYear:       2027,
 		LinkedinURL:          "https://www.linkedin.com/in/adalovelace",
 		AdditionalLinks:      []string{"https://github.com/ada"},
 		Teams:                []string{"Development", "Research"},
-		TeamInterestReason:   "I want to build useful AI systems with other students.",
 		Availability:         "6-8 hours",
 		Contribution:         "I can contribute by building products, writing clearly, and helping organize technical work.",
 		DataRetentionConsent: true,
@@ -129,13 +129,6 @@ func TestValidateGeneralApplicationInput(t *testing.T) {
 				input.Teams = []string{"Board"}
 			},
 			wantErr: "team",
-		},
-		{
-			name: "short team interest reason",
-			mutate: func(input *generalApplicationInput) {
-				input.TeamInterestReason = "too short"
-			},
-			wantErr: "team interest",
 		},
 		{
 			name: "invalid availability",
