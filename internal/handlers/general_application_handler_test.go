@@ -18,7 +18,7 @@ func validGeneralApplicationInput() generalApplicationInput {
 		GraduationYear:       2027,
 		LinkedinURL:          "https://www.linkedin.com/in/adalovelace",
 		AdditionalLinks:      []string{"https://github.com/ada"},
-		Teams:                []string{"Development", "Research"},
+		Teams:                []string{"Development", "Research", "Business", "Growth", "IT"},
 		Availability:         "6-8 hours",
 		Contribution:         "I can contribute by building products, writing clearly, and helping organize technical work.",
 		DataRetentionConsent: true,
@@ -117,18 +117,32 @@ func TestValidateGeneralApplicationInput(t *testing.T) {
 			},
 		},
 		{
-			name: "no teams",
+			name: "missing ranked teams",
 			mutate: func(input *generalApplicationInput) {
 				input.Teams = nil
 			},
-			wantErr: "team",
+			wantErr: "rank all five teams",
+		},
+		{
+			name: "incomplete ranked teams",
+			mutate: func(input *generalApplicationInput) {
+				input.Teams = []string{"Development", "Research", "Business", "Growth"}
+			},
+			wantErr: "rank all five teams",
 		},
 		{
 			name: "invalid team",
 			mutate: func(input *generalApplicationInput) {
-				input.Teams = []string{"Board"}
+				input.Teams = []string{"Development", "Research", "Business", "Growth", "Board"}
 			},
 			wantErr: "team",
+		},
+		{
+			name: "duplicate team",
+			mutate: func(input *generalApplicationInput) {
+				input.Teams = []string{"Development", "Research", "Business", "Growth", "Growth"}
+			},
+			wantErr: "once",
 		},
 		{
 			name: "invalid availability",

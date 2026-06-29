@@ -153,26 +153,27 @@ func (h *GeneralApplicationHandler) Create(c *gin.Context) {
 	var application models.GeneralApplication
 	err = h.db.Transaction(func(tx *gorm.DB) error {
 		application = models.GeneralApplication{
-			Id:                   applicationID,
-			ApplicationYear:      generalApplicationYear,
-			FirstName:            strings.TrimSpace(input.FirstName),
-			LastName:             strings.TrimSpace(input.LastName),
-			Email:                strings.TrimSpace(input.Email),
-			EmailNormalized:      emailNormalized,
-			Gender:               strings.TrimSpace(input.Gender),
-			University:           strings.TrimSpace(input.University),
-			Programme:            strings.TrimSpace(input.Programme),
-			GraduationYear:       input.GraduationYear,
-			LinkedinURL:          normalizeWebsiteLink(input.LinkedinURL),
-			AdditionalLinks:      pq.StringArray(normalizeWebsiteLinks(input.AdditionalLinks)),
-			ResumeFileName:       filepath.Base(fileHeader.Filename),
-			ResumeContentType:    resumeContentType,
-			Teams:                pq.StringArray(input.Teams),
-			TeamInterestReason:   "",
-			Availability:         strings.TrimSpace(input.Availability),
-			Contribution:         strings.TrimSpace(input.Contribution),
-			DataRetentionConsent: input.DataRetentionConsent,
-			Status:               models.GeneralApplicationStatusPending,
+			Id:                    applicationID,
+			ApplicationYear:       generalApplicationYear,
+			FirstName:             strings.TrimSpace(input.FirstName),
+			LastName:              strings.TrimSpace(input.LastName),
+			Email:                 strings.TrimSpace(input.Email),
+			EmailNormalized:       emailNormalized,
+			Gender:                strings.TrimSpace(input.Gender),
+			University:            strings.TrimSpace(input.University),
+			Programme:             strings.TrimSpace(input.Programme),
+			GraduationYear:        input.GraduationYear,
+			LinkedinURL:           normalizeWebsiteLink(input.LinkedinURL),
+			AdditionalLinks:       pq.StringArray(normalizeWebsiteLinks(input.AdditionalLinks)),
+			ResumeFileName:        filepath.Base(fileHeader.Filename),
+			ResumeContentType:     resumeContentType,
+			Teams:                 pq.StringArray(input.Teams),
+			TeamPreferencesRanked: true,
+			TeamInterestReason:    "",
+			Availability:          strings.TrimSpace(input.Availability),
+			Contribution:          strings.TrimSpace(input.Contribution),
+			DataRetentionConsent:  input.DataRetentionConsent,
+			Status:                models.GeneralApplicationStatusPending,
 		}
 
 		if shouldStoreResumeInDatabase(h.cfg) {
@@ -400,13 +401,18 @@ func validateGeneralApplicationInput(input generalApplicationInput) error {
 			return fmt.Errorf("additional links must be valid URLs")
 		}
 	}
-	if len(input.Teams) == 0 {
-		return fmt.Errorf("select at least one team")
+	if len(input.Teams) != len(allowedApplicationTeams) {
+		return fmt.Errorf("rank all five teams")
 	}
+	seenTeams := make(map[string]struct{}, len(input.Teams))
 	for _, team := range input.Teams {
 		if _, ok := allowedApplicationTeams[team]; !ok {
 			return fmt.Errorf("invalid team")
 		}
+		if _, ok := seenTeams[team]; ok {
+			return fmt.Errorf("each team can only be ranked once")
+		}
+		seenTeams[team] = struct{}{}
 	}
 	if _, ok := allowedApplicationAvailability[input.Availability]; !ok {
 		return fmt.Errorf("invalid availability")
