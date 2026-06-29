@@ -103,6 +103,7 @@ func (h *GeneralApplicationHandler) Register(r *gin.RouterGroup) {
 	admin.Use(middleware.RoleRequired(h.cfg, "admin"))
 	admin.GET("", h.AdminList)
 	admin.PATCH("/:id/status", h.AdminUpdateStatus)
+	admin.DELETE("/:id", h.AdminDelete)
 	admin.GET("/:id/resume", h.AdminDownloadResume)
 }
 
@@ -298,6 +299,27 @@ func (h *GeneralApplicationHandler) AdminUpdateStatus(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, application)
+}
+
+func (h *GeneralApplicationHandler) AdminDelete(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid application id"})
+		return
+	}
+
+	var application models.GeneralApplication
+	if err := h.db.First(&application, "id = ?", id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "application not found"})
+		return
+	}
+
+	if err := h.db.Delete(&application).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete application"})
+		return
+	}
+
+	c.Status(http.StatusNoContent)
 }
 
 func (h *GeneralApplicationHandler) AdminDownloadResume(c *gin.Context) {
