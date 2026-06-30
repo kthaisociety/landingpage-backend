@@ -434,8 +434,11 @@ func validateGeneralApplicationInput(input generalApplicationInput) error {
 			return fmt.Errorf("additional links must be valid URLs")
 		}
 	}
-	if len(input.Teams) != len(allowedApplicationTeams) {
-		return fmt.Errorf("rank all five teams")
+	if len(input.Teams) == 0 {
+		return fmt.Errorf("choose at least one team")
+	}
+	if len(input.Teams) > len(allowedApplicationTeams) {
+		return fmt.Errorf("choose at most five teams")
 	}
 	seenTeams := make(map[string]struct{}, len(input.Teams))
 	for _, team := range input.Teams {

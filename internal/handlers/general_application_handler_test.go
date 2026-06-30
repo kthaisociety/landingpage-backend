@@ -121,14 +121,26 @@ func TestValidateGeneralApplicationInput(t *testing.T) {
 			mutate: func(input *generalApplicationInput) {
 				input.Teams = nil
 			},
-			wantErr: "rank all five teams",
+			wantErr: "at least one team",
 		},
 		{
-			name: "incomplete ranked teams",
+			name: "one ranked team",
 			mutate: func(input *generalApplicationInput) {
-				input.Teams = []string{"Development", "Research", "Business", "Growth"}
+				input.Teams = []string{"Development"}
 			},
-			wantErr: "rank all five teams",
+		},
+		{
+			name: "two ranked teams",
+			mutate: func(input *generalApplicationInput) {
+				input.Teams = []string{"Development", "Research"}
+			},
+		},
+		{
+			name: "too many teams",
+			mutate: func(input *generalApplicationInput) {
+				input.Teams = []string{"Development", "Research", "Business", "Growth", "IT", "Development"}
+			},
+			wantErr: "at most five teams",
 		},
 		{
 			name: "invalid team",
