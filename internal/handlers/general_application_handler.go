@@ -42,6 +42,15 @@ var allowedApplicationAvailability = map[string]struct{}{
 	"8 hours or more": {},
 }
 
+var allowedApplicationInterests = map[string]struct{}{
+	"Startups & Venture Creation":      {},
+	"Venture Capital & Private Equity": {},
+	"AI Consulting & Implementation":   {},
+	"Healthcare & Biotech":             {},
+	"Consumer Tech & Retail":           {},
+	"Finance & Investment":             {},
+}
+
 var allowedApplicationGenders = map[string]struct{}{
 	"Female":            {},
 	"Male":              {},
@@ -85,6 +94,7 @@ type generalApplicationInput struct {
 	LinkedinURL          string
 	AdditionalLinks      []string
 	Teams                []string
+	Interests            []string
 	Availability         string
 	Contribution         string
 	DataRetentionConsent bool
@@ -175,6 +185,7 @@ func (h *GeneralApplicationHandler) Create(c *gin.Context) {
 			Teams:                 pq.StringArray(input.Teams),
 			TeamPreferencesRanked: true,
 			TeamInterestReason:    "",
+			Interests:             pq.StringArray(input.Interests),
 			Availability:          strings.TrimSpace(input.Availability),
 			Contribution:          strings.TrimSpace(input.Contribution),
 			DataRetentionConsent:  input.DataRetentionConsent,
@@ -395,6 +406,7 @@ func parseGeneralApplicationForm(c *gin.Context) (generalApplicationInput, error
 		LinkedinURL:          strings.TrimSpace(c.PostForm("linkedinUrl")),
 		AdditionalLinks:      normalizeLinks(c.PostFormArray("additionalLinks"), c.PostForm("additionalLinks")),
 		Teams:                normalizeRepeatedValues(c.PostFormArray("teams")),
+		Interests:            normalizeRepeatedValues(c.PostFormArray("interests")),
 		Availability:         strings.TrimSpace(c.PostForm("availability")),
 		Contribution:         strings.TrimSpace(c.PostForm("contribution")),
 		DataRetentionConsent: strings.EqualFold(strings.TrimSpace(c.PostForm("dataRetentionConsent")), "true"),
@@ -449,6 +461,22 @@ func validateGeneralApplicationInput(input generalApplicationInput) error {
 			return fmt.Errorf("each team can only be ranked once")
 		}
 		seenTeams[team] = struct{}{}
+	}
+	if len(input.Interests) == 0 {
+		return fmt.Errorf("choose at least one area of interest")
+	}
+	if len(input.Interests) > len(allowedApplicationInterests) {
+		return fmt.Errorf("choose at most %d areas of interest", len(allowedApplicationInterests))
+	}
+	seenInterests := make(map[string]struct{}, len(input.Interests))
+	for _, interest := range input.Interests {
+		if _, ok := allowedApplicationInterests[interest]; !ok {
+			return fmt.Errorf("invalid interest")
+		}
+		if _, ok := seenInterests[interest]; ok {
+			return fmt.Errorf("each interest can only be selected once")
+		}
+		seenInterests[interest] = struct{}{}
 	}
 	if _, ok := allowedApplicationAvailability[input.Availability]; !ok {
 		return fmt.Errorf("invalid availability")
