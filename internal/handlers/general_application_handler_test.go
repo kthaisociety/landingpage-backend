@@ -179,6 +179,21 @@ func TestValidateGeneralApplicationInput(t *testing.T) {
 			wantErr: "once",
 		},
 		{
+			name: "too many interests",
+			mutate: func(input *generalApplicationInput) {
+				input.Interests = []string{
+					"Startups & Venture Creation",
+					"Venture Capital & Private Equity",
+					"AI Consulting & Implementation",
+					"Healthcare & Biotech",
+					"Consumer Tech & Retail",
+					"Finance & Investment",
+					"Startups & Venture Creation",
+				}
+			},
+			wantErr: "at most 6 areas of interest",
+		},
+		{
 			name: "invalid availability",
 			mutate: func(input *generalApplicationInput) {
 				input.Availability = "1-3 hours"
