@@ -3,9 +3,11 @@ package handlers
 import (
 	"backend/internal/config"
 	"backend/internal/email"
+	"backend/internal/mailchimp"
 	"backend/internal/middleware"
 	"backend/internal/models"
 	"backend/internal/utils"
+	"backend/internal/validation"
 	"fmt"
 	"io"
 	"log"
@@ -42,22 +44,9 @@ var allowedApplicationAvailability = map[string]struct{}{
 	"8 hours or more": {},
 }
 
-var allowedApplicationInterests = map[string]struct{}{
-	"Startups & Venture Creation":      {},
-	"Venture Capital & Private Equity": {},
-	"AI Consulting & Implementation":   {},
-	"Healthcare & Biotech":             {},
-	"Consumer Tech & Retail":           {},
-	"Finance & Investment":             {},
-}
+var allowedApplicationInterests = validation.AllowedInterests
 
-var allowedApplicationGenders = map[string]struct{}{
-	"Female":            {},
-	"Male":              {},
-	"Non-binary":        {},
-	"Prefer not to say": {},
-	"Other":             {},
-}
+var allowedApplicationGenders = validation.AllowedGenders
 
 var allowedApplicationStatuses = map[models.GeneralApplicationStatus]struct{}{
 	models.GeneralApplicationStatusPending:  {},
@@ -79,8 +68,9 @@ var allowedResumeContentTypes = map[string]struct{}{
 }
 
 type GeneralApplicationHandler struct {
-	db  *gorm.DB
-	cfg *config.Config
+	db        *gorm.DB
+	cfg       *config.Config
+	mailchimp *mailchimp.MailchimpAPI
 }
 
 type generalApplicationInput struct {
@@ -98,10 +88,11 @@ type generalApplicationInput struct {
 	Availability         string
 	Contribution         string
 	DataRetentionConsent bool
+	NewsletterOptIn      bool
 }
 
-func NewGeneralApplicationHandler(db *gorm.DB, cfg *config.Config) *GeneralApplicationHandler {
-	return &GeneralApplicationHandler{db: db, cfg: cfg}
+func NewGeneralApplicationHandler(db *gorm.DB, cfg *config.Config, mailchimpApi *mailchimp.MailchimpAPI) *GeneralApplicationHandler {
+	return &GeneralApplicationHandler{db: db, cfg: cfg, mailchimp: mailchimpApi}
 }
 
 func (h *GeneralApplicationHandler) Register(r *gin.RouterGroup) {
@@ -220,6 +211,31 @@ func (h *GeneralApplicationHandler) Create(c *gin.Context) {
 			log.Printf("failed to send general application confirmation email for %s: %v", application.Id, err)
 		}
 	}(application)
+
+	if input.NewsletterOptIn {
+		go func(application models.GeneralApplication) {
+			subscription, err := upsertNewsletterSubscription(h.db, newsletterSubscriptionFields{
+				FirstName:            application.FirstName,
+				LastName:             application.LastName,
+				Email:                application.Email,
+				EmailNormalized:      application.EmailNormalized,
+				Gender:               application.Gender,
+				University:           application.University,
+				Programme:            application.Programme,
+				GraduationYear:       application.GraduationYear,
+				Interests:            application.Interests,
+				DataRetentionConsent: true,
+				Source:               models.NewsletterSourceApplicationOptIn,
+			})
+			if err != nil {
+				log.Printf("failed to store newsletter opt-in for application %s: %v", application.Id, err)
+				return
+			}
+			if err := h.mailchimp.SubscribeNewsletterSubscriber(subscription); err != nil {
+				log.Printf("newsletter opt-in: mailchimp sync failed for %s: %v", subscription.Email, err)
+			}
+		}(application)
+	}
 
 	c.JSON(http.StatusCreated, gin.H{
 		"id":         application.Id,
@@ -410,6 +426,7 @@ func parseGeneralApplicationForm(c *gin.Context) (generalApplicationInput, error
 		Availability:         strings.TrimSpace(c.PostForm("availability")),
 		Contribution:         strings.TrimSpace(c.PostForm("contribution")),
 		DataRetentionConsent: strings.EqualFold(strings.TrimSpace(c.PostForm("dataRetentionConsent")), "true"),
+		NewsletterOptIn:      strings.EqualFold(strings.TrimSpace(c.PostForm("newsletterOptIn")), "true"),
 	}, nil
 }
 
@@ -462,21 +479,8 @@ func validateGeneralApplicationInput(input generalApplicationInput) error {
 		}
 		seenTeams[team] = struct{}{}
 	}
-	if len(input.Interests) == 0 {
-		return fmt.Errorf("choose at least one area of interest")
-	}
-	if len(input.Interests) > len(allowedApplicationInterests) {
-		return fmt.Errorf("choose at most %d areas of interest", len(allowedApplicationInterests))
-	}
-	seenInterests := make(map[string]struct{}, len(input.Interests))
-	for _, interest := range input.Interests {
-		if _, ok := allowedApplicationInterests[interest]; !ok {
-			return fmt.Errorf("invalid interest")
-		}
-		if _, ok := seenInterests[interest]; ok {
-			return fmt.Errorf("each interest can only be selected once")
-		}
-		seenInterests[interest] = struct{}{}
+	if err := validation.ValidateInterests(input.Interests); err != nil {
+		return err
 	}
 	if _, ok := allowedApplicationAvailability[input.Availability]; !ok {
 		return fmt.Errorf("invalid availability")
