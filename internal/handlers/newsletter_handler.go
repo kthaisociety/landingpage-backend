@@ -5,7 +5,6 @@ import (
 	"backend/internal/middleware"
 	"backend/internal/models"
 	"backend/internal/validation"
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -15,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type NewsletterHandler struct {
@@ -82,10 +82,12 @@ func (h *NewsletterHandler) Subscribe(c *gin.Context) {
 }
 
 func validateNewsletterSubscribeBody(body newsletterSubscribeBody) error {
-	if len(strings.TrimSpace(body.FirstName)) == 0 || len(body.FirstName) > 80 {
+	firstName := strings.TrimSpace(body.FirstName)
+	if len(firstName) == 0 || len(firstName) > 80 {
 		return fmt.Errorf("first name is required and must be at most 80 characters")
 	}
-	if len(strings.TrimSpace(body.LastName)) == 0 || len(body.LastName) > 80 {
+	lastName := strings.TrimSpace(body.LastName)
+	if len(lastName) == 0 || len(lastName) > 80 {
 		return fmt.Errorf("last name is required and must be at most 80 characters")
 	}
 	if !isValidEmail(body.Email) {
@@ -145,36 +147,48 @@ type newsletterSubscriptionFields struct {
 // upsertNewsletterSubscription creates or updates the subscriber record for
 // the given (normalized) email, so re-subscribing or opting in again from an
 // application just refreshes the stored fields instead of erroring.
+//
+// This is done as a single atomic INSERT ... ON CONFLICT rather than a
+// SELECT followed by CREATE/UPDATE: two concurrent submissions for the same
+// email would otherwise both see "not found" and race to CREATE, and the
+// loser would hit the email_normalized unique constraint and return a 500
+// (skipping the Mailchimp sync) even though the subscription was already
+// stored. Source is intentionally left out of the update so a later
+// re-subscribe/opt-in doesn't overwrite how someone first signed up.
 func upsertNewsletterSubscription(db *gorm.DB, input newsletterSubscriptionFields) (*models.NewsletterSubscription, error) {
-	var subscription models.NewsletterSubscription
-	isNew := false
-	if err := db.Where("email_normalized = ?", input.EmailNormalized).First(&subscription).Error; err != nil {
-		if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, err
-		}
-		isNew = true
-		subscription = models.NewsletterSubscription{Id: uuid.New()}
+	subscription := models.NewsletterSubscription{
+		Id:                   uuid.New(),
+		FirstName:            input.FirstName,
+		LastName:             input.LastName,
+		Email:                input.Email,
+		EmailNormalized:      input.EmailNormalized,
+		Gender:               input.Gender,
+		University:           input.University,
+		Programme:            input.Programme,
+		GraduationYear:       input.GraduationYear,
+		Interests:            pq.StringArray(input.Interests),
+		DataRetentionConsent: input.DataRetentionConsent,
+		Source:               input.Source,
 	}
 
-	subscription.FirstName = input.FirstName
-	subscription.LastName = input.LastName
-	subscription.Email = input.Email
-	subscription.EmailNormalized = input.EmailNormalized
-	subscription.Gender = input.Gender
-	subscription.University = input.University
-	subscription.Programme = input.Programme
-	subscription.GraduationYear = input.GraduationYear
-	subscription.Interests = pq.StringArray(input.Interests)
-	subscription.DataRetentionConsent = input.DataRetentionConsent
-	subscription.Source = input.Source
-
-	if isNew {
-		if err := db.Create(&subscription).Error; err != nil {
-			return nil, err
-		}
-	} else if err := db.Save(&subscription).Error; err != nil {
+	err := db.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "email_normalized"}},
+		DoUpdates: clause.AssignmentColumns([]string{
+			"first_name", "last_name", "email", "gender", "university",
+			"programme", "graduation_year", "interests", "data_retention_consent",
+		}),
+	}).Create(&subscription).Error
+	if err != nil {
 		return nil, err
 	}
 
-	return &subscription, nil
+	// Re-read rather than trust the in-memory struct: on the conflict path
+	// the DB keeps the original row's Id/CreatedAt, which the local struct
+	// above (built with a fresh Id) does not reflect.
+	var stored models.NewsletterSubscription
+	if err := db.Where("email_normalized = ?", input.EmailNormalized).First(&stored).Error; err != nil {
+		return nil, err
+	}
+
+	return &stored, nil
 }
