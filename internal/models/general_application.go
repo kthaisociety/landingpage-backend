@@ -38,6 +38,7 @@ type GeneralApplication struct {
 	Teams                 pq.StringArray           `gorm:"type:text[];not null" json:"teams"`
 	TeamPreferencesRanked bool                     `gorm:"not null;default:false" json:"team_preferences_ranked"`
 	TeamInterestReason    string                   `gorm:"type:text;not null" json:"team_interest_reason"`
+	Interests             pq.StringArray           `gorm:"type:text[];not null;default:'{}'" json:"interests"`
 	Availability          string                   `gorm:"not null" json:"availability"`
 	Contribution          string                   `gorm:"type:text;not null" json:"contribution"`
 	DataRetentionConsent  bool                     `gorm:"not null;default:false" json:"data_retention_consent"`

@@ -19,6 +19,7 @@ func validGeneralApplicationInput() generalApplicationInput {
 		LinkedinURL:          "https://www.linkedin.com/in/adalovelace",
 		AdditionalLinks:      []string{"https://github.com/ada"},
 		Teams:                []string{"Development", "Research", "Business", "Growth", "IT"},
+		Interests:            []string{"Startups & Venture Creation", "Finance & Investment"},
 		Availability:         "6-8 hours",
 		Contribution:         "I can contribute by building products, writing clearly, and helping organize technical work.",
 		DataRetentionConsent: true,
@@ -155,6 +156,42 @@ func TestValidateGeneralApplicationInput(t *testing.T) {
 				input.Teams = []string{"Development", "Research", "Business", "Growth", "Growth"}
 			},
 			wantErr: "once",
+		},
+		{
+			name: "missing interests",
+			mutate: func(input *generalApplicationInput) {
+				input.Interests = nil
+			},
+			wantErr: "at least one area of interest",
+		},
+		{
+			name: "invalid interest",
+			mutate: func(input *generalApplicationInput) {
+				input.Interests = []string{"Crypto & Web3"}
+			},
+			wantErr: "invalid interest",
+		},
+		{
+			name: "duplicate interest",
+			mutate: func(input *generalApplicationInput) {
+				input.Interests = []string{"Finance & Investment", "Finance & Investment"}
+			},
+			wantErr: "once",
+		},
+		{
+			name: "too many interests",
+			mutate: func(input *generalApplicationInput) {
+				input.Interests = []string{
+					"Startups & Venture Creation",
+					"Venture Capital & Private Equity",
+					"AI Consulting & Implementation",
+					"Healthcare & Biotech",
+					"Consumer Tech & Retail",
+					"Finance & Investment",
+					"Startups & Venture Creation",
+				}
+			},
+			wantErr: "at most 6 areas of interest",
 		},
 		{
 			name: "invalid availability",
