@@ -122,7 +122,10 @@ func (h *JobListingHandler) GetJobListing(c *gin.Context) {
 // Get with Query Params
 func (h *JobListingHandler) GetAllListings(c *gin.Context) {
 	var shortListings []SmallJobListing
-	jobListingSummaryQuery(h.db).Scan(&shortListings)
+	if err := jobListingSummaryQuery(h.db).Scan(&shortListings).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	c.JSON(http.StatusOK, shortListings)
 }
 
