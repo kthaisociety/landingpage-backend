@@ -105,21 +105,8 @@ func validateNewsletterSubscribeBody(body newsletterSubscribeBody) error {
 	if body.GraduationYear < 2026 || body.GraduationYear > 2100 {
 		return fmt.Errorf("graduation year must be 2026 or later")
 	}
-	if len(body.Interests) == 0 {
-		return fmt.Errorf("choose at least one area of interest")
-	}
-	if len(body.Interests) > len(validation.AllowedInterests) {
-		return fmt.Errorf("choose at most %d areas of interest", len(validation.AllowedInterests))
-	}
-	seenInterests := make(map[string]struct{}, len(body.Interests))
-	for _, interest := range body.Interests {
-		if _, ok := validation.AllowedInterests[interest]; !ok {
-			return fmt.Errorf("invalid interest")
-		}
-		if _, ok := seenInterests[interest]; ok {
-			return fmt.Errorf("each interest can only be selected once")
-		}
-		seenInterests[interest] = struct{}{}
+	if err := validation.ValidateInterests(body.Interests); err != nil {
+		return err
 	}
 	if !body.DataRetentionConsent {
 		return fmt.Errorf("data retention consent is required")

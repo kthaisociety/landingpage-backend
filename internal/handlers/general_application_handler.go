@@ -479,21 +479,8 @@ func validateGeneralApplicationInput(input generalApplicationInput) error {
 		}
 		seenTeams[team] = struct{}{}
 	}
-	if len(input.Interests) == 0 {
-		return fmt.Errorf("choose at least one area of interest")
-	}
-	if len(input.Interests) > len(allowedApplicationInterests) {
-		return fmt.Errorf("choose at most %d areas of interest", len(allowedApplicationInterests))
-	}
-	seenInterests := make(map[string]struct{}, len(input.Interests))
-	for _, interest := range input.Interests {
-		if _, ok := allowedApplicationInterests[interest]; !ok {
-			return fmt.Errorf("invalid interest")
-		}
-		if _, ok := seenInterests[interest]; ok {
-			return fmt.Errorf("each interest can only be selected once")
-		}
-		seenInterests[interest] = struct{}{}
+	if err := validation.ValidateInterests(input.Interests); err != nil {
+		return err
 	}
 	if _, ok := allowedApplicationAvailability[input.Availability]; !ok {
 		return fmt.Errorf("invalid availability")
