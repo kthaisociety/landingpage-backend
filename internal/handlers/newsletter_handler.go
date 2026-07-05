@@ -176,6 +176,7 @@ func upsertNewsletterSubscription(db *gorm.DB, input newsletterSubscriptionField
 		DoUpdates: clause.AssignmentColumns([]string{
 			"first_name", "last_name", "email", "gender", "university",
 			"programme", "graduation_year", "interests", "data_retention_consent",
+			"updated_at",
 		}),
 	}).Create(&subscription).Error
 	if err != nil {
