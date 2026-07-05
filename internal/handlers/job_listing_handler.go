@@ -122,7 +122,12 @@ func (h *JobListingHandler) GetJobListing(c *gin.Context) {
 // Get with Query Params
 func (h *JobListingHandler) GetAllListings(c *gin.Context) {
 	var shortListings []SmallJobListing
-	h.db.Table("job_listings").Select(
+	jobListingSummaryQuery(h.db).Scan(&shortListings)
+	c.JSON(http.StatusOK, shortListings)
+}
+
+func jobListingSummaryQuery(db *gorm.DB) *gorm.DB {
+	return db.Table("job_listings").Select(
 		"job_listings.id",
 		"job_listings.name",
 		"job_listings.salary",
@@ -130,8 +135,8 @@ func (h *JobListingHandler) GetAllListings(c *gin.Context) {
 		"job_listings.location",
 		"companies.name as company",
 		"job_listings.company_id",
-	).Joins("left join companies on companies.id = job_listings.company_id").Scan(&shortListings)
-	c.JSON(http.StatusOK, shortListings)
+	).Joins("left join companies on companies.id = job_listings.company_id").
+		Order("job_listings.created_at DESC, job_listings.id DESC")
 }
 
 func (h *JobListingHandler) DeleteJobListing(c *gin.Context) {
