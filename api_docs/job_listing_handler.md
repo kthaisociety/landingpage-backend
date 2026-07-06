@@ -65,6 +65,7 @@ It registers routes under `/joblistings`, with several admin-only endpoints prot
   - `200 OK` with a JSON array of `SmallJobListing` objects.
 - Behavior:
   - Joins `job_listings` with `companies` to include company name.
+  - Orders listings from newest to oldest by creation time, with ID as a deterministic tie-breaker.
   - Returns fields: `id`, `title`, `company`, `salary`.
 
 ### `GET /joblistings/job`
