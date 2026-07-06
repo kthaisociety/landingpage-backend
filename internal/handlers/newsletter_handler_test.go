@@ -14,7 +14,7 @@ func validNewsletterSubscribeBody() newsletterSubscribeBody {
 		University:           "KTH Royal Institute of Technology",
 		Programme:            "Computer Science",
 		GraduationYear:       2027,
-		Interests:            []string{"Startups & Venture Creation", "Finance & Investment"},
+		Interests:            []string{"Startups & Venture Creation", "Machine Learning"},
 		DataRetentionConsent: true,
 	}
 }
@@ -94,7 +94,7 @@ func TestValidateNewsletterSubscribeBody(t *testing.T) {
 		{
 			name: "duplicate interest",
 			mutate: func(body *newsletterSubscribeBody) {
-				body.Interests = []string{"Finance & Investment", "Finance & Investment"}
+				body.Interests = []string{"Machine Learning", "Machine Learning"}
 			},
 			wantErr: "once",
 		},
