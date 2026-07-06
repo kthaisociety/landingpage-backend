@@ -14,12 +14,18 @@ var AllowedGenders = map[string]struct{}{
 }
 
 var AllowedInterests = map[string]struct{}{
-	"Startups & Venture Creation":      {},
-	"Venture Capital & Private Equity": {},
-	"AI Consulting & Implementation":   {},
-	"Healthcare & Biotech":             {},
-	"Consumer Tech & Retail":           {},
-	"Finance & Investment":             {},
+	"Machine Learning":                       {},
+	"Robotics & Autonomous Systems":          {},
+	"Computer Vision & Graphics":             {},
+	"Natural Language Processing":            {},
+	"Data Science & Big Data Infrastructure": {},
+	"Embedded Systems & Edge AI":             {},
+	"Cybersecurity & AI Safety Engineering":  {},
+	"AI Research & Theoretical ML":           {},
+	"Bioinformatics & Computational Biology": {},
+	"Quantitative Finance & Investment":      {},
+	"Venture Capital & Private Equity":       {},
+	"Startups & Venture Creation":            {},
 }
 
 // ValidateInterests checks that interests is a non-empty, duplicate-free
