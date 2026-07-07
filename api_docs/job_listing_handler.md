@@ -82,7 +82,7 @@ It registers routes under `/joblistings`, with several admin-only endpoints prot
 ### `POST /joblistings/click`
 
 - Purpose: Record a click on a job listing's "Apply" button/link. A simple atomic counter (`apply_click_count`), not an event log — intended for jobs where the application process happens off-site (company URL/email) and we'd otherwise have no visibility into applicant engagement.
-- Access: Public, rate-limited via `middleware.ClickRateLimit()` (its own Redis key prefix/threshold, separate from the general `middleware.RateLimit()` used by form submissions).
+- Access: Public, rate-limited via `middleware.ClickRateLimit()` (its own Redis key prefix/threshold, separate from the general `middleware.RateLimit()` used by form submissions). The rate-limit key is derived from the raw TCP peer address (`RemoteAddr`), not `gin.Context.ClientIP()` — this engine never configures `SetTrustedProxies`, so `ClientIP()` would honor a client-supplied `X-Forwarded-For`/`X-Real-IP` header unconditionally, letting a caller spoof a new IP per request and bypass the quota to inflate this company-facing metric.
 - Query parameters:
   - `id` (UUID): The job listing ID whose click count to increment.
 - Response:
