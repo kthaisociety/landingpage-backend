@@ -141,6 +141,27 @@ func main() {
 	// Initialize router
 	r := gin.Default()
 
+	// Only trust X-Forwarded-For/X-Real-IP when the immediate connecting peer is on
+	// a private network (loopback/RFC1918/ULA) - i.e. a platform-managed load
+	// balancer or sidecar proxy sitting in front of this container, which is how
+	// most hosting setups (Render/Fly/Heroku-style, k8s ingress, ALB-to-task, a
+	// docker-compose reverse proxy) reach the app. A public internet client can't
+	// forge their RemoteAddr to look like it came from one of these ranges, so
+	// c.ClientIP() stays spoof-proof if there's no such proxy, while still
+	// resolving distinct real visitor IPs (instead of collapsing everyone onto the
+	// proxy's own IP) if there is one. Tighten this to the exact proxy IP/CIDR once
+	// the production network topology is confirmed.
+	if err := r.SetTrustedProxies([]string{
+		"127.0.0.0/8",
+		"10.0.0.0/8",
+		"172.16.0.0/12",
+		"192.168.0.0/16",
+		"::1/128",
+		"fc00::/7",
+	}); err != nil {
+		log.Fatal("Failed to set trusted proxies:", err)
+	}
+
 	// Add CORS middleware with configurable origins
 	corsConfig := cors.Config{
 		AllowOrigins:     cfg.AllowedOrigins,

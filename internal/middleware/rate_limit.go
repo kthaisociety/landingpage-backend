@@ -3,7 +3,6 @@ package middleware
 import (
 	"context"
 	"fmt"
-	"net"
 	"time"
 
 	"backend/internal/config"
@@ -12,20 +11,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 )
-
-// remoteIP returns the actual TCP peer address for the request, ignoring
-// client-supplied headers like X-Forwarded-For/X-Real-IP. gin's c.ClientIP()
-// honors those headers unconditionally here because the engine never calls
-// SetTrustedProxies, so any caller can send a different X-Forwarded-For value
-// on every request and get a fresh rate-limit bucket each time. RemoteAddr is
-// the socket peer as seen by this process and can't be spoofed by the client.
-func remoteIP(c *gin.Context) string {
-	host, _, err := net.SplitHostPort(c.Request.RemoteAddr)
-	if err != nil {
-		return c.Request.RemoteAddr
-	}
-	return host
-}
 
 type RedisRateLimiter struct {
 	client      *redis.Client
@@ -128,7 +113,7 @@ func ClickRateLimit() gin.HandlerFunc {
 	}
 
 	return func(c *gin.Context) {
-		ip := remoteIP(c)
+		ip := c.ClientIP()
 		key := fmt.Sprintf("click_rate_limit:%s", ip)
 
 		allowed, err := limiter.Allow(c.Request.Context(), key)
