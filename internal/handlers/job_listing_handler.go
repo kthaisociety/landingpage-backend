@@ -20,13 +20,14 @@ type JobListingHandler struct {
 }
 
 type SmallJobListing struct {
-	Id        uuid.UUID `json:"id"`
-	Name      string    `json:"title"`
-	Company   string    `json:"company"`
-	CompanyId uuid.UUID `json:"companyId"`
-	Salary    string    `json:"salary"`
-	JobType   string    `json:"jobType"`
-	Location  string    `json:"location"`
+	Id              uuid.UUID `json:"id"`
+	Name            string    `json:"title"`
+	Company         string    `json:"company"`
+	CompanyId       uuid.UUID `json:"companyId"`
+	Salary          string    `json:"salary"`
+	JobType         string    `json:"jobType"`
+	Location        string    `json:"location"`
+	ApplyClickCount int64     `json:"applyClickCount"`
 }
 
 func NewJobListingHandler(db *gorm.DB, cfg *config.Config) *JobListingHandler {
@@ -46,6 +47,7 @@ func (h *JobListingHandler) Register(r *gin.RouterGroup) {
 		// no auth required for these
 		jl.GET("/all", h.GetAllListings)
 		jl.GET("/job", h.GetJobListing)
+		jl.POST("/click", middleware.ClickRateLimit(), h.TrackApplyClick)
 	}
 }
 
@@ -138,8 +140,39 @@ func jobListingSummaryQuery(db *gorm.DB) *gorm.DB {
 		"job_listings.location",
 		"companies.name as company",
 		"job_listings.company_id",
+		"job_listings.apply_click_count",
 	).Joins("left join companies on companies.id = job_listings.company_id").
 		Order("job_listings.created_at DESC, job_listings.id DESC")
+}
+
+// TrackApplyClick records a click on a job listing's "Apply" button/link.
+// It's a simple atomic counter (not an event log), intended for external-application
+// jobs where we have no other visibility into applicant engagement.
+func (h *JobListingHandler) TrackApplyClick(c *gin.Context) {
+	id := c.Query("id")
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "No id provided"})
+		return
+	}
+
+	jobID, err := uuid.Parse(id)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid id format"})
+		return
+	}
+
+	result := h.db.Model(&models.JobListing{}).Where("id = ?", jobID).
+		UpdateColumn("apply_click_count", gorm.Expr("apply_click_count + 1"))
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": result.Error.Error()})
+		return
+	}
+	if result.RowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Job Listing not found"})
+		return
+	}
+
+	c.Status(http.StatusNoContent)
 }
 
 func (h *JobListingHandler) DeleteJobListing(c *gin.Context) {
