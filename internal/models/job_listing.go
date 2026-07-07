@@ -20,4 +20,6 @@ type JobListing struct {
 	EndDate     time.Time `gorm:"not null" json:"enddate"`
 	AppUrl      string    `json:"appurl"`
 	ContactInfo string    `json:"contact"`
+
+	ApplyClickCount int64 `gorm:"not null;default:0" json:"applyClickCount"`
 }
