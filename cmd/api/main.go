@@ -59,14 +59,16 @@ func setupStore() (sessions.Store, error) {
 		}
 	}
 
-	// Create store with secure settings
 	store := cookie.NewStore(sessionKey)
 	store.Options(sessions.Options{
-		Path:     "/",       // Cookie is valid for entire site
-		MaxAge:   86400 * 7, // 7 days
-		HttpOnly: true,      // Prevent JavaScript access
-		Secure:   true,      // Require HTTPS
-		SameSite: http.SameSiteStrictMode,
+		Path:     "/",
+		MaxAge:   86400 * 7,
+		HttpOnly: true,
+		Secure:   true,
+		// Lax is required: the OAuth callback is a cross-site redirect from
+		// Google, so Strict would prevent the session cookie from being sent,
+		// causing state mismatch errors.
+		SameSite: http.SameSiteLaxMode,
 	})
 
 	return store, nil
@@ -162,14 +164,13 @@ func main() {
 		log.Fatal("Failed to setup session store:", err)
 	}
 
-	// Modify cookie settings for development
 	if cfg.DevelopmentMode {
 		store.Options(sessions.Options{
 			Path:     "/",
 			MaxAge:   86400 * 7,
 			HttpOnly: true,
-			Secure:   false,                // Set to false for development
-			SameSite: http.SameSiteLaxMode, // Use Lax for development
+			Secure:   false, // HTTP is fine locally
+			SameSite: http.SameSiteLaxMode,
 		})
 	}
 
