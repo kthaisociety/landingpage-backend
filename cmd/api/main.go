@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"backend/internal/config"
+	"backend/internal/database"
 	"backend/internal/email"
 	"backend/internal/handlers"
 	"backend/internal/mailchimp"
@@ -127,11 +128,14 @@ func main() {
 		&models.TeamProjectPair{},
 		&models.TeamMemberPair{},
 		&models.GeneralApplication{},
+		&models.AdminInterviewNote{},
 		&models.NewsletterSubscription{},
 	)
 	if err != nil {
 		log.Fatal("Failed to migrate database:", err)
 	}
+
+	database.SeedDev(db, cfg)
 
 	// Initialize auth
 	if err := handlers.InitAuth(cfg); err != nil {

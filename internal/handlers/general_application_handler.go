@@ -22,6 +22,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const (
@@ -49,10 +50,9 @@ var allowedApplicationInterests = validation.AllowedInterests
 var allowedApplicationGenders = validation.AllowedGenders
 
 var allowedApplicationStatuses = map[models.GeneralApplicationStatus]struct{}{
-	models.GeneralApplicationStatusPending:  {},
-	models.GeneralApplicationStatusReviewed: {},
-	models.GeneralApplicationStatusAccepted: {},
-	models.GeneralApplicationStatusRejected: {},
+	models.GeneralApplicationStatusAvailable:    {},
+	models.GeneralApplicationStatusInterviewing: {},
+	models.GeneralApplicationStatusIneligible:   {},
 }
 
 var allowedResumeExtensions = map[string]struct{}{
@@ -71,6 +71,24 @@ type GeneralApplicationHandler struct {
 	db        *gorm.DB
 	cfg       *config.Config
 	mailchimp *mailchimp.MailchimpAPI
+}
+
+func getAdminIdentity(c *gin.Context) (userID uuid.UUID, adminEmail string, ok bool) {
+	token := utils.GetJWT(c)
+	if token == nil {
+		return uuid.UUID{}, "", false
+	}
+	claims := utils.GetClaims(token)
+	rawID, hasID := claims["user_id"].(string)
+	rawEmail, hasEmail := claims["email"].(string)
+	if !hasID || !hasEmail {
+		return uuid.UUID{}, "", false
+	}
+	parsed, err := uuid.Parse(rawID)
+	if err != nil {
+		return uuid.UUID{}, "", false
+	}
+	return parsed, rawEmail, true
 }
 
 type generalApplicationInput struct {
@@ -106,6 +124,14 @@ func (h *GeneralApplicationHandler) Register(r *gin.RouterGroup) {
 	admin.PATCH("/:id/status", h.AdminUpdateStatus)
 	admin.DELETE("/:id", h.AdminDelete)
 	admin.GET("/:id/resume", h.AdminDownloadResume)
+	admin.POST("/:id/claim", h.AdminClaimApplication)
+	admin.POST("/:id/release", h.AdminReleaseApplication)
+	admin.POST("/:id/cancel-interview", h.AdminCancelInterview)
+	admin.POST("/:id/send-invite", h.AdminSendInterviewInvite)
+	admin.PATCH("/:id/ineligible", h.AdminMarkIneligible)
+	admin.PATCH("/:id/restore", h.AdminRestoreApplication)
+	admin.GET("/:id/notes", h.AdminGetNotes)
+	admin.PUT("/:id/notes", h.AdminUpdateNotes)
 }
 
 func (h *GeneralApplicationHandler) Create(c *gin.Context) {
@@ -180,7 +206,7 @@ func (h *GeneralApplicationHandler) Create(c *gin.Context) {
 			Availability:          strings.TrimSpace(input.Availability),
 			Contribution:          strings.TrimSpace(input.Contribution),
 			DataRetentionConsent:  input.DataRetentionConsent,
-			Status:                models.GeneralApplicationStatusPending,
+			Status:                models.GeneralApplicationStatusAvailable,
 		}
 
 		if shouldStoreResumeInDatabase(h.cfg) {
@@ -632,4 +658,318 @@ func fallbackResumeContentType(ext string) string {
 
 func shouldStoreResumeInDatabase(cfg *config.Config) bool {
 	return cfg.DevelopmentMode
+}
+
+// AdminClaimApplication locks an available application to the requesting admin.
+// Returns 409 if the application is already claimed by another admin.
+func (h *GeneralApplicationHandler) AdminClaimApplication(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid application id"})
+		return
+	}
+
+	adminID, adminEmail, ok := getAdminIdentity(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "could not determine admin identity"})
+		return
+	}
+
+	var application models.GeneralApplication
+	if err := h.db.First(&application, "id = ?", id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "application not found"})
+		return
+	}
+
+	if application.Status == models.GeneralApplicationStatusInterviewing {
+		if application.InterviewingByUserID != nil && *application.InterviewingByUserID == adminID {
+			// Already claimed by this admin — idempotent success
+			c.JSON(http.StatusOK, application)
+			return
+		}
+		c.JSON(http.StatusConflict, gin.H{
+			"error":                "application is already claimed",
+			"interviewing_by_email": application.InterviewingByEmail,
+		})
+		return
+	}
+
+	application.Status = models.GeneralApplicationStatusInterviewing
+	application.InterviewingByUserID = &adminID
+	application.InterviewingByEmail = adminEmail
+	if err := h.db.Save(&application).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to claim application"})
+		return
+	}
+
+	c.JSON(http.StatusOK, application)
+}
+
+// AdminReleaseApplication releases the claim on an application, records the admin
+// in interviewed_by, and sets the status back to available.
+func (h *GeneralApplicationHandler) AdminReleaseApplication(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid application id"})
+		return
+	}
+
+	adminID, adminEmail, ok := getAdminIdentity(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "could not determine admin identity"})
+		return
+	}
+
+	var application models.GeneralApplication
+	if err := h.db.First(&application, "id = ?", id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "application not found"})
+		return
+	}
+
+	if application.InterviewingByUserID == nil || *application.InterviewingByUserID != adminID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "you do not hold the claim on this application"})
+		return
+	}
+
+	// Append to interviewed_by if not already present
+	alreadyInterviewed := false
+	for _, e := range application.InterviewedBy {
+		if e == adminEmail {
+			alreadyInterviewed = true
+			break
+		}
+	}
+	if !alreadyInterviewed {
+		application.InterviewedBy = append(application.InterviewedBy, adminEmail)
+	}
+
+	application.Status = models.GeneralApplicationStatusAvailable
+	application.InterviewingByUserID = nil
+	application.InterviewingByEmail = ""
+	log.Printf("[release] saving application %s with interviewed_by=%v", application.Id, []string(application.InterviewedBy))
+	if err := h.db.Save(&application).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to release application"})
+		return
+	}
+
+	// Re-read from DB to ensure the response reflects what was actually persisted.
+	if err := h.db.First(&application, "id = ?", application.Id).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to reload application"})
+		return
+	}
+	log.Printf("[release] reloaded application %s, interviewed_by=%v", application.Id, []string(application.InterviewedBy))
+
+	c.JSON(http.StatusOK, application)
+}
+
+// AdminSendInterviewInvite sends an interview invite email to the applicant using
+// the requesting admin's stored booking page URL and email template.
+func (h *GeneralApplicationHandler) AdminSendInterviewInvite(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid application id"})
+		return
+	}
+
+	adminID, _, ok := getAdminIdentity(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "could not determine admin identity"})
+		return
+	}
+
+	var application models.GeneralApplication
+	if err := h.db.First(&application, "id = ?", id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "application not found"})
+		return
+	}
+
+	var profile models.Profile
+	if err := h.db.Where("user_uuid = ?", adminID).First(&profile).Error; err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "admin profile not found; set up your interview settings first"})
+		return
+	}
+	if profile.BookingPageURL == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "booking page URL not set; update your interview settings first"})
+		return
+	}
+	if profile.InterviewEmailTemplate == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "email template not set; update your interview settings first"})
+		return
+	}
+
+	if h.cfg.DevelopmentMode {
+		log.Printf("[dev] skipping SES — would have sent interview invite to %s (%s %s) for application %s",
+			application.Email, application.FirstName, application.LastName, application.Id)
+		c.JSON(http.StatusOK, gin.H{"message": "interview invite sent (dev mode — email not actually sent)"})
+		return
+	}
+
+	if err := email.SendInterviewInvite(application, profile.InterviewEmailTemplate, profile.BookingPageURL); err != nil {
+		log.Printf("failed to send interview invite for application %s: %v", application.Id, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to send interview invite email"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "interview invite sent"})
+}
+
+// AdminCancelInterview releases the claim without recording the admin in interviewed_by.
+func (h *GeneralApplicationHandler) AdminCancelInterview(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid application id"})
+		return
+	}
+
+	adminID, _, ok := getAdminIdentity(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "could not determine admin identity"})
+		return
+	}
+
+	var application models.GeneralApplication
+	if err := h.db.First(&application, "id = ?", id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "application not found"})
+		return
+	}
+
+	if application.InterviewingByUserID == nil || *application.InterviewingByUserID != adminID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "you do not hold the claim on this application"})
+		return
+	}
+
+	application.Status = models.GeneralApplicationStatusAvailable
+	application.InterviewingByUserID = nil
+	application.InterviewingByEmail = ""
+	if err := h.db.Save(&application).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to cancel interview"})
+		return
+	}
+
+	c.JSON(http.StatusOK, application)
+}
+
+// AdminMarkIneligible sets an application's status to ineligible regardless of current state.
+func (h *GeneralApplicationHandler) AdminMarkIneligible(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid application id"})
+		return
+	}
+
+	var application models.GeneralApplication
+	if err := h.db.First(&application, "id = ?", id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "application not found"})
+		return
+	}
+
+	application.Status = models.GeneralApplicationStatusIneligible
+	application.InterviewingByUserID = nil
+	application.InterviewingByEmail = ""
+	if err := h.db.Save(&application).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to mark application as ineligible"})
+		return
+	}
+
+	c.JSON(http.StatusOK, application)
+}
+
+// AdminRestoreApplication sets an ineligible application back to available.
+func (h *GeneralApplicationHandler) AdminRestoreApplication(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid application id"})
+		return
+	}
+
+	var application models.GeneralApplication
+	if err := h.db.First(&application, "id = ?", id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "application not found"})
+		return
+	}
+
+	if application.Status != models.GeneralApplicationStatusIneligible {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "application is not ineligible"})
+		return
+	}
+
+	application.Status = models.GeneralApplicationStatusAvailable
+	if err := h.db.Save(&application).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to restore application"})
+		return
+	}
+
+	c.JSON(http.StatusOK, application)
+}
+
+// AdminGetNotes returns the requesting admin's private notes on an application.
+func (h *GeneralApplicationHandler) AdminGetNotes(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid application id"})
+		return
+	}
+
+	adminID, _, ok := getAdminIdentity(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "could not determine admin identity"})
+		return
+	}
+
+	var notes []models.AdminInterviewNote
+	if err := h.db.Where("application_id = ? AND admin_user_id = ?", id, adminID).Limit(1).Find(&notes).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch notes"})
+		return
+	}
+	if len(notes) == 0 {
+		c.JSON(http.StatusOK, gin.H{"note": ""})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"note": notes[0].Note})
+}
+
+// AdminUpdateNotes upserts the requesting admin's private notes on an application.
+func (h *GeneralApplicationHandler) AdminUpdateNotes(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid application id"})
+		return
+	}
+
+	adminID, _, ok := getAdminIdentity(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "could not determine admin identity"})
+		return
+	}
+
+	var body struct {
+		Note string `json:"note"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
+	note := models.AdminInterviewNote{
+		ApplicationID: id,
+		AdminUserID:   adminID,
+		Note:          body.Note,
+	}
+	result := h.db.
+		Where(models.AdminInterviewNote{ApplicationID: id, AdminUserID: adminID}).
+		Assign(models.AdminInterviewNote{Note: body.Note}).
+		FirstOrCreate(&note)
+	if result.Error != nil {
+		// FirstOrCreate may race; fall back to upsert
+		if err := h.db.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "application_id"}, {Name: "admin_user_id"}},
+			DoUpdates: clause.AssignmentColumns([]string{"note", "updated_at"}),
+		}).Create(&note).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save notes"})
+			return
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"note": note.Note})
 }

@@ -41,6 +41,8 @@ func (h *ProfileHandler) Register(r *gin.RouterGroup) {
 	protected.PUT("/update", h.UpdateMyProfile)
 	protected.POST("/create", h.CreateMyProfile)
 	protected.POST("/picture", h.UploadProfilePicture)
+	protected.GET("/me/interview-settings", h.GetInterviewSettings)
+	protected.PUT("/me/interview-settings", h.UpdateInterviewSettings)
 
 	// Admin-only endpoints
 	admin := protected.Group("/admin")
@@ -544,6 +546,70 @@ func (h *ProfileHandler) GetPublicProfile(c *gin.Context) {
 		"aboutMe":        profile.AboutMe,
 		"teamHistory":    teamHistory,
 		"projects":       projects,
+	})
+}
+
+// GetInterviewSettings returns the admin's booking page URL and email template.
+func (h *ProfileHandler) GetInterviewSettings(c *gin.Context) {
+	token := utils.GetJWT(c)
+	claims := utils.GetClaims(token)
+	userID, err := uuid.Parse(claims["user_id"].(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user ID"})
+		return
+	}
+
+	var profile models.Profile
+	if err := h.db.Where("user_uuid = ?", userID).First(&profile).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "profile not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"booking_page_url":         profile.BookingPageURL,
+		"interview_email_template": profile.InterviewEmailTemplate,
+		"admin_team":               profile.AdminTeam,
+	})
+}
+
+// UpdateInterviewSettings saves the admin's booking page URL, email template, and team declaration.
+func (h *ProfileHandler) UpdateInterviewSettings(c *gin.Context) {
+	token := utils.GetJWT(c)
+	claims := utils.GetClaims(token)
+	userID, err := uuid.Parse(claims["user_id"].(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user ID"})
+		return
+	}
+
+	var input struct {
+		BookingPageURL         string `json:"booking_page_url"`
+		InterviewEmailTemplate string `json:"interview_email_template"`
+		AdminTeam              string `json:"admin_team"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
+	var profile models.Profile
+	if err := h.db.Where("user_uuid = ?", userID).First(&profile).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "profile not found"})
+		return
+	}
+
+	profile.BookingPageURL = strings.TrimSpace(input.BookingPageURL)
+	profile.InterviewEmailTemplate = strings.TrimSpace(input.InterviewEmailTemplate)
+	profile.AdminTeam = strings.TrimSpace(input.AdminTeam)
+	if err := h.db.Save(&profile).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save interview settings"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"booking_page_url":         profile.BookingPageURL,
+		"interview_email_template": profile.InterviewEmailTemplate,
+		"admin_team":               profile.AdminTeam,
 	})
 }
 

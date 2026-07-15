@@ -11,10 +11,9 @@ import (
 type GeneralApplicationStatus string
 
 const (
-	GeneralApplicationStatusPending  GeneralApplicationStatus = "pending"
-	GeneralApplicationStatusReviewed GeneralApplicationStatus = "reviewed"
-	GeneralApplicationStatusAccepted GeneralApplicationStatus = "accepted"
-	GeneralApplicationStatusRejected GeneralApplicationStatus = "rejected"
+	GeneralApplicationStatusAvailable   GeneralApplicationStatus = "available"
+	GeneralApplicationStatusInterviewing GeneralApplicationStatus = "interviewing"
+	GeneralApplicationStatusIneligible  GeneralApplicationStatus = "ineligible"
 )
 
 type GeneralApplication struct {
@@ -41,8 +40,11 @@ type GeneralApplication struct {
 	Interests             pq.StringArray           `gorm:"type:text[];not null;default:'{}'" json:"interests"`
 	Availability          string                   `gorm:"not null" json:"availability"`
 	Contribution          string                   `gorm:"type:text;not null" json:"contribution"`
-	DataRetentionConsent  bool                     `gorm:"not null;default:false" json:"data_retention_consent"`
-	Status                GeneralApplicationStatus `gorm:"not null;default:'pending'" json:"status"`
-	CreatedAt             time.Time                `json:"created_at"`
-	UpdatedAt             time.Time                `json:"updated_at"`
+	DataRetentionConsent    bool                     `gorm:"not null;default:false" json:"data_retention_consent"`
+	Status                  GeneralApplicationStatus `gorm:"not null;default:'available'" json:"status"`
+	InterviewingByUserID    *uuid.UUID               `gorm:"type:uuid" json:"interviewing_by_user_id"`
+	InterviewingByEmail     string                   `gorm:"default:''" json:"interviewing_by_email"`
+	InterviewedBy           pq.StringArray           `gorm:"type:text[];not null;default:'{}'" json:"interviewed_by"`
+	CreatedAt               time.Time                `json:"created_at"`
+	UpdatedAt               time.Time                `json:"updated_at"`
 }

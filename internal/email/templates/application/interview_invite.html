@@ -1,0 +1,13 @@
+{{define "email_message_pre"}}
+<p>{{.RenderedBody}}</p>
+{{end}}
+
+{{define "email_button_url"}}{{.BookingURL}}{{end}}
+
+{{define "email_button_text"}}Book your interview slot{{end}}
+
+{{define "email_message_post"}}
+<p style="font-size:13px;color:#888;">If you did not apply to KTH AI Society or believe you received this email in error, please disregard it or contact us at <a href="mailto:{{.AppEmailContact}}">{{.AppEmailContact}}</a>.</p>
+{{end}}
+
+{{template "base" .}}

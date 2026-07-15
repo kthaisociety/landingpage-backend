@@ -180,6 +180,49 @@ var templateFuncs = template.FuncMap{
 	},
 }
 
+// SendInterviewInvite sends a personalised interview invite to an applicant.
+// templateText may contain {{first_name}} and {{booking_url}} placeholders which
+// are replaced by simple string substitution before sending.
+func SendInterviewInvite(application models.GeneralApplication, templateText, bookingURL string) error {
+	tmpl, err := parseEmailTemplate("application", "interview_invite.html")
+	if err != nil {
+		return fmt.Errorf("failed to parse interview invite template: %w", err)
+	}
+
+	// Safe string interpolation — no Go template execution of user-supplied text.
+	rendered := strings.NewReplacer(
+		"{{first_name}}", template.HTMLEscapeString(application.FirstName),
+		"{{booking_url}}", template.HTMLEscapeString(bookingURL),
+	).Replace(templateText)
+	// Convert newlines to <br> so plain-text line breaks survive in HTML.
+	rendered = strings.ReplaceAll(rendered, "\n", "<br>")
+
+	type interviewInviteEmailData struct {
+		EmailData
+		RenderedBody template.HTML
+		BookingURL   string
+	}
+
+	data := interviewInviteEmailData{
+		EmailData:    newEmailData(),
+		RenderedBody: template.HTML(rendered), // #nosec G203 — sanitised above
+		BookingURL:   bookingURL,
+	}
+	data.Profile = models.Profile{
+		Email:     application.Email,
+		FirstName: application.FirstName,
+		LastName:  application.LastName,
+	}
+
+	var htmlBody bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&htmlBody, "base", data); err != nil {
+		return fmt.Errorf("failed to execute interview invite template: %w", err)
+	}
+
+	subject := fmt.Sprintf("Interview invitation from KTH AI Society — %s %s", application.FirstName, application.LastName)
+	return sendEmail(application.Email, subject, htmlBody.String())
+}
+
 // SendGeneralApplicationConfirmation sends a confirmation email after a general application is received.
 func SendGeneralApplicationConfirmation(application models.GeneralApplication) error {
 	tmpl, err := parseEmailTemplate("application", "confirmation.html")
