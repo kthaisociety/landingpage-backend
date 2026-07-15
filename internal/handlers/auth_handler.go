@@ -457,10 +457,6 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 }
 
 func (h *AuthHandler) setJWTCookie(c *gin.Context, value string, maxAge int) {
-	sameSite := http.SameSiteLaxMode
-	if !h.cfg.DevelopmentMode {
-		sameSite = http.SameSiteStrictMode
-	}
-	c.SetSameSite(sameSite)
+	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie("jwt", value, maxAge, "/", h.cfg.CookieDomain, h.cfg.JwtCookieSecure, false)
 }
