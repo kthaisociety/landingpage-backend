@@ -219,7 +219,7 @@ func SendInterviewInvite(application models.GeneralApplication, templateText, bo
 		return fmt.Errorf("failed to execute interview invite template: %w", err)
 	}
 
-	subject := fmt.Sprintf("Interview invitation from KTH AI Society — %s %s", application.FirstName, application.LastName)
+	subject := fmt.Sprintf("Interview invitation from KTH AI Society: %s %s", application.FirstName, application.LastName)
 	return sendEmail(application.Email, subject, htmlBody.String())
 }
 
