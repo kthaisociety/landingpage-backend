@@ -40,6 +40,7 @@ func (h *AdminHandler) Register(r *gin.RouterGroup) {
 	admin.GET("/checkadmin", h.IsAdmin) // Requires auth?
 
 	admin.POST("/users", h.AddUser)
+	admin.DELETE("/users/:id", h.DeleteUser)
 	admin.PUT("/setadmin", h.PromoteToAdmin)
 	admin.PUT("/unsetadmin", h.DemoteAdmin)
 }
@@ -311,6 +312,41 @@ func (h *AdminHandler) ListFilteredUsers(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, users)
+}
+
+// DeleteUser hard-deletes a user and their profile by UUID or email.
+// The :id param is tried as a UUID first; if it doesn't parse it is treated as an email.
+func (h *AdminHandler) DeleteUser(c *gin.Context) {
+	param := strings.TrimSpace(c.Param("id"))
+	if param == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "user id or email required"})
+		return
+	}
+
+	var user models.User
+	uid, err := uuid.Parse(param)
+	if err == nil {
+		err = h.db.Unscoped().Where("user_id = ?", uid).First(&user).Error
+	} else {
+		err = h.db.Unscoped().Where("email = ?", param).First(&user).Error
+	}
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+		return
+	}
+
+	// Delete profile first (no FK cascade defined at DB level).
+	if err := h.db.Unscoped().Where("user_id = ?", user.ID).Delete(&models.Profile{}).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete user profile"})
+		return
+	}
+
+	if err := h.db.Unscoped().Delete(&user).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete user"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "user deleted"})
 }
 
 func (h *AdminHandler) AddUser(c *gin.Context) {
