@@ -79,6 +79,18 @@ It registers routes under `/joblistings`, with several admin-only endpoints prot
   - `400 Bad Request` when `id` is missing.
   - `404 Not Found` when the job listing cannot be found.
 
+### `POST /joblistings/click`
+
+- Purpose: Record a click on a job listing's "Apply" button/link. A simple atomic counter (`apply_click_count`), not an event log — intended for jobs where the application process happens off-site (company URL/email) and we'd otherwise have no visibility into applicant engagement.
+- Access: Public, rate-limited via `middleware.ClickRateLimit()` (its own Redis key prefix/threshold, separate from the general `middleware.RateLimit()` used by form submissions). The rate-limit key is `c.ClientIP()`. The gin engine now calls `SetTrustedProxies` (see `cmd/api/main.go`) with private-network ranges only, so `ClientIP()` resolves the real distinct visitor IP when the request arrives via a platform-managed load balancer/sidecar proxy on a private network, but ignores `X-Forwarded-For`/`X-Real-IP` entirely (falling back to the raw socket peer) when the immediate connection isn't from one of those ranges — a public caller can't spoof a trusted hop, and legitimate visitors behind a real proxy aren't collapsed into one shared quota bucket.
+- Query parameters:
+  - `id` (UUID): The job listing ID whose click count to increment.
+- Response:
+  - `204 No Content` on success.
+  - `400 Bad Request` when `id` is missing or invalid.
+  - `404 Not Found` when the job listing cannot be found.
+- Behavior: increments `apply_click_count` with an atomic `UPDATE ... SET apply_click_count = apply_click_count + 1`, avoiding a read-modify-write race under concurrent clicks. The current count is returned via `GET /joblistings/job` and `GET /joblistings/all` (field `applyClickCount`).
+
 ## Notes
 
 - The admin routes are grouped under `/joblistings/admin` and require admin role enforcement.
