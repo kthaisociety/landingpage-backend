@@ -359,6 +359,20 @@ func (h *GeneralApplicationHandler) AdminUpdateStatus(c *gin.Context) {
 }
 
 func (h *GeneralApplicationHandler) AdminDelete(c *gin.Context) {
+	token := utils.GetJWT(c)
+	claims := utils.GetClaims(token)
+	requesterID, err := uuid.Parse(claims["user_id"].(string))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user id"})
+		return
+	}
+
+	isIT, err := h.requesterIsOnTeam(requesterID, "IT")
+	if err != nil || !isIT {
+		c.JSON(http.StatusForbidden, gin.H{"error": "only IT admins can delete applications"})
+		return
+	}
+
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid application id"})
@@ -377,6 +391,28 @@ func (h *GeneralApplicationHandler) AdminDelete(c *gin.Context) {
 	}
 
 	c.Status(http.StatusNoContent)
+}
+
+// requesterIsOnTeam resolves a user's admin team the same way the frontend
+// does: their own TeamMember entry for the given team takes priority, falling
+// back to their self-declared Profile.AdminTeam.
+func (h *GeneralApplicationHandler) requesterIsOnTeam(userID uuid.UUID, team string) (bool, error) {
+	var profile models.Profile
+	if err := h.db.Where("user_uuid = ?", userID).First(&profile).Error; err != nil {
+		return false, err
+	}
+
+	var count int64
+	if err := h.db.Model(&models.TeamMember{}).
+		Where("user_id = ? AND team_member_department = ?", profile.UserId, team).
+		Count(&count).Error; err != nil {
+		return false, err
+	}
+	if count > 0 {
+		return true, nil
+	}
+
+	return profile.AdminTeam == team, nil
 }
 
 func purgeSoftDeletedGeneralApplication(db *gorm.DB, applicationYear int, emailNormalized string) error {
