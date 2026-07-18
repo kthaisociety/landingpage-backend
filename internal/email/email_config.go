@@ -16,7 +16,7 @@ var DefaultEmailConfig = EmailConfig{
 	AppDescription:        "Welcome to KTHAIS",
 	AppEmailContact:       "contact@kthais.com",
 	StaticURL:             "https://kthais.com/static",
-	LogoURL:               "https://kthais.com/images/brand_assets/ais-logo-main-long-white.jpg",
+	LogoURL:               "https://kthais.com/brand/nav-wordmark.png",
 	LegalNoticeURL:        "https://kthais.com/page/legal/legal-notice/",
 	TermsAndConditionsURL: "https://kthais.com/page/legal/terms-and-conditions/",
 	PrivacyAndCookiesURL:  "https://kthais.com/page/legal/privacy-and-cookies/",
