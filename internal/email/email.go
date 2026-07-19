@@ -180,18 +180,21 @@ var templateFuncs = template.FuncMap{
 	},
 }
 
-// SendInterviewInvite sends a personalised interview invite to an applicant.
-// templateText may contain {{first_name}} and {{booking_url}} placeholders which
-// are replaced by simple string substitution before sending.
-func SendInterviewInvite(application models.GeneralApplication, templateText, bookingURL string) error {
+// RenderInterviewInvite renders the interview invite email's subject and HTML body for the
+// given recipient name, template text, and booking URL, without sending it. This is the single
+// implementation of the invite's structure — SendInterviewInvite and the interview-settings
+// preview endpoint both call it, so a preview is never able to drift from what actually sends.
+// templateText may contain {{first_name}} and {{booking_url}} placeholders which are replaced
+// by simple string substitution.
+func RenderInterviewInvite(firstName, lastName, templateText, bookingURL string) (subject, html string, err error) {
 	tmpl, err := parseEmailTemplate("application", "interview_invite.html")
 	if err != nil {
-		return fmt.Errorf("failed to parse interview invite template: %w", err)
+		return "", "", fmt.Errorf("failed to parse interview invite template: %w", err)
 	}
 
 	// Safe string interpolation — no Go template execution of user-supplied text.
 	rendered := strings.NewReplacer(
-		"{{first_name}}", template.HTMLEscapeString(application.FirstName),
+		"{{first_name}}", template.HTMLEscapeString(firstName),
 		"{{booking_url}}", template.HTMLEscapeString(bookingURL),
 	).Replace(templateText)
 	// Convert newlines to <br> so plain-text line breaks survive in HTML.
@@ -209,18 +212,28 @@ func SendInterviewInvite(application models.GeneralApplication, templateText, bo
 		BookingURL:   bookingURL,
 	}
 	data.Profile = models.Profile{
-		Email:     application.Email,
-		FirstName: application.FirstName,
-		LastName:  application.LastName,
+		FirstName: firstName,
+		LastName:  lastName,
 	}
 
 	var htmlBody bytes.Buffer
 	if err := tmpl.ExecuteTemplate(&htmlBody, "base", data); err != nil {
-		return fmt.Errorf("failed to execute interview invite template: %w", err)
+		return "", "", fmt.Errorf("failed to execute interview invite template: %w", err)
 	}
 
-	subject := fmt.Sprintf("Interview invitation from KTH AI Society: %s %s", application.FirstName, application.LastName)
-	return sendEmail(application.Email, subject, htmlBody.String())
+	subject = fmt.Sprintf("Interview invitation from KTH AI Society: %s %s", firstName, lastName)
+	return subject, htmlBody.String(), nil
+}
+
+// SendInterviewInvite sends a personalised interview invite to an applicant.
+// templateText may contain {{first_name}} and {{booking_url}} placeholders which
+// are replaced by simple string substitution before sending.
+func SendInterviewInvite(application models.GeneralApplication, templateText, bookingURL string) error {
+	subject, html, err := RenderInterviewInvite(application.FirstName, application.LastName, templateText, bookingURL)
+	if err != nil {
+		return err
+	}
+	return sendEmail(application.Email, subject, html)
 }
 
 // SendGeneralApplicationConfirmation sends a confirmation email after a general application is received.

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"backend/internal/config"
+	"backend/internal/email"
 	"backend/internal/mailchimp"
 	"backend/internal/middleware"
 	"backend/internal/models"
@@ -43,6 +44,7 @@ func (h *ProfileHandler) Register(r *gin.RouterGroup) {
 	protected.POST("/picture", h.UploadProfilePicture)
 	protected.GET("/me/interview-settings", h.GetInterviewSettings)
 	protected.PUT("/me/interview-settings", h.UpdateInterviewSettings)
+	protected.POST("/me/interview-settings/preview", h.PreviewInterviewSettings)
 
 	// Admin-only endpoints
 	admin := protected.Group("/admin")
@@ -611,6 +613,29 @@ func (h *ProfileHandler) UpdateInterviewSettings(c *gin.Context) {
 		"interview_email_template": profile.InterviewEmailTemplate,
 		"admin_team":               profile.AdminTeam,
 	})
+}
+
+// PreviewInterviewSettings renders the interview invite email exactly as SendInterviewInvite
+// would for a real applicant, using the given (possibly unsaved) booking URL and template text.
+// It calls the same email.RenderInterviewInvite used when actually sending, so the preview can
+// never drift from the real email.
+func (h *ProfileHandler) PreviewInterviewSettings(c *gin.Context) {
+	var input struct {
+		BookingPageURL         string `json:"booking_page_url"`
+		InterviewEmailTemplate string `json:"interview_email_template"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
+	subject, html, err := email.RenderInterviewInvite("Alex", "Jones", input.InterviewEmailTemplate, input.BookingPageURL)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to render preview"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"subject": subject, "html": html})
 }
 
 // DeleteProfile allows an admin to delete a profile
