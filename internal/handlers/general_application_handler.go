@@ -132,6 +132,8 @@ func (h *GeneralApplicationHandler) Register(r *gin.RouterGroup) {
 	admin.PATCH("/:id/restore", h.AdminRestoreApplication)
 	admin.GET("/:id/notes", h.AdminGetNotes)
 	admin.PUT("/:id/notes", h.AdminUpdateNotes)
+	admin.GET("/:id/notes/shared", h.AdminGetSharedNotes)
+	admin.PUT("/:id/notes/shared", h.AdminUpdateSharedNotes)
 }
 
 func (h *GeneralApplicationHandler) Create(c *gin.Context) {
@@ -1008,4 +1010,79 @@ func (h *GeneralApplicationHandler) AdminUpdateNotes(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"note": note.Note})
+}
+
+// AdminGetSharedNotes returns the note on an application that is visible to all admins.
+func (h *GeneralApplicationHandler) AdminGetSharedNotes(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid application id"})
+		return
+	}
+
+	var notes []models.ApplicationSharedNote
+	if err := h.db.Where("application_id = ?", id).Limit(1).Find(&notes).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch shared notes"})
+		return
+	}
+	if len(notes) == 0 {
+		c.JSON(http.StatusOK, gin.H{"note": "", "last_edited_email": "", "updated_at": nil})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"note":              notes[0].Note,
+		"last_edited_email": notes[0].LastEditedEmail,
+		"updated_at":        notes[0].UpdatedAt,
+	})
+}
+
+// AdminUpdateSharedNotes upserts the note on an application that is visible to all admins.
+func (h *GeneralApplicationHandler) AdminUpdateSharedNotes(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid application id"})
+		return
+	}
+
+	adminID, adminEmail, ok := getAdminIdentity(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "could not determine admin identity"})
+		return
+	}
+
+	var body struct {
+		Note string `json:"note"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
+	note := models.ApplicationSharedNote{
+		ApplicationID:   id,
+		Note:            body.Note,
+		LastEditedBy:    adminID,
+		LastEditedEmail: adminEmail,
+	}
+	result := h.db.
+		Where(models.ApplicationSharedNote{ApplicationID: id}).
+		Assign(models.ApplicationSharedNote{Note: body.Note, LastEditedBy: adminID, LastEditedEmail: adminEmail}).
+		FirstOrCreate(&note)
+	if result.Error != nil {
+		// FirstOrCreate may race; fall back to upsert
+		if err := h.db.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "application_id"}},
+			DoUpdates: clause.AssignmentColumns([]string{"note", "last_edited_by", "last_edited_email", "updated_at"}),
+		}).Create(&note).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save shared notes"})
+			return
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"note":              note.Note,
+		"last_edited_email": note.LastEditedEmail,
+		"updated_at":        note.UpdatedAt,
+	})
 }

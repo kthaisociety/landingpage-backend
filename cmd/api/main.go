@@ -131,6 +131,7 @@ func main() {
 		&models.TeamMemberPair{},
 		&models.GeneralApplication{},
 		&models.AdminInterviewNote{},
+		&models.ApplicationSharedNote{},
 		&models.NewsletterSubscription{},
 	)
 	if err != nil {
