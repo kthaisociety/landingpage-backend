@@ -14,6 +14,75 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+// devQuestionID derives a stable UUID for a seeded team question from a
+// human-readable slug, the same way devUserID/appID are derived elsewhere in
+// this file — so re-running the seed is idempotent and the answer maps below
+// can reference a question's id before it's actually been created.
+func devQuestionID(team, slug string) uuid.UUID {
+	return uuid.NewSHA1(uuid.NameSpaceURL, []byte("teamquestion:"+team+":"+slug))
+}
+
+type devTeamQuestionSeed struct {
+	slug     string
+	text     string
+	required bool
+}
+
+// devTeamQuestions seeds a few starter questions per team in local dev only —
+// production ships with an empty team_questions table; team heads populate
+// their own from the new admin UI (Team Questions -> manage questions).
+var devTeamQuestions = map[string][]devTeamQuestionSeed{
+	"Business": {
+		{slug: "motivation", text: "Why are you interested in the Business team specifically?", required: true},
+		{slug: "experience", text: "Describe any relevant experience in business development, marketing, or partnerships.", required: true},
+	},
+	"Development": {
+		{slug: "motivation", text: "Why are you interested in the Development team specifically?", required: true},
+		{slug: "stack", text: "What programming languages or frameworks are you most comfortable with?", required: true},
+	},
+	"Research": {
+		{slug: "motivation", text: "Why are you interested in the Research team specifically?", required: true},
+		{slug: "background", text: "Describe your background in machine learning or a related research area.", required: true},
+	},
+	"Growth": {
+		{slug: "motivation", text: "Why are you interested in the Growth team specifically?", required: true},
+		{slug: "experience", text: "Describe any relevant experience in marketing, content, or community building.", required: true},
+	},
+	"IT": {
+		{slug: "motivation", text: "Why are you interested in the IT team specifically?", required: true},
+		{slug: "stack", text: "What infrastructure, DevOps, or systems experience do you have?", required: true},
+	},
+}
+
+func seedTeamQuestions(db *gorm.DB) {
+	seeded := 0
+	for team, questions := range devTeamQuestions {
+		for i, q := range questions {
+			id := devQuestionID(team, q.slug)
+			var count int64
+			db.Model(&models.TeamQuestion{}).Where("id = ?", id).Count(&count)
+			if count > 0 {
+				continue
+			}
+			question := models.TeamQuestion{
+				Id:        id,
+				Team:      team,
+				Text:      q.text,
+				Required:  q.required,
+				SortOrder: i,
+			}
+			if err := db.Create(&question).Error; err != nil {
+				log.Printf("[dev seed] failed to seed team question %s/%s: %v", team, q.slug, err)
+				continue
+			}
+			seeded++
+		}
+	}
+	if seeded > 0 {
+		log.Printf("[dev seed] seeded %d team question(s)", seeded)
+	}
+}
+
 // seedTeamQuestionsSubmission describes a completed Team Questions submission
 // to attach to a seed application. Teams not listed in answers but present on
 // the application are treated as withdrawn, mirroring what the real submit
@@ -102,8 +171,8 @@ var devApplications = []seedApplication{
 		teamQuestions: &seedTeamQuestionsSubmission{
 			answers: map[string]map[string]string{
 				"Business": {
-					"motivation": "I want to own partner relationships end-to-end, not just support them.",
-					"experience": "Interned at two VC firms and led the business track of a student startup.",
+					devQuestionID("Business", "motivation").String(): "I want to own partner relationships end-to-end, not just support them.",
+					devQuestionID("Business", "experience").String(): "Interned at two VC firms and led the business track of a student startup.",
 				},
 			},
 			withdrawnTeams: []string{"Growth"},
@@ -124,8 +193,8 @@ var devApplications = []seedApplication{
 		teamQuestions: &seedTeamQuestionsSubmission{
 			answers: map[string]map[string]string{
 				"Research": {
-					"motivation": "I want feedback from peers outside my lab before publishing.",
-					"background": "Thesis work on diffusion models for scientific simulation.",
+					devQuestionID("Research", "motivation").String(): "I want feedback from peers outside my lab before publishing.",
+					devQuestionID("Research", "background").String(): "Thesis work on diffusion models for scientific simulation.",
 				},
 			},
 		},
@@ -159,8 +228,8 @@ var devApplications = []seedApplication{
 		teamQuestions: &seedTeamQuestionsSubmission{
 			answers: map[string]map[string]string{
 				"IT": {
-					"motivation": "I want production experience, not just homelab tinkering.",
-					"stack":      "Proxmox, Docker, a bit of Terraform.",
+					devQuestionID("IT", "motivation").String(): "I want production experience, not just homelab tinkering.",
+					devQuestionID("IT", "stack").String():      "Proxmox, Docker, a bit of Terraform.",
 				},
 			},
 		},
@@ -266,6 +335,7 @@ func SeedDev(db *gorm.DB, cfg *config.Config) {
 	// No need to seed team_questions_settings — TeamQuestionsHandler.getSettings
 	// already falls back to a sensible default template when none is saved,
 	// in every environment, so there's nothing dev-specific to seed here.
+	seedTeamQuestions(db)
 	seedApplications(db, cfg, devUserID)
 }
 

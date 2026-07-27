@@ -136,6 +136,7 @@ func main() {
 		&models.TeamQuestionsSubmission{},
 		&models.TeamQuestionsToken{},
 		&models.TeamQuestionsSettings{},
+		&models.TeamQuestion{},
 	)
 	if err != nil {
 		log.Fatal("Failed to migrate database:", err)

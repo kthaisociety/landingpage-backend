@@ -52,6 +52,11 @@ func (h *TeamQuestionsHandler) Register(r *gin.RouterGroup) {
 	admin.GET("/team-questions/template", h.AdminGetTemplate)
 	admin.PUT("/team-questions/template", h.AdminUpdateTemplate)
 	admin.POST("/team-questions/template/preview", h.AdminPreviewTemplate)
+	admin.GET("/team-questions/questions", h.AdminListTeamQuestions)
+	admin.POST("/team-questions/questions", h.AdminCreateTeamQuestion)
+	admin.PUT("/team-questions/questions/reorder", h.AdminReorderTeamQuestions)
+	admin.PUT("/team-questions/questions/:questionId", h.AdminUpdateTeamQuestion)
+	admin.DELETE("/team-questions/questions/:questionId", h.AdminDeleteTeamQuestion)
 }
 
 // lookupToken finds the token row for a raw token value. It only accepts a
@@ -82,14 +87,27 @@ func (h *TeamQuestionsHandler) lookupToken(raw string) (*models.TeamQuestionsTok
 	return &token, nil
 }
 
-func scopedTeamQuestions(teams []string) map[string][]validation.TeamQuestion {
+// scopedTeamQuestions loads the configured questions for exactly the given
+// teams, in admin-defined display order, and nothing for any other team —
+// the public form never receives another team's questions.
+func (h *TeamQuestionsHandler) scopedTeamQuestions(teams []string) (map[string][]validation.TeamQuestion, error) {
 	questions := make(map[string][]validation.TeamQuestion, len(teams))
-	for _, team := range teams {
-		if qs, ok := validation.TeamQuestions[team]; ok {
-			questions[team] = qs
-		}
+	if len(teams) == 0 {
+		return questions, nil
 	}
-	return questions
+
+	var rows []models.TeamQuestion
+	if err := h.db.Where("team IN ?", teams).Order("sort_order, created_at").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		questions[row.Team] = append(questions[row.Team], validation.TeamQuestion{
+			ID:       row.Id.String(),
+			Text:     row.Text,
+			Required: row.Required,
+		})
+	}
+	return questions, nil
 }
 
 func (h *TeamQuestionsHandler) GetForm(c *gin.Context) {
@@ -109,10 +127,16 @@ func (h *TeamQuestionsHandler) GetForm(c *gin.Context) {
 		return
 	}
 
+	questions, err := h.scopedTeamQuestions(application.Teams)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load questions"})
+		return
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"first_name": application.FirstName,
 		"teams":      application.Teams,
-		"questions":  scopedTeamQuestions(application.Teams),
+		"questions":  questions,
 	})
 }
 
@@ -155,7 +179,9 @@ func (h *TeamQuestionsHandler) SubmitForm(c *gin.Context) {
 		withdrawn[team] = struct{}{}
 	}
 
-	var effectiveTeams []string
+	// Not nil: a nil slice serializes as SQL NULL via pq.StringArray, which
+	// violates teams' NOT NULL constraint when every team is withdrawn.
+	effectiveTeams := []string{}
 	for _, team := range application.Teams {
 		if _, ok := withdrawn[team]; !ok {
 			effectiveTeams = append(effectiveTeams, team)
@@ -173,8 +199,13 @@ func (h *TeamQuestionsHandler) SubmitForm(c *gin.Context) {
 		}
 	}
 
+	questionsByTeam, err := h.scopedTeamQuestions(effectiveTeams)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load questions"})
+		return
+	}
 	for _, team := range effectiveTeams {
-		for _, question := range validation.TeamQuestions[team] {
+		for _, question := range questionsByTeam[team] {
 			if !question.Required {
 				continue
 			}

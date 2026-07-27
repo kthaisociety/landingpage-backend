@@ -60,6 +60,7 @@ func TestApplicationAndInterviewLifecycle(t *testing.T) {
 		&models.TeamQuestionsSubmission{},
 		&models.TeamQuestionsToken{},
 		&models.TeamQuestionsSettings{},
+		&models.TeamQuestion{},
 	))
 
 	// The public "/applications/general" and "/applications/team-questions/:token"
@@ -95,6 +96,24 @@ func TestApplicationAndInterviewLifecycle(t *testing.T) {
 
 	adminA := mustCreateAdmin(t, db, cfg, "lifecycle-admin-a@seed.local")
 	adminB := mustCreateAdmin(t, db, cfg, "lifecycle-admin-b@seed.local")
+	adminIT := mustCreateTeamAdmin(t, db, cfg, "lifecycle-admin-it@seed.local", "IT")
+
+	// Team questions are admin-configured data now (no hardcoded fallback),
+	// so this test seeds exactly the questions it needs directly.
+	devMotivationID := uuid.New()
+	devStackID := uuid.New()
+	require.NoError(t, db.Create(&models.TeamQuestion{
+		Id: devMotivationID, Team: "Development", Text: "Why Development?", Required: true, SortOrder: 0,
+	}).Error)
+	require.NoError(t, db.Create(&models.TeamQuestion{
+		Id: devStackID, Team: "Development", Text: "What's your stack?", Required: true, SortOrder: 1,
+	}).Error)
+	require.NoError(t, db.Create(&models.TeamQuestion{
+		Id: uuid.New(), Team: "Research", Text: "Why Research?", Required: true, SortOrder: 0,
+	}).Error)
+	t.Cleanup(func() {
+		db.Where("team IN ?", []string{"Development", "Research"}).Unscoped().Delete(&models.TeamQuestion{})
+	})
 
 	suffix := uuid.New().String()[:8]
 	applicantEmail := fmt.Sprintf("lifecycle-%s@seed.local", suffix)
@@ -110,6 +129,8 @@ func TestApplicationAndInterviewLifecycle(t *testing.T) {
 		db.Where("email = ?", adminA.email).Unscoped().Delete(&models.User{})
 		db.Where("email = ?", adminB.email).Unscoped().Delete(&models.Profile{})
 		db.Where("email = ?", adminB.email).Unscoped().Delete(&models.User{})
+		db.Where("email = ?", adminIT.email).Unscoped().Delete(&models.Profile{})
+		db.Where("email = ?", adminIT.email).Unscoped().Delete(&models.User{})
 	})
 
 	var applicationID string
@@ -250,7 +271,7 @@ func TestApplicationAndInterviewLifecycle(t *testing.T) {
 
 	t.Run("submit rejects missing required answers", func(t *testing.T) {
 		rec := doJSONRequest(t, engine, "POST", "/api/v1/applications/team-questions/"+rawToken, map[string]any{
-			"answers":         map[string]any{"Development": map[string]string{"motivation": ""}},
+			"answers":         map[string]any{"Development": map[string]string{devMotivationID.String(): ""}},
 			"withdrawn_teams": []string{},
 		}, nil)
 		require.Equal(t, http.StatusBadRequest, rec.Code)
@@ -260,8 +281,8 @@ func TestApplicationAndInterviewLifecycle(t *testing.T) {
 		rec := doJSONRequest(t, engine, "POST", "/api/v1/applications/team-questions/"+rawToken, map[string]any{
 			"answers": map[string]any{
 				"Development": map[string]string{
-					"motivation": "I want to ship real products with a team.",
-					"stack":      "Go, TypeScript",
+					devMotivationID.String(): "I want to ship real products with a team.",
+					devStackID.String():      "Go, TypeScript",
 				},
 			},
 			"withdrawn_teams": []string{"Research"},
@@ -341,6 +362,180 @@ func TestApplicationAndInterviewLifecycle(t *testing.T) {
 		require.Equal(t, models.GeneralApplicationStatusAvailable, app.Status,
 			"an application that already submitted Team Questions must restore to available, not pending")
 	})
+
+	// Regression test: a nil Go slice (the zero value of effectiveTeams when
+	// every team is withdrawn) serializes as SQL NULL via pq.StringArray,
+	// which violates the teams column's NOT NULL constraint — this used to
+	// 500 instead of actually withdrawing the application.
+	t.Run("withdrawing every team withdraws the application, not a 500", func(t *testing.T) {
+		withdrawAllID := uuid.New()
+		withdrawAllApp := models.GeneralApplication{
+			Id:                    withdrawAllID,
+			ApplicationYear:       generalApplicationYear,
+			FirstName:             "Withdraw",
+			LastName:              "Everything",
+			Email:                 fmt.Sprintf("withdraw-all-%s@seed.local", suffix),
+			EmailNormalized:       fmt.Sprintf("withdraw-all-%s@seed.local", suffix),
+			Gender:                "Prefer not to say",
+			University:            "KTH Royal Institute of Technology",
+			Programme:             "Computer Science",
+			GraduationYear:        2027,
+			LinkedinURL:           "https://linkedin.com/in/withdraw-all-" + suffix,
+			ResumeFileName:        "resume.pdf",
+			ResumeContentType:     "application/pdf",
+			Teams:                 pq.StringArray{"Development", "Growth"},
+			TeamPreferencesRanked: true,
+			Interests:             pq.StringArray{"Machine Learning"},
+			Availability:          "4-6 hours",
+			Contribution:          "Applying broadly across a couple of teams.",
+			DataRetentionConsent:  true,
+			Status:                models.GeneralApplicationStatusPending,
+		}
+		require.NoError(t, db.Create(&withdrawAllApp).Error)
+		t.Cleanup(func() {
+			db.Where("application_id = ?", withdrawAllID).Delete(&models.TeamQuestionsToken{})
+			db.Unscoped().Delete(&withdrawAllApp)
+		})
+
+		raw, hash, err := utils.GenerateToken()
+		require.NoError(t, err)
+		require.NoError(t, db.Create(&models.TeamQuestionsToken{
+			ApplicationID: withdrawAllID,
+			TokenHash:     hash,
+			ExpiresAt:     time.Now().Add(30 * 24 * time.Hour),
+		}).Error)
+
+		resetRateLimit()
+		rec := doJSONRequest(t, engine, "POST", "/api/v1/applications/team-questions/"+raw, map[string]any{
+			"answers":         map[string]any{},
+			"withdrawn_teams": []string{"Development", "Growth"},
+		}, nil)
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		var after models.GeneralApplication
+		require.NoError(t, db.First(&after, "id = ?", withdrawAllID).Error)
+		require.Equal(t, models.GeneralApplicationStatusWithdrawn, after.Status)
+		require.Empty(t, []string(after.Teams))
+	})
+
+	t.Run("team question CRUD is scoped to that team's own admins", func(t *testing.T) {
+		// Clean slate for IT regardless of what the dev seeder left behind,
+		// so this test's assertions about count/order aren't at the mercy of
+		// ambient data in a shared local database.
+		require.NoError(t, db.Where("team = ?", "IT").Delete(&models.TeamQuestion{}).Error)
+
+		// Only a member of the team may create a question for it.
+		rec := doJSONRequest(t, engine, "POST", "/api/v1/applications/admin/team-questions/questions", map[string]any{
+			"team": "IT", "text": "Should be rejected", "required": true,
+		}, adminA.cookie)
+		require.Equal(t, http.StatusForbidden, rec.Code)
+
+		rec = doJSONRequest(t, engine, "POST", "/api/v1/applications/admin/team-questions/questions", map[string]any{
+			"team": "IT", "text": "First question", "required": true,
+		}, adminIT.cookie)
+		require.Equal(t, http.StatusCreated, rec.Code)
+		var first struct {
+			ID string `json:"id"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &first))
+		require.NotEmpty(t, first.ID)
+
+		rec = doJSONRequest(t, engine, "POST", "/api/v1/applications/admin/team-questions/questions", map[string]any{
+			"team": "IT", "text": "Second question", "required": false,
+		}, adminIT.cookie)
+		require.Equal(t, http.StatusCreated, rec.Code)
+		var second struct {
+			ID       string `json:"id"`
+			Required bool   `json:"required"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &second))
+		// Regression check: a bool column with a gorm "default:true" tag makes
+		// GORM silently substitute the DB default whenever the Go zero value
+		// (false) is set, so an explicit "required: false" would come back as
+		// true. Assert both the response and the persisted row directly.
+		require.False(t, second.Required, "an explicit required:false must not be coerced to true")
+		var secondPersisted models.TeamQuestion
+		require.NoError(t, db.First(&secondPersisted, "id = ?", second.ID).Error)
+		require.False(t, secondPersisted.Required, "required:false must round-trip through the database as false")
+
+		// The list endpoint shows can_edit true only for the team the
+		// requester actually belongs to — no IT-wide override, unlike the
+		// shared email template.
+		rec = doJSONRequest(t, engine, "GET", "/api/v1/applications/admin/team-questions/questions", nil, adminIT.cookie)
+		require.Equal(t, http.StatusOK, rec.Code)
+		var listedByIT struct {
+			Teams map[string]struct {
+				CanEdit   bool `json:"can_edit"`
+				Questions []struct {
+					ID   string `json:"id"`
+					Text string `json:"text"`
+				} `json:"questions"`
+			} `json:"teams"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &listedByIT))
+		require.True(t, listedByIT.Teams["IT"].CanEdit)
+		require.False(t, listedByIT.Teams["Business"].CanEdit)
+		require.Len(t, listedByIT.Teams["IT"].Questions, 2)
+		require.Equal(t, "First question", listedByIT.Teams["IT"].Questions[0].Text)
+
+		rec = doJSONRequest(t, engine, "GET", "/api/v1/applications/admin/team-questions/questions", nil, adminA.cookie)
+		require.Equal(t, http.StatusOK, rec.Code)
+		var listedByA struct {
+			Teams map[string]struct {
+				CanEdit bool `json:"can_edit"`
+			} `json:"teams"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &listedByA))
+		require.False(t, listedByA.Teams["IT"].CanEdit, "an admin on no team must not be able to edit IT's questions")
+
+		// Only a member of the team may edit or delete its questions.
+		rec = doJSONRequest(t, engine, "PUT", "/api/v1/applications/admin/team-questions/questions/"+first.ID, map[string]any{
+			"text": "Should be rejected", "required": true,
+		}, adminA.cookie)
+		require.Equal(t, http.StatusForbidden, rec.Code)
+
+		rec = doJSONRequest(t, engine, "PUT", "/api/v1/applications/admin/team-questions/questions/"+first.ID, map[string]any{
+			"text": "First question, edited", "required": true,
+		}, adminIT.cookie)
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		var editedQuestion models.TeamQuestion
+		require.NoError(t, db.First(&editedQuestion, "id = ?", first.ID).Error)
+		require.Equal(t, "First question, edited", editedQuestion.Text)
+
+		// Reordering (put the second question first) is also team-gated and
+		// applies in one call.
+		rec = doJSONRequest(t, engine, "PUT", "/api/v1/applications/admin/team-questions/questions/reorder", map[string]any{
+			"team":        "IT",
+			"ordered_ids": []string{second.ID, first.ID},
+		}, adminA.cookie)
+		require.Equal(t, http.StatusForbidden, rec.Code)
+
+		rec = doJSONRequest(t, engine, "PUT", "/api/v1/applications/admin/team-questions/questions/reorder", map[string]any{
+			"team":        "IT",
+			"ordered_ids": []string{second.ID, first.ID},
+		}, adminIT.cookie)
+		require.Equal(t, http.StatusNoContent, rec.Code)
+
+		var reorderedFirst, reorderedSecond models.TeamQuestion
+		require.NoError(t, db.First(&reorderedFirst, "id = ?", second.ID).Error)
+		require.NoError(t, db.First(&reorderedSecond, "id = ?", first.ID).Error)
+		require.Less(t, reorderedFirst.SortOrder, reorderedSecond.SortOrder, "the second question should now sort before the first")
+
+		rec = doJSONRequest(t, engine, "DELETE", "/api/v1/applications/admin/team-questions/questions/"+first.ID, nil, adminA.cookie)
+		require.Equal(t, http.StatusForbidden, rec.Code)
+
+		rec = doJSONRequest(t, engine, "DELETE", "/api/v1/applications/admin/team-questions/questions/"+first.ID, nil, adminIT.cookie)
+		require.Equal(t, http.StatusNoContent, rec.Code)
+
+		var remaining int64
+		db.Model(&models.TeamQuestion{}).Where("team = ?", "IT").Count(&remaining)
+		require.EqualValues(t, 1, remaining)
+
+		t.Cleanup(func() {
+			db.Where("team = ?", "IT").Unscoped().Delete(&models.TeamQuestion{})
+		})
+	})
 }
 
 type testAdmin struct {
@@ -350,6 +545,14 @@ type testAdmin struct {
 }
 
 func mustCreateAdmin(t *testing.T, db *gorm.DB, cfg *config.Config, email string) testAdmin {
+	return mustCreateTeamAdmin(t, db, cfg, email, "")
+}
+
+// mustCreateTeamAdmin creates an admin declared as the head of adminTeam
+// (via Profile.AdminTeam, the same field requesterIsOnTeam checks), so tests
+// can exercise per-team permission gating like the Team Questions CRUD
+// endpoints. Pass "" for a plain admin belonging to no team.
+func mustCreateTeamAdmin(t *testing.T, db *gorm.DB, cfg *config.Config, email string, adminTeam string) testAdmin {
 	t.Helper()
 	userID := uuid.New()
 
@@ -368,6 +571,7 @@ func mustCreateAdmin(t *testing.T, db *gorm.DB, cfg *config.Config, email string
 		LastName:               "Tester",
 		BookingPageURL:         "https://calendar.example.com/" + email,
 		InterviewEmailTemplate: "Congrats {{first_name}}, let's talk!",
+		AdminTeam:              adminTeam,
 	}).Error)
 
 	token, err := utils.WriteJWT(email, []string{"user", "member", "admin"}, userID, cfg.JwtSigningKey, 60)
