@@ -32,23 +32,23 @@ const (
 
 type Profile struct {
 	gorm.Model
-	Id             uuid.UUID      `gorm:"uniqueIndex;default:gen_random_uuid()" json:"id"`
-	UserUUID       uuid.UUID      `gorm:"not null" json:"user_id"`
-	UserId         uint           `gorm:"not null" json:"-"`
-	User           User           `json:"user,omitempty"`
-	Email          string         `gorm:"uniqueIndex;not null" json:"email"`
-	FirstName      string         `gorm:"not null" json:"first_name"`
-	LastName       string         `gorm:"not null" json:"last_name"`
-	Registered     bool           `gorm:"default:false;not null" json:"registered"`
-	University     string         `gorm:"not null" json:"university"`
-	Programme      StudyProgram   `gorm:"not null" json:"programme"`
-	GraduationYear int            `gorm:"not null" json:"graduation_year"`
-	GitHubLink              string         `json:"github_link,omitempty"`
-	LinkedInLink            string         `json:"linkedin_link,omitempty"`
-	ProfilePicture          string         `json:"profile_picture,omitempty"`
-	AboutMe                 string         `json:"about_me,omitempty"`
-	Skills                  pq.StringArray `gorm:"type:text[]" json:"skills,omitempty"`
-	BookingPageURL          string         `gorm:"default:''" json:"booking_page_url,omitempty"`
-	InterviewEmailTemplate  string         `gorm:"type:text;default:''" json:"interview_email_template,omitempty"`
-	AdminTeam               string         `gorm:"default:''" json:"admin_team,omitempty"`
+	Id                     uuid.UUID      `gorm:"uniqueIndex;default:gen_random_uuid()" json:"id"`
+	UserUUID               uuid.UUID      `gorm:"not null" json:"user_id"`
+	UserId                 uint           `gorm:"not null" json:"-"`
+	User                   User           `json:"user,omitempty"`
+	Email                  string         `gorm:"uniqueIndex;not null" json:"email"`
+	FirstName              string         `gorm:"not null" json:"first_name"`
+	LastName               string         `gorm:"not null" json:"last_name"`
+	Registered             bool           `gorm:"default:false;not null" json:"registered"`
+	University             string         `gorm:"not null" json:"university"`
+	Programme              StudyProgram   `gorm:"not null" json:"programme"`
+	GraduationYear         int            `gorm:"not null" json:"graduation_year"`
+	GitHubLink             string         `json:"github_link,omitempty"`
+	LinkedInLink           string         `json:"linkedin_link,omitempty"`
+	ProfilePicture         string         `json:"profile_picture,omitempty"`
+	AboutMe                string         `json:"about_me,omitempty"`
+	Skills                 pq.StringArray `gorm:"type:text[]" json:"skills,omitempty"`
+	BookingPageURL         string         `gorm:"default:''" json:"booking_page_url,omitempty"`
+	InterviewEmailTemplate string         `gorm:"type:text;default:''" json:"interview_email_template,omitempty"`
+	AdminTeam              string         `gorm:"default:''" json:"admin_team,omitempty"`
 }

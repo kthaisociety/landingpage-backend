@@ -30,6 +30,7 @@ type Config struct {
 	}
 	AllowedOrigins []string
 	BackendURL     string
+	FrontendURL    string
 	Redis          struct {
 		Host     string
 		Port     string
@@ -90,6 +91,7 @@ func LoadConfig() (*Config, error) {
 	}
 
 	cfg.BackendURL = getEnv("BACKEND_URL", "http://localhost:8080")
+	cfg.FrontendURL = getEnv("FRONTEND_URL", "https://kthais.com")
 
 	// Mailchimp config
 	cfg.Mailchimp.APIKey = getEnv("MAILCHIMP_API_KEY", "")

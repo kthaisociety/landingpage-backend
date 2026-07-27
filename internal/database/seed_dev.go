@@ -4,6 +4,7 @@ import (
 	"backend/internal/config"
 	"backend/internal/models"
 	"backend/internal/utils"
+	"encoding/json"
 	"log"
 	"time"
 
@@ -13,20 +14,51 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-type seedApplication struct {
-	firstName    string
-	lastName     string
-	email        string
-	programme    string
-	university   string
-	graduationYear int
-	teams        []string
-	interests    []string
-	availability string
-	contribution string
-	status       models.GeneralApplicationStatus
+// seedTeamQuestionsSubmission describes a completed Team Questions submission
+// to attach to a seed application. Teams not listed in answers but present on
+// the application are treated as withdrawn, mirroring what the real submit
+// endpoint does.
+type seedTeamQuestionsSubmission struct {
+	answers        map[string]map[string]string
+	withdrawnTeams []string
 }
 
+type seedApplication struct {
+	firstName      string
+	lastName       string
+	email          string
+	programme      string
+	university     string
+	graduationYear int
+	teams          []string
+	interests      []string
+	availability   string
+	contribution   string
+	status         models.GeneralApplicationStatus
+
+	// teamQuestions is nil for applications that never got past the initial
+	// screen (still pending, or marked ineligible before Team Questions).
+	teamQuestions *seedTeamQuestionsSubmission
+	// issueUnusedInvite mints a fresh, usable Team Questions link and logs it
+	// every time the seed runs, regardless of whether the application row
+	// already existed — a resend naturally supersedes the previous token, so
+	// this is always safe and always gives you a live link to test against.
+	issueUnusedInvite bool
+	// claimedByDevAdmin points InterviewingByUserID/Email at the seeded dev
+	// admin, so "interviewing" applications show up under "my interviews".
+	claimedByDevAdmin bool
+}
+
+// devApplications covers the full lifecycle so the admin UI has something to
+// show for every stage without manual setup:
+//   - Alice: pending, never invited (Send to all pending picks her up)
+//   - Erik: pending, invited but hasn't submitted (Resend / the public form)
+//   - Maja: available — submitted Team Questions, withdrew from one team
+//   - Omar: interviewing — submitted, then claimed by the dev admin
+//   - Sofia: ineligible before ever being invited to Team Questions
+//   - Nadia: ineligible after already submitting (restore should send her to
+//     available, not pending)
+//   - Viktor: withdrawn — opted out of every team on the Team Questions form
 var devApplications = []seedApplication{
 	{
 		firstName:      "Alice",
@@ -39,20 +71,21 @@ var devApplications = []seedApplication{
 		interests:      []string{"Machine Learning", "Natural Language Processing"},
 		availability:   "6-8 hours",
 		contribution:   "I have been building ML pipelines in PyTorch for two years and want to apply that in a collaborative environment.",
-		status:         models.GeneralApplicationStatusAvailable,
+		status:         models.GeneralApplicationStatusPending,
 	},
 	{
-		firstName:      "Erik",
-		lastName:       "Johansson",
-		email:          "erik.johansson@seed.local",
-		programme:      "Computer Science",
-		university:     "KTH Royal Institute of Technology",
-		graduationYear: 2026,
-		teams:          []string{"IT", "Development"},
-		interests:      []string{"Cybersecurity & AI Safety Engineering", "Embedded Systems & Edge AI"},
-		availability:   "4-6 hours",
-		contribution:   "I maintain several open-source Rust projects and want to help build reliable infrastructure for the society.",
-		status:         models.GeneralApplicationStatusAvailable,
+		firstName:         "Erik",
+		lastName:          "Johansson",
+		email:             "erik.johansson@seed.local",
+		programme:         "Computer Science",
+		university:        "KTH Royal Institute of Technology",
+		graduationYear:    2026,
+		teams:             []string{"IT", "Development"},
+		interests:         []string{"Cybersecurity & AI Safety Engineering", "Embedded Systems & Edge AI"},
+		availability:      "4-6 hours",
+		contribution:      "I maintain several open-source Rust projects and want to help build reliable infrastructure for the society.",
+		status:            models.GeneralApplicationStatusPending,
+		issueUnusedInvite: true,
 	},
 	{
 		firstName:      "Maja",
@@ -66,6 +99,15 @@ var devApplications = []seedApplication{
 		availability:   "8 hours or more",
 		contribution:   "I have interned at two VC firms and led the business track of a student startup. I want to help KTHAIS grow its partner network.",
 		status:         models.GeneralApplicationStatusAvailable,
+		teamQuestions: &seedTeamQuestionsSubmission{
+			answers: map[string]map[string]string{
+				"Business": {
+					"motivation": "I want to own partner relationships end-to-end, not just support them.",
+					"experience": "Interned at two VC firms and led the business track of a student startup.",
+				},
+			},
+			withdrawnTeams: []string{"Growth"},
+		},
 	},
 	{
 		firstName:      "Omar",
@@ -79,6 +121,15 @@ var devApplications = []seedApplication{
 		availability:   "4-6 hours",
 		contribution:   "My thesis explores diffusion models for scientific simulation. I want to communicate this research to a broader student audience.",
 		status:         models.GeneralApplicationStatusInterviewing,
+		teamQuestions: &seedTeamQuestionsSubmission{
+			answers: map[string]map[string]string{
+				"Research": {
+					"motivation": "I want feedback from peers outside my lab before publishing.",
+					"background": "Thesis work on diffusion models for scientific simulation.",
+				},
+			},
+		},
+		claimedByDevAdmin: true,
 	},
 	{
 		firstName:      "Sofia",
@@ -92,6 +143,44 @@ var devApplications = []seedApplication{
 		availability:   "6-8 hours",
 		contribution:   "I run the social media for a 10k-follower tech community and want to bring that experience to KTHAIS Growth.",
 		status:         models.GeneralApplicationStatusIneligible,
+	},
+	{
+		firstName:      "Nadia",
+		lastName:       "Petrov",
+		email:          "nadia.petrov@seed.local",
+		programme:      "Information and Communication Technology",
+		university:     "KTH Royal Institute of Technology",
+		graduationYear: 2027,
+		teams:          []string{"IT"},
+		interests:      []string{"Embedded Systems & Edge AI"},
+		availability:   "4-6 hours",
+		contribution:   "I've run a homelab for three years and want hands-on infra experience with a real user base.",
+		status:         models.GeneralApplicationStatusIneligible,
+		teamQuestions: &seedTeamQuestionsSubmission{
+			answers: map[string]map[string]string{
+				"IT": {
+					"motivation": "I want production experience, not just homelab tinkering.",
+					"stack":      "Proxmox, Docker, a bit of Terraform.",
+				},
+			},
+		},
+	},
+	{
+		firstName:      "Viktor",
+		lastName:       "Nilsson",
+		email:          "viktor.nilsson@seed.local",
+		programme:      "Technology and Management",
+		university:     "KTH Royal Institute of Technology",
+		graduationYear: 2026,
+		teams:          []string{"Development", "Growth"},
+		interests:      []string{"Startups & Venture Creation"},
+		availability:   "4-6 hours",
+		contribution:   "Applying broadly while I figure out which side of the society fits me best.",
+		status:         models.GeneralApplicationStatusWithdrawn,
+		teamQuestions: &seedTeamQuestionsSubmission{
+			answers:        map[string]map[string]string{},
+			withdrawnTeams: []string{"Development", "Growth"},
+		},
 	},
 }
 
@@ -141,11 +230,14 @@ func SeedDev(db *gorm.DB, cfg *config.Config) {
 		Email:     devAdminEmail,
 		FirstName: devAdminFirstName,
 		LastName:  devAdminLastName,
+		// IT so the seeded admin can exercise the IT-only Team Questions
+		// template editor locally without extra setup.
+		AdminTeam: "IT",
 	}
 
 	if err := db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "email"}},
-		DoUpdates: clause.AssignmentColumns([]string{"first_name", "last_name", "user_uuid", "user_id"}),
+		DoUpdates: clause.AssignmentColumns([]string{"first_name", "last_name", "user_uuid", "user_id", "admin_team"}),
 	}).Create(&profile).Error; err != nil {
 		log.Printf("[dev seed] failed to upsert profile: %v", err)
 		return
@@ -171,20 +263,32 @@ func SeedDev(db *gorm.DB, cfg *config.Config) {
 	log.Println("  document.cookie = `jwt=" + token + "; path=/`")
 	log.Println("==========================================")
 
-	seedApplications(db)
+	// No need to seed team_questions_settings — TeamQuestionsHandler.getSettings
+	// already falls back to a sensible default template when none is saved,
+	// in every environment, so there's nothing dev-specific to seed here.
+	seedApplications(db, cfg, devUserID)
 }
 
-func seedApplications(db *gorm.DB) {
+func seedApplications(db *gorm.DB, cfg *config.Config, devUserID uuid.UUID) {
 	seeded := 0
 	for _, a := range devApplications {
 		// Stable ID derived from email so restarts are idempotent.
 		appID := uuid.NewSHA1(uuid.NameSpaceURL, []byte("app:"+a.email))
+
+		if a.issueUnusedInvite {
+			issueDevTeamQuestionsInvite(db, cfg, appID, a.email)
+		}
 
 		// Skip if already present.
 		var count int64
 		db.Model(&models.GeneralApplication{}).Where("id = ?", appID).Count(&count)
 		if count > 0 {
 			continue
+		}
+
+		effectiveTeams := a.teams
+		if a.teamQuestions != nil {
+			effectiveTeams = withdrawTeams(a.teams, a.teamQuestions.withdrawnTeams)
 		}
 
 		app := models.GeneralApplication{
@@ -202,7 +306,7 @@ func seedApplications(db *gorm.DB) {
 			AdditionalLinks:       pq.StringArray{},
 			ResumeFileName:        "resume.pdf",
 			ResumeContentType:     "application/pdf",
-			Teams:                 pq.StringArray(a.teams),
+			Teams:                 pq.StringArray(effectiveTeams),
 			TeamPreferencesRanked: true,
 			TeamInterestReason:    "",
 			Interests:             pq.StringArray(a.interests),
@@ -213,14 +317,76 @@ func seedApplications(db *gorm.DB) {
 			CreatedAt:             time.Now(),
 		}
 
+		if a.claimedByDevAdmin {
+			app.InterviewingByUserID = &devUserID
+			app.InterviewingByEmail = devAdminEmail
+		}
+
 		if err := db.Create(&app).Error; err != nil {
 			log.Printf("[dev seed] failed to create application for %s: %v", a.email, err)
 			continue
 		}
+
+		if a.teamQuestions != nil {
+			answersJSON, err := json.Marshal(a.teamQuestions.answers)
+			if err != nil {
+				log.Printf("[dev seed] failed to encode team questions answers for %s: %v", a.email, err)
+			} else {
+				submission := models.TeamQuestionsSubmission{
+					ApplicationID:  appID,
+					Answers:        string(answersJSON),
+					WithdrawnTeams: pq.StringArray(a.teamQuestions.withdrawnTeams),
+					SubmittedAt:    time.Now(),
+				}
+				if err := db.Create(&submission).Error; err != nil {
+					log.Printf("[dev seed] failed to create team questions submission for %s: %v", a.email, err)
+				}
+			}
+		}
+
 		seeded++
 	}
 
 	if seeded > 0 {
 		log.Printf("[dev seed] seeded %d placeholder application(s)", seeded)
 	}
+}
+
+func withdrawTeams(teams []string, withdrawn []string) []string {
+	withdrawnSet := make(map[string]struct{}, len(withdrawn))
+	for _, team := range withdrawn {
+		withdrawnSet[team] = struct{}{}
+	}
+	var remaining []string
+	for _, team := range teams {
+		if _, ok := withdrawnSet[team]; !ok {
+			remaining = append(remaining, team)
+		}
+	}
+	return remaining
+}
+
+// issueDevTeamQuestionsInvite mints a fresh token and logs the link every time
+// the seed runs — a resend naturally supersedes whatever token existed
+// before, so this is safe to repeat on every restart and always gives you a
+// live link to open locally, even for an application seeded long ago.
+func issueDevTeamQuestionsInvite(db *gorm.DB, cfg *config.Config, appID uuid.UUID, email string) {
+	raw, hash, err := utils.GenerateToken()
+	if err != nil {
+		log.Printf("[dev seed] failed to generate team questions token for %s: %v", email, err)
+		return
+	}
+
+	token := models.TeamQuestionsToken{
+		ApplicationID: appID,
+		TokenHash:     hash,
+		ExpiresAt:     time.Now().Add(30 * 24 * time.Hour),
+	}
+	if err := db.Create(&token).Error; err != nil {
+		log.Printf("[dev seed] failed to create team questions token for %s: %v", email, err)
+		return
+	}
+
+	log.Printf("[dev seed] team questions link for %s (valid until restart supersedes it):", email)
+	log.Printf("  %s/apply/team-questions/%s", cfg.FrontendURL, raw)
 }

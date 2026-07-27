@@ -1,0 +1,15 @@
+{{define "email_opening"}}{{end}}
+
+{{define "email_message_pre"}}
+<p>{{.RenderedBody}}</p>
+{{end}}
+
+{{define "email_button_url"}}{{.FormURL}}{{end}}
+
+{{define "email_button_text"}}Answer your team questions{{end}}
+
+{{define "email_message_post"}}
+<p style="font-size:13px;color:#888;">If you did not apply to KTH AI Society or believe you received this email in error, please disregard it or contact us at <a href="mailto:{{.AppEmailContact}}">{{.AppEmailContact}}</a>.</p>
+{{end}}
+
+{{template "base" .}}

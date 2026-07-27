@@ -236,6 +236,78 @@ func SendInterviewInvite(application models.GeneralApplication, templateText, bo
 	return sendEmail(application.Email, subject, html)
 }
 
+// formatTeamsForSubject renders a team list for use in a subject line, e.g.
+// "Development team" for one team or "Development, Research teams" for several.
+func formatTeamsForSubject(teams []string) string {
+	switch len(teams) {
+	case 0:
+		return ""
+	case 1:
+		return teams[0] + " team"
+	default:
+		return strings.Join(teams, ", ") + " teams"
+	}
+}
+
+// RenderTeamQuestionsInvite renders the Team Questions invite email's subject and HTML body
+// for the given recipient name, teams, template text, and form link, without sending it. This
+// is the single implementation of the invite's structure — SendTeamQuestionsInvite and the
+// admin template preview endpoint both call it, so a preview is never able to drift from what
+// actually sends. templateText may contain a {{first_name}} placeholder which is replaced
+// by simple string substitution; the form link is always appended as the email's button.
+func RenderTeamQuestionsInvite(firstName, lastName string, teams []string, templateText, formURL string) (subject, html string, err error) {
+	tmpl, err := parseEmailTemplate("application", "team_questions_invite.html")
+	if err != nil {
+		return "", "", fmt.Errorf("failed to parse team questions invite template: %w", err)
+	}
+
+	// Safe string interpolation — no Go template execution of user-supplied text.
+	rendered := strings.NewReplacer(
+		"{{first_name}}", template.HTMLEscapeString(firstName),
+	).Replace(templateText)
+	// Convert newlines to <br> so plain-text line breaks survive in HTML.
+	rendered = strings.ReplaceAll(rendered, "\n", "<br>")
+
+	type teamQuestionsInviteEmailData struct {
+		EmailData
+		RenderedBody template.HTML
+		FormURL      string
+	}
+
+	data := teamQuestionsInviteEmailData{
+		EmailData:    newEmailData(),
+		RenderedBody: template.HTML(rendered), // #nosec G203 — sanitised above
+		FormURL:      formURL,
+	}
+	data.Profile = models.Profile{
+		FirstName: firstName,
+		LastName:  lastName,
+	}
+
+	var htmlBody bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&htmlBody, "base", data); err != nil {
+		return "", "", fmt.Errorf("failed to execute team questions invite template: %w", err)
+	}
+
+	if teamsText := formatTeamsForSubject(teams); teamsText != "" {
+		subject = fmt.Sprintf("%s's application for %s", firstName, teamsText)
+	} else {
+		subject = fmt.Sprintf("%s's application to KTH AI Society", firstName)
+	}
+	return subject, htmlBody.String(), nil
+}
+
+// SendTeamQuestionsInvite sends a Team Questions invite containing a one-time form link to an
+// applicant. templateText may contain a {{first_name}} placeholder which is replaced by simple
+// string substitution before sending.
+func SendTeamQuestionsInvite(application models.GeneralApplication, templateText, formURL string) error {
+	subject, html, err := RenderTeamQuestionsInvite(application.FirstName, application.LastName, application.Teams, templateText, formURL)
+	if err != nil {
+		return err
+	}
+	return sendEmail(application.Email, subject, html)
+}
+
 // SendGeneralApplicationConfirmation sends a confirmation email after a general application is received.
 func SendGeneralApplicationConfirmation(application models.GeneralApplication) error {
 	tmpl, err := parseEmailTemplate("application", "confirmation.html")

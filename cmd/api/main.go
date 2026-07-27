@@ -133,6 +133,9 @@ func main() {
 		&models.AdminInterviewNote{},
 		&models.ApplicationSharedNote{},
 		&models.NewsletterSubscription{},
+		&models.TeamQuestionsSubmission{},
+		&models.TeamQuestionsToken{},
+		&models.TeamQuestionsSettings{},
 	)
 	if err != nil {
 		log.Fatal("Failed to migrate database:", err)
@@ -216,6 +219,7 @@ func setupRoutes(r *gin.Engine, db *gorm.DB, mailchimpApi *mailchimp.MailchimpAP
 		handlers.NewProjectHandler(db, cfg),
 		handlers.NewTeamHandler(db, cfg),
 		handlers.NewGeneralApplicationHandler(db, cfg, mailchimpApi),
+		handlers.NewTeamQuestionsHandler(db, cfg),
 	}
 
 	for _, h := range allHandlers {

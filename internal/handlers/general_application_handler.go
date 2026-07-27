@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -50,9 +51,11 @@ var allowedApplicationInterests = validation.AllowedInterests
 var allowedApplicationGenders = validation.AllowedGenders
 
 var allowedApplicationStatuses = map[models.GeneralApplicationStatus]struct{}{
+	models.GeneralApplicationStatusPending:      {},
 	models.GeneralApplicationStatusAvailable:    {},
 	models.GeneralApplicationStatusInterviewing: {},
 	models.GeneralApplicationStatusIneligible:   {},
+	models.GeneralApplicationStatusWithdrawn:    {},
 }
 
 var allowedResumeExtensions = map[string]struct{}{
@@ -208,7 +211,7 @@ func (h *GeneralApplicationHandler) Create(c *gin.Context) {
 			Availability:          strings.TrimSpace(input.Availability),
 			Contribution:          strings.TrimSpace(input.Contribution),
 			DataRetentionConsent:  input.DataRetentionConsent,
-			Status:                models.GeneralApplicationStatusAvailable,
+			Status:                models.GeneralApplicationStatusPending,
 		}
 
 		if shouldStoreResumeInDatabase(h.cfg) {
@@ -369,7 +372,7 @@ func (h *GeneralApplicationHandler) AdminDelete(c *gin.Context) {
 		return
 	}
 
-	isIT, err := h.requesterIsOnTeam(requesterID, "IT")
+	isIT, err := requesterIsOnTeam(h.db, requesterID, "IT")
 	if err != nil || !isIT {
 		c.JSON(http.StatusForbidden, gin.H{"error": "only IT admins can delete applications"})
 		return
@@ -397,15 +400,17 @@ func (h *GeneralApplicationHandler) AdminDelete(c *gin.Context) {
 
 // requesterIsOnTeam resolves a user's admin team the same way the frontend
 // does: their own TeamMember entry for the given team takes priority, falling
-// back to their self-declared Profile.AdminTeam.
-func (h *GeneralApplicationHandler) requesterIsOnTeam(userID uuid.UUID, team string) (bool, error) {
+// back to their self-declared Profile.AdminTeam. Package-level (not a method)
+// so other handlers in this package (e.g. team_questions_handler.go) can
+// reuse the same IT-admin gating without duplicating the query.
+func requesterIsOnTeam(db *gorm.DB, userID uuid.UUID, team string) (bool, error) {
 	var profile models.Profile
-	if err := h.db.Where("user_uuid = ?", userID).First(&profile).Error; err != nil {
+	if err := db.Where("user_uuid = ?", userID).First(&profile).Error; err != nil {
 		return false, err
 	}
 
 	var count int64
-	if err := h.db.Model(&models.TeamMember{}).
+	if err := db.Model(&models.TeamMember{}).
 		Where("user_id = ? AND team_member_department = ?", profile.UserId, team).
 		Count(&count).Error; err != nil {
 		return false, err
@@ -726,9 +731,14 @@ func (h *GeneralApplicationHandler) AdminClaimApplication(c *gin.Context) {
 			return
 		}
 		c.JSON(http.StatusConflict, gin.H{
-			"error":                "application is already claimed",
+			"error":                 "application is already claimed",
 			"interviewing_by_email": application.InterviewingByEmail,
 		})
+		return
+	}
+
+	if application.Status != models.GeneralApplicationStatusAvailable {
+		c.JSON(http.StatusConflict, gin.H{"error": "application is not available to claim"})
 		return
 	}
 
@@ -835,20 +845,25 @@ func (h *GeneralApplicationHandler) AdminSendInterviewInvite(c *gin.Context) {
 		return
 	}
 
-	if h.cfg.DevelopmentMode {
+	if !h.cfg.DevelopmentMode {
+		if err := email.SendInterviewInvite(application, profile.InterviewEmailTemplate, profile.BookingPageURL); err != nil {
+			log.Printf("failed to send interview invite for application %s: %v", application.Id, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to send interview invite email"})
+			return
+		}
+	} else {
 		log.Printf("[dev] skipping SES — would have sent interview invite to %s (%s %s) for application %s",
 			application.Email, application.FirstName, application.LastName, application.Id)
-		c.JSON(http.StatusOK, gin.H{"message": "interview invite sent (dev mode — email not actually sent)"})
+	}
+
+	now := time.Now()
+	application.InterviewInviteSentAt = &now
+	if err := h.db.Save(&application).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "invite sent, but failed to record it"})
 		return
 	}
 
-	if err := email.SendInterviewInvite(application, profile.InterviewEmailTemplate, profile.BookingPageURL); err != nil {
-		log.Printf("failed to send interview invite for application %s: %v", application.Id, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to send interview invite email"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "interview invite sent"})
+	c.JSON(http.StatusOK, application)
 }
 
 // AdminCancelInterview releases the claim without recording the admin in interviewed_by.
@@ -912,7 +927,10 @@ func (h *GeneralApplicationHandler) AdminMarkIneligible(c *gin.Context) {
 	c.JSON(http.StatusOK, application)
 }
 
-// AdminRestoreApplication sets an ineligible application back to available.
+// AdminRestoreApplication sets an ineligible application back to its prior
+// stage: available if it already has a Team Questions submission on file,
+// otherwise pending (it still needs to go through Team Questions before it's
+// claimable).
 func (h *GeneralApplicationHandler) AdminRestoreApplication(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -931,7 +949,19 @@ func (h *GeneralApplicationHandler) AdminRestoreApplication(c *gin.Context) {
 		return
 	}
 
-	application.Status = models.GeneralApplicationStatusAvailable
+	var submissionCount int64
+	if err := h.db.Model(&models.TeamQuestionsSubmission{}).
+		Where("application_id = ?", application.Id).
+		Count(&submissionCount).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check team questions submission"})
+		return
+	}
+
+	if submissionCount > 0 {
+		application.Status = models.GeneralApplicationStatusAvailable
+	} else {
+		application.Status = models.GeneralApplicationStatusPending
+	}
 	if err := h.db.Save(&application).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to restore application"})
 		return
