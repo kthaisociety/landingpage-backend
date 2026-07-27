@@ -141,7 +141,11 @@ func TestApplicationAndInterviewLifecycle(t *testing.T) {
 
 	var rawToken string
 
-	t.Run("resend issues a usable token", func(t *testing.T) {
+	t.Run("resend issues a usable token and stamps team_questions_invite_sent_at", func(t *testing.T) {
+		var before models.GeneralApplication
+		require.NoError(t, db.First(&before, "id = ?", applicationID).Error)
+		require.Nil(t, before.TeamQuestionsInviteSentAt, "should not be set before the first invite is sent")
+
 		var beforeCount int64
 		db.Model(&models.TeamQuestionsToken{}).Where("application_id = ?", applicationID).Count(&beforeCount)
 
@@ -151,6 +155,10 @@ func TestApplicationAndInterviewLifecycle(t *testing.T) {
 		var afterCount int64
 		db.Model(&models.TeamQuestionsToken{}).Where("application_id = ?", applicationID).Count(&afterCount)
 		require.Equal(t, beforeCount+1, afterCount)
+
+		var after models.GeneralApplication
+		require.NoError(t, db.First(&after, "id = ?", applicationID).Error)
+		require.NotNil(t, after.TeamQuestionsInviteSentAt, "sending the first invite should stamp team_questions_invite_sent_at")
 	})
 
 	t.Run("form is scoped to the applicant's own teams", func(t *testing.T) {

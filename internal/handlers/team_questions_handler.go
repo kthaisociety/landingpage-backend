@@ -340,7 +340,14 @@ func (h *TeamQuestionsHandler) AdminResend(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "team questions invite sent"})
+	// Re-read so the response reflects team_questions_invite_sent_at, which
+	// issueAndSend persisted on its own (unexported) copy of the struct.
+	if err := h.db.First(&application, "id = ?", id).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "invite sent, but failed to reload application"})
+		return
+	}
+
+	c.JSON(http.StatusOK, application)
 }
 
 func (h *TeamQuestionsHandler) issueAndSend(application models.GeneralApplication, templateText string) error {
@@ -358,13 +365,18 @@ func (h *TeamQuestionsHandler) issueAndSend(application models.GeneralApplicatio
 		return err
 	}
 
-	if h.cfg.DevelopmentMode {
+	if !h.cfg.DevelopmentMode {
+		if err := email.SendTeamQuestionsInvite(application, templateText, h.formURL(raw)); err != nil {
+			return err
+		}
+	} else {
 		log.Printf("[dev] skipping SES — would have sent team questions invite to %s (%s %s) for application %s",
 			application.Email, application.FirstName, application.LastName, application.Id)
-		return nil
 	}
 
-	return email.SendTeamQuestionsInvite(application, templateText, h.formURL(raw))
+	now := time.Now()
+	application.TeamQuestionsInviteSentAt = &now
+	return h.db.Save(&application).Error
 }
 
 func (h *TeamQuestionsHandler) AdminGetSubmission(c *gin.Context) {
