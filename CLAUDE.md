@@ -25,6 +25,7 @@ Critical current constraint: startup initializes OAuth, Mailchimp, SES, sessions
 - Be careful with schema changes because `AutoMigrate` runs automatically on startup.
 - When changing auth/admin behavior, inspect middleware and handler usage together.
 - When changing blob or email flows, account for external service credentials and side effects.
+- Use semantic/conventional commit messages (`feat:`, `fix:`, `style:`, `refactor:`, `chore:`, `docs:`, `test:`, ...) for every commit, matching this repo's existing history — check `git log --oneline` if unsure of the convention.
 
 ## Verification
 
