@@ -62,18 +62,26 @@ func TestApplicationAndInterviewLifecycle(t *testing.T) {
 		&models.TeamQuestionsSettings{},
 	))
 
-	// The public "/applications/general" route is rate-limited (5/min per
-	// client IP) via Redis, keyed independently of this test. httptest
-	// requests always report the same synthetic client IP, so without
-	// clearing that bucket first, re-running this test twice within a minute
-	// would spuriously 429 on a completely correct handler.
-	if redisClient, err := database.GetRedisClient(cfg); err == nil {
+	// The public "/applications/general" and "/applications/team-questions/:token"
+	// routes are rate-limited (5/min per client IP) via Redis, keyed
+	// independently of this test. httptest requests always report the same
+	// synthetic client IP, so without clearing that bucket, either re-running
+	// this test within a minute, or this test itself making more than 5 public
+	// requests in one run, would spuriously 429 on a completely correct
+	// handler. Called at setup and again mid-test, since the token-supersede
+	// check below alone uses several of the five requests.
+	resetRateLimit := func() {
+		redisClient, err := database.GetRedisClient(cfg)
+		if err != nil {
+			return
+		}
 		ctx := context.Background()
 		keys, _ := redisClient.Keys(ctx, "rate_limit:*").Result()
 		if len(keys) > 0 {
 			redisClient.Del(ctx, keys...)
 		}
 	}
+	resetRateLimit()
 
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
@@ -139,6 +147,23 @@ func TestApplicationAndInterviewLifecycle(t *testing.T) {
 		require.Equal(t, http.StatusConflict, rec.Code)
 	})
 
+	// Regression test: general_applications.id is a text column while
+	// team_questions_tokens.application_id is uuid — the bulk-send/preview
+	// query compares them directly and previously errored at the DB level
+	// (500) even though the count came back as an innocuous-looking 0/error
+	// on the frontend. Individual send/resend never hit this because those
+	// always compare via a bound parameter, not column-to-column.
+	t.Run("bulk-send preview counts this still-pending, uninvited applicant", func(t *testing.T) {
+		rec := doJSONRequest(t, engine, "GET", "/api/v1/applications/admin/team-questions/send-bulk/preview", nil, adminA.cookie)
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		var body struct {
+			Count int `json:"count"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+		require.GreaterOrEqual(t, body.Count, 1)
+	})
+
 	var rawToken string
 
 	t.Run("resend issues a usable token and stamps team_questions_invite_sent_at", func(t *testing.T) {
@@ -159,6 +184,39 @@ func TestApplicationAndInterviewLifecycle(t *testing.T) {
 		var after models.GeneralApplication
 		require.NoError(t, db.First(&after, "id = ?", applicationID).Error)
 		require.NotNil(t, after.TeamQuestionsInviteSentAt, "sending the first invite should stamp team_questions_invite_sent_at")
+	})
+
+	t.Run("resending supersedes the previous token — the old link stops working", func(t *testing.T) {
+		rawA, hashA, err := utils.GenerateToken()
+		require.NoError(t, err)
+		require.NoError(t, db.Create(&models.TeamQuestionsToken{
+			ApplicationID: uuid.MustParse(applicationID),
+			TokenHash:     hashA,
+			ExpiresAt:     time.Now().Add(30 * 24 * time.Hour),
+		}).Error)
+
+		// Token A works on its own.
+		rec := doJSONRequest(t, engine, "GET", "/api/v1/applications/team-questions/"+rawA, nil, nil)
+		require.Equal(t, http.StatusOK, rec.Code, "the newest unused token should be usable")
+
+		// A resend (or a second manually-issued token, same effect) supersedes it.
+		rawB, hashB, err := utils.GenerateToken()
+		require.NoError(t, err)
+		require.NoError(t, db.Create(&models.TeamQuestionsToken{
+			ApplicationID: uuid.MustParse(applicationID),
+			TokenHash:     hashB,
+			ExpiresAt:     time.Now().Add(30 * 24 * time.Hour),
+		}).Error)
+
+		rec = doJSONRequest(t, engine, "GET", "/api/v1/applications/team-questions/"+rawA, nil, nil)
+		require.Equal(t, http.StatusNotFound, rec.Code, "the old link must stop working once a newer one exists, even though it was never used or expired")
+
+		rec = doJSONRequest(t, engine, "GET", "/api/v1/applications/team-questions/"+rawB, nil, nil)
+		require.Equal(t, http.StatusOK, rec.Code, "the newest token should still work")
+
+		// This subtest alone used 3 of the 5 requests allowed per minute —
+		// reset so the rest of the test isn't spuriously rate-limited.
+		resetRateLimit()
 	})
 
 	t.Run("form is scoped to the applicant's own teams", func(t *testing.T) {

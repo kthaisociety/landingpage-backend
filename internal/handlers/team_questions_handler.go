@@ -262,8 +262,11 @@ func (h *TeamQuestionsHandler) getSettings() (models.TeamQuestionsSettings, erro
 // what a send actually processes.
 func (h *TeamQuestionsHandler) pendingUninvitedApplications() ([]models.GeneralApplication, error) {
 	var applications []models.GeneralApplication
+	// general_applications.id is a text column while team_questions_tokens.application_id
+	// is a real uuid column, so the subquery side needs an explicit cast — Postgres won't
+	// compare text to uuid without one.
 	err := h.db.
-		Where("application_year = ? AND status = ? AND id NOT IN (SELECT application_id FROM team_questions_tokens)", generalApplicationYear, models.GeneralApplicationStatusPending).
+		Where("application_year = ? AND status = ? AND id NOT IN (SELECT application_id::text FROM team_questions_tokens)", generalApplicationYear, models.GeneralApplicationStatusPending).
 		Find(&applications).Error
 	return applications, err
 }
