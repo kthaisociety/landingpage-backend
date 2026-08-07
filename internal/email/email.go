@@ -61,11 +61,21 @@ func InitEmailService(cfg *config.Config) error {
 
 	defaultMailer = &SESMailer{
 		svc:     ses.NewFromConfig(awsCfg),
-		sender:  cfg.SES.Sender,
+		sender:  formatSender(DefaultEmailConfig.AppName, cfg.SES.Sender),
 		replyTo: cfg.SES.ReplyTo,
 		charset: "UTF-8",
 	}
 	return nil
+}
+
+// formatSender builds an RFC 5322 "Display Name <address>" sender so recipients see
+// "KTH AI Society" instead of a name their client guesses from the mailbox's local
+// part (e.g. "contact"). Left untouched if address is already formatted.
+func formatSender(displayName, address string) string {
+	if strings.Contains(address, "<") {
+		return address
+	}
+	return fmt.Sprintf("%s <%s>", displayName, address)
 }
 
 func validateAWSCredentialEnv() error {
