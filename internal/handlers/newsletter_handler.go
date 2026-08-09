@@ -74,7 +74,7 @@ func (h *NewsletterHandler) Subscribe(c *gin.Context) {
 		return
 	}
 
-	if err := h.luma.AddMember(subscription.Email); err != nil {
+	if err := h.luma.AddMember(subscription); err != nil {
 		log.Printf("newsletter subscribe: luma sync failed for %s: %v", subscription.Email, err)
 	}
 

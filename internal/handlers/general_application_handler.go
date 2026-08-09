@@ -262,7 +262,7 @@ func (h *GeneralApplicationHandler) Create(c *gin.Context) {
 				log.Printf("failed to store newsletter opt-in for application %s: %v", application.Id, err)
 				return
 			}
-			if err := h.luma.AddMember(subscription.Email); err != nil {
+			if err := h.luma.AddMember(subscription); err != nil {
 				log.Printf("newsletter opt-in: luma sync failed for %s: %v", subscription.Email, err)
 			}
 		}(application)
