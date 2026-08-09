@@ -69,6 +69,7 @@ func (api *LumaAPI) IsConfigured() bool {
 }
 
 type registrationAnswer struct {
+	Label        string `json:"label"`
 	QuestionID   string `json:"question_id"`
 	QuestionType string `json:"question_type"`
 	Value        string `json:"value"`
@@ -109,11 +110,13 @@ func (api *LumaAPI) AddMember(sub *models.NewsletterSubscription) error {
 		MembershipTierID: api.MembershipTierID,
 		RegistrationAnswers: []registrationAnswer{
 			{
+				Label:        "First Name",
 				QuestionID:   api.FirstNameQuestionID,
 				QuestionType: "text",
 				Value:        sub.FirstName,
 			},
 			{
+				Label:        "Last Name",
 				QuestionID:   api.LastNameQuestionID,
 				QuestionType: "text",
 				Value:        sub.LastName,
