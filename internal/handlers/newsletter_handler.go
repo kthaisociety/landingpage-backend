@@ -1,7 +1,7 @@
 package handlers
 
 import (
-	"backend/internal/mailchimp"
+	"backend/internal/luma"
 	"backend/internal/middleware"
 	"backend/internal/models"
 	"backend/internal/validation"
@@ -18,12 +18,12 @@ import (
 )
 
 type NewsletterHandler struct {
-	db        *gorm.DB
-	mailchimp *mailchimp.MailchimpAPI
+	db   *gorm.DB
+	luma *luma.LumaAPI
 }
 
-func NewNewsletterHandler(db *gorm.DB, mailchimpApi *mailchimp.MailchimpAPI) *NewsletterHandler {
-	return &NewsletterHandler{db: db, mailchimp: mailchimpApi}
+func NewNewsletterHandler(db *gorm.DB, lumaApi *luma.LumaAPI) *NewsletterHandler {
+	return &NewsletterHandler{db: db, luma: lumaApi}
 }
 
 func (h *NewsletterHandler) Register(r *gin.RouterGroup) {
@@ -74,8 +74,8 @@ func (h *NewsletterHandler) Subscribe(c *gin.Context) {
 		return
 	}
 
-	if err := h.mailchimp.SubscribeNewsletterSubscriber(subscription); err != nil {
-		log.Printf("newsletter subscribe: mailchimp sync failed for %s: %v", subscription.Email, err)
+	if err := h.luma.AddMember(subscription.Email); err != nil {
+		log.Printf("newsletter subscribe: luma sync failed for %s: %v", subscription.Email, err)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})

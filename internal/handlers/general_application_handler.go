@@ -3,7 +3,7 @@ package handlers
 import (
 	"backend/internal/config"
 	"backend/internal/email"
-	"backend/internal/mailchimp"
+	"backend/internal/luma"
 	"backend/internal/middleware"
 	"backend/internal/models"
 	"backend/internal/utils"
@@ -71,9 +71,9 @@ var allowedResumeContentTypes = map[string]struct{}{
 }
 
 type GeneralApplicationHandler struct {
-	db        *gorm.DB
-	cfg       *config.Config
-	mailchimp *mailchimp.MailchimpAPI
+	db   *gorm.DB
+	cfg  *config.Config
+	luma *luma.LumaAPI
 }
 
 func getAdminIdentity(c *gin.Context) (userID uuid.UUID, adminEmail string, ok bool) {
@@ -112,8 +112,8 @@ type generalApplicationInput struct {
 	NewsletterOptIn      bool
 }
 
-func NewGeneralApplicationHandler(db *gorm.DB, cfg *config.Config, mailchimpApi *mailchimp.MailchimpAPI) *GeneralApplicationHandler {
-	return &GeneralApplicationHandler{db: db, cfg: cfg, mailchimp: mailchimpApi}
+func NewGeneralApplicationHandler(db *gorm.DB, cfg *config.Config, lumaApi *luma.LumaAPI) *GeneralApplicationHandler {
+	return &GeneralApplicationHandler{db: db, cfg: cfg, luma: lumaApi}
 }
 
 func (h *GeneralApplicationHandler) Register(r *gin.RouterGroup) {
@@ -262,8 +262,8 @@ func (h *GeneralApplicationHandler) Create(c *gin.Context) {
 				log.Printf("failed to store newsletter opt-in for application %s: %v", application.Id, err)
 				return
 			}
-			if err := h.mailchimp.SubscribeNewsletterSubscriber(subscription); err != nil {
-				log.Printf("newsletter opt-in: mailchimp sync failed for %s: %v", subscription.Email, err)
+			if err := h.luma.AddMember(subscription.Email); err != nil {
+				log.Printf("newsletter opt-in: luma sync failed for %s: %v", subscription.Email, err)
 			}
 		}(application)
 	}

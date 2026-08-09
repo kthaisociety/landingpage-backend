@@ -13,6 +13,7 @@ import (
 	"backend/internal/database"
 	"backend/internal/email"
 	"backend/internal/handlers"
+	"backend/internal/luma"
 	"backend/internal/mailchimp"
 	"backend/internal/models"
 
@@ -192,8 +193,14 @@ func main() {
 		log.Printf("Warning: Mailchimp disabled: %v", err)
 	}
 
+	// Initialize luma client
+	lumaApi, err := luma.InitLumaApi(cfg)
+	if err != nil {
+		log.Printf("Warning: Luma disabled: %v", err)
+	}
+
 	// Initialize handlers
-	setupRoutes(r, db, mailchimpApi, cfg)
+	setupRoutes(r, db, mailchimpApi, lumaApi, cfg)
 
 	log.Printf("listening on :%s", cfg.Server.Port)
 
@@ -201,7 +208,7 @@ func main() {
 	r.Run(":" + cfg.Server.Port)
 }
 
-func setupRoutes(r *gin.Engine, db *gorm.DB, mailchimpApi *mailchimp.MailchimpAPI, cfg *config.Config) {
+func setupRoutes(r *gin.Engine, db *gorm.DB, mailchimpApi *mailchimp.MailchimpAPI, lumaApi *luma.LumaAPI, cfg *config.Config) {
 	api := r.Group("/api/v1")
 
 	// Public routes
@@ -212,14 +219,14 @@ func setupRoutes(r *gin.Engine, db *gorm.DB, mailchimpApi *mailchimp.MailchimpAP
 	// Register all handlers
 	allHandlers := []handlers.Handler{
 		handlers.NewAuthHandler(db, mailchimpApi, cfg),
-		handlers.NewNewsletterHandler(db, mailchimpApi),
+		handlers.NewNewsletterHandler(db, lumaApi),
 		handlers.NewProfileHandler(db, mailchimpApi, cfg),
 		handlers.NewAdminHandler(db, cfg),
 		handlers.NewCompanyHandler(db, cfg),
 		handlers.NewJobListingHandler(db, cfg),
 		handlers.NewProjectHandler(db, cfg),
 		handlers.NewTeamHandler(db, cfg),
-		handlers.NewGeneralApplicationHandler(db, cfg, mailchimpApi),
+		handlers.NewGeneralApplicationHandler(db, cfg, lumaApi),
 		handlers.NewTeamQuestionsHandler(db, cfg),
 	}
 

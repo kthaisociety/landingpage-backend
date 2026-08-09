@@ -48,6 +48,10 @@ type Config struct {
 		User   string
 		ListID string
 	}
+	Luma struct {
+		APIKey           string
+		MembershipTierID string
+	}
 	JwtSigningKey    string
 	JwtValidatingKey string
 	R2_bucket_name   string
@@ -97,6 +101,10 @@ func LoadConfig() (*Config, error) {
 	cfg.Mailchimp.APIKey = getEnv("MAILCHIMP_API_KEY", "")
 	cfg.Mailchimp.User = getEnv("MAILCHIMP_USER", "kthais")
 	cfg.Mailchimp.ListID = firstNonEmptyEnv("MAILCHIMP_LIST_ID", "MAILCHIMP_AUDIENCE_ID")
+
+	// Luma config
+	cfg.Luma.APIKey = getEnv("LUMA_API_KEY", "")
+	cfg.Luma.MembershipTierID = getEnv("LUMA_MEMBERSHIP_TIER_ID", "")
 
 	// OAuth config
 	cfg.OAuth.GoogleClientID = getEnv("GOOGLE_CLIENT_ID", "")
