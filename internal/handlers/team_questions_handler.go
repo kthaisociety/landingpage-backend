@@ -328,7 +328,7 @@ func (h *TeamQuestionsHandler) AdminSendBulk(c *gin.Context) {
 	}
 
 	sent := 0
-	var failed []string
+	failed := []string{}
 	for _, application := range applications {
 		if err := h.issueAndSend(application, settings.EmailTemplate); err != nil {
 			log.Printf("failed to send team questions invite for application %s: %v", application.Id, err)
