@@ -427,7 +427,10 @@ func withdrawTeams(teams []string, withdrawn []string) []string {
 	for _, team := range withdrawn {
 		withdrawnSet[team] = struct{}{}
 	}
-	var remaining []string
+	// Not nil: a nil slice serializes as SQL NULL via pq.StringArray, which
+	// violates teams' NOT NULL constraint when every team is withdrawn (as
+	// with the Viktor seed fixture, who withdraws from all his teams).
+	remaining := []string{}
 	for _, team := range teams {
 		if _, ok := withdrawnSet[team]; !ok {
 			remaining = append(remaining, team)
