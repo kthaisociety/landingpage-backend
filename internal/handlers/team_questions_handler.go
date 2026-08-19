@@ -315,20 +315,34 @@ func (h *TeamQuestionsHandler) AdminSendBulkPreview(c *gin.Context) {
 }
 
 func (h *TeamQuestionsHandler) AdminSendBulk(c *gin.Context) {
-	settings, err := h.getSettings()
+	sent, failed, err := h.SendPendingInvites()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load email template"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to send team questions invites"})
 		return
 	}
 
+	c.JSON(http.StatusOK, gin.H{"sent": sent, "failed": failed})
+}
+
+// SendPendingInvites emails the Team Questions invite to every pending,
+// never-invited application (see pendingUninvitedApplications). Shared by the
+// admin bulk-send endpoint and the daily scheduler so both go through the
+// exact same send path.
+func (h *TeamQuestionsHandler) SendPendingInvites() (sent int, failed []string, err error) {
 	applications, err := h.pendingUninvitedApplications()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load pending applications"})
-		return
+		return 0, nil, err
+	}
+	if len(applications) == 0 {
+		return 0, nil, nil
 	}
 
-	sent := 0
-	failed := []string{}
+	settings, err := h.getSettings()
+	if err != nil {
+		return 0, nil, err
+	}
+
+	failed = []string{}
 	for _, application := range applications {
 		if err := h.issueAndSend(application, settings.EmailTemplate); err != nil {
 			log.Printf("failed to send team questions invite for application %s: %v", application.Id, err)
@@ -338,7 +352,7 @@ func (h *TeamQuestionsHandler) AdminSendBulk(c *gin.Context) {
 		sent++
 	}
 
-	c.JSON(http.StatusOK, gin.H{"sent": sent, "failed": failed})
+	return sent, failed, nil
 }
 
 // AdminResend issues a fresh token for a single application (retiring any
