@@ -8,6 +8,10 @@ import (
 	"net/http"
 	"os"
 	"time"
+	_ "time/tzdata" // embeds the IANA timezone database in the binary — the
+	// production image (alpine:latest with no tzdata package) has no
+	// /usr/share/zoneinfo, so time.LoadLocation("Europe/Stockholm") would
+	// otherwise silently fall back to UTC (see team_questions_scheduler.go).
 
 	"backend/internal/config"
 	"backend/internal/database"
