@@ -23,6 +23,11 @@ import (
 
 const teamQuestionsTokenValidity = 30 * 24 * time.Hour
 
+// teamQuestionsReminderDelay is how long an applicant has to submit Team
+// Questions before the daily scheduler sends them a one-time reminder. Only
+// ever fires once per application — see TeamQuestionsReminderSentAt.
+const teamQuestionsReminderDelay = 14 * 24 * time.Hour
+
 // invalidLinkError is returned for any token lookup failure — unknown, expired,
 // used, or superseded by a resend — so a stale link can't be used to probe
 // which of those states it's actually in.
@@ -266,8 +271,20 @@ func (h *TeamQuestionsHandler) formURL(rawToken string) string {
 // the frontend's DEFAULT_TEAM_QUESTIONS_TEMPLATE constant.
 const defaultTeamQuestionsEmailTemplate = "Thanks for applying to KTH AI Society! To move forward, we need you to answer a few extra questions about the team(s) you applied to.\n\nIt only takes a few minutes."
 
-// getSettings always returns a usable, non-empty EmailTemplate: the saved one
-// if an IT admin has set one, otherwise defaultTeamQuestionsEmailTemplate.
+// defaultTeamQuestionsEmailSubject may contain {{first_name}} and {{teams}}
+// placeholders — see email.RenderTeamQuestionsInvite.
+const defaultTeamQuestionsEmailSubject = "{{first_name}}'s application for {{teams}}"
+
+// defaultTeamQuestionsReminderTemplate is the fallback reminder body, used
+// the same way defaultTeamQuestionsEmailTemplate is for the initial invite.
+const defaultTeamQuestionsReminderTemplate = "Just a reminder — we still haven't received your answers to the team questions for your KTH AI Society application. Please complete them so we can move your application forward.\n\nYour previous link has expired; use the button below instead."
+
+// defaultTeamQuestionsReminderSubject is the fallback reminder subject, used
+// the same way defaultTeamQuestionsEmailSubject is for the initial invite.
+const defaultTeamQuestionsReminderSubject = "Reminder: {{first_name}}'s application for {{teams}}"
+
+// getSettings always returns usable, non-empty templates and subjects: the
+// saved ones if an IT admin has set them, otherwise the defaults above.
 // Sending never has to block on "configure a template first", and the admin
 // UI always displays exactly what would actually be sent.
 func (h *TeamQuestionsHandler) getSettings() (models.TeamQuestionsSettings, error) {
@@ -278,6 +295,15 @@ func (h *TeamQuestionsHandler) getSettings() (models.TeamQuestionsSettings, erro
 	}
 	if strings.TrimSpace(settings.EmailTemplate) == "" {
 		settings.EmailTemplate = defaultTeamQuestionsEmailTemplate
+	}
+	if strings.TrimSpace(settings.EmailSubject) == "" {
+		settings.EmailSubject = defaultTeamQuestionsEmailSubject
+	}
+	if strings.TrimSpace(settings.ReminderEmailTemplate) == "" {
+		settings.ReminderEmailTemplate = defaultTeamQuestionsReminderTemplate
+	}
+	if strings.TrimSpace(settings.ReminderEmailSubject) == "" {
+		settings.ReminderEmailSubject = defaultTeamQuestionsReminderSubject
 	}
 	return settings, nil
 }
@@ -304,17 +330,50 @@ func (h *TeamQuestionsHandler) pendingUninvitedApplications() ([]models.GeneralA
 
 // AdminSendBulkPreview reports how many applications the next AdminSendBulk
 // call would email, without sending anything — lets the admin UI confirm the
-// count before committing to a bulk send.
+// count before committing to a bulk send. Also reports whether the requester
+// is allowed to actually send (only the head of IT — see AdminSendBulk) and
+// when the daily scheduler will next send on its own, so the UI can show
+// both without a separate round trip.
 func (h *TeamQuestionsHandler) AdminSendBulkPreview(c *gin.Context) {
+	adminID, _, ok := getAdminIdentity(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "could not determine admin identity"})
+		return
+	}
+	canSend, err := requesterIsHeadOfTeam(h.db, adminID, "IT")
+	if err != nil {
+		canSend = false
+	}
+
 	applications, err := h.pendingUninvitedApplications()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load pending applications"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"count": len(applications)})
+	c.JSON(http.StatusOK, gin.H{
+		"count":        len(applications),
+		"can_send":     canSend,
+		"next_send_at": nextTeamQuestionsRun(time.Now().In(teamQuestionsInviteTZ)),
+	})
 }
 
+// AdminSendBulk is restricted to the head of IT — bulk-emailing every
+// pending applicant is disruptive enough (and hard to undo, since it stamps
+// TeamQuestionsInviteSentAt) that it shouldn't be something any IT team
+// member can trigger, unlike the per-team Team Questions CRUD endpoints
+// which use the broader requesterIsOnTeam.
 func (h *TeamQuestionsHandler) AdminSendBulk(c *gin.Context) {
+	adminID, _, ok := getAdminIdentity(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "could not determine admin identity"})
+		return
+	}
+	isHead, err := requesterIsHeadOfTeam(h.db, adminID, "IT")
+	if err != nil || !isHead {
+		c.JSON(http.StatusForbidden, gin.H{"error": "only the head of IT can send team questions invites in bulk"})
+		return
+	}
+
 	sent, failed, err := h.SendPendingInvites()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to send team questions invites"})
@@ -344,7 +403,7 @@ func (h *TeamQuestionsHandler) SendPendingInvites() (sent int, failed []string, 
 
 	failed = []string{}
 	for _, application := range applications {
-		if err := h.issueAndSend(application, settings.EmailTemplate); err != nil {
+		if err := h.issueAndSend(application, settings.EmailTemplate, settings.EmailSubject); err != nil {
 			log.Printf("failed to send team questions invite for application %s: %v", application.Id, err)
 			failed = append(failed, application.Id.String())
 			continue
@@ -353,6 +412,85 @@ func (h *TeamQuestionsHandler) SendPendingInvites() (sent int, failed []string, 
 	}
 
 	return sent, failed, nil
+}
+
+// pendingApplicationsNeedingReminder finds applications that were invited to
+// Team Questions at least teamQuestionsReminderDelay ago, are still pending
+// (haven't submitted, been marked ineligible, or withdrawn), and have never
+// been sent a reminder — so this only ever fires once per application, no
+// matter how many days go by after the 14-day mark.
+func (h *TeamQuestionsHandler) pendingApplicationsNeedingReminder() ([]models.GeneralApplication, error) {
+	var applications []models.GeneralApplication
+	cutoff := time.Now().Add(-teamQuestionsReminderDelay)
+	err := h.db.
+		Where("application_year = ? AND status = ? AND team_questions_invite_sent_at IS NOT NULL AND team_questions_invite_sent_at <= ? AND team_questions_reminder_sent_at IS NULL",
+			generalApplicationYear, models.GeneralApplicationStatusPending, cutoff).
+		Find(&applications).Error
+	return applications, err
+}
+
+// SendPendingReminders emails the 14-day reminder to every application that
+// pendingApplicationsNeedingReminder finds. Called by the daily scheduler
+// alongside SendPendingInvites.
+func (h *TeamQuestionsHandler) SendPendingReminders() (sent int, failed []string, err error) {
+	applications, err := h.pendingApplicationsNeedingReminder()
+	if err != nil {
+		return 0, nil, err
+	}
+	if len(applications) == 0 {
+		return 0, nil, nil
+	}
+
+	settings, err := h.getSettings()
+	if err != nil {
+		return 0, nil, err
+	}
+
+	failed = []string{}
+	for _, application := range applications {
+		if err := h.issueAndSendReminder(application, settings.ReminderEmailTemplate, settings.ReminderEmailSubject); err != nil {
+			log.Printf("failed to send team questions reminder for application %s: %v", application.Id, err)
+			failed = append(failed, application.Id.String())
+			continue
+		}
+		sent++
+	}
+
+	return sent, failed, nil
+}
+
+// issueAndSendReminder mints a fresh token — the original invite's raw token
+// was never persisted, only its hash, so a reminder can't reuse the same
+// link — and sends the reminder email. Stamps TeamQuestionsReminderSentAt so
+// this application is never picked up by pendingApplicationsNeedingReminder
+// again, regardless of whether the applicant ever responds.
+func (h *TeamQuestionsHandler) issueAndSendReminder(application models.GeneralApplication, templateText, subjectTemplate string) error {
+	raw, hash, err := utils.GenerateToken()
+	if err != nil {
+		return err
+	}
+
+	token := models.TeamQuestionsToken{
+		ApplicationID: application.Id,
+		TokenHash:     hash,
+		ExpiresAt:     time.Now().Add(teamQuestionsTokenValidity),
+	}
+	if err := h.db.Create(&token).Error; err != nil {
+		return err
+	}
+
+	if !h.cfg.DevelopmentMode {
+		if err := email.SendTeamQuestionsReminder(application, templateText, subjectTemplate, h.formURL(raw)); err != nil {
+			return err
+		}
+	} else {
+		log.Printf("[dev] skipping SES — would have sent team questions reminder to %s (%s %s) for application %s",
+			application.Email, application.FirstName, application.LastName, application.Id)
+	}
+
+	now := time.Now()
+	application.TeamQuestionsReminderSentAt = &now
+	return h.db.Save(&application).Error
 }
 
 // AdminResend issues a fresh token for a single application (retiring any
@@ -382,7 +520,7 @@ func (h *TeamQuestionsHandler) AdminResend(c *gin.Context) {
 		return
 	}
 
-	if err := h.issueAndSend(application, settings.EmailTemplate); err != nil {
+	if err := h.issueAndSend(application, settings.EmailTemplate, settings.EmailSubject); err != nil {
 		log.Printf("failed to resend team questions invite for application %s: %v", application.Id, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to send team questions invite"})
 		return
@@ -398,7 +536,7 @@ func (h *TeamQuestionsHandler) AdminResend(c *gin.Context) {
 	c.JSON(http.StatusOK, application)
 }
 
-func (h *TeamQuestionsHandler) issueAndSend(application models.GeneralApplication, templateText string) error {
+func (h *TeamQuestionsHandler) issueAndSend(application models.GeneralApplication, templateText, subjectTemplate string) error {
 	raw, hash, err := utils.GenerateToken()
 	if err != nil {
 		return err
@@ -414,7 +552,7 @@ func (h *TeamQuestionsHandler) issueAndSend(application models.GeneralApplicatio
 	}
 
 	if !h.cfg.DevelopmentMode {
-		if err := email.SendTeamQuestionsInvite(application, templateText, h.formURL(raw)); err != nil {
+		if err := email.SendTeamQuestionsInvite(application, templateText, subjectTemplate, h.formURL(raw)); err != nil {
 			return err
 		}
 	} else {
@@ -477,9 +615,12 @@ func (h *TeamQuestionsHandler) AdminGetTemplate(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"email_template":   settings.EmailTemplate,
-		"updated_by_email": settings.UpdatedByEmail,
-		"can_edit":         canEdit,
+		"email_template":          settings.EmailTemplate,
+		"email_subject":           settings.EmailSubject,
+		"reminder_email_template": settings.ReminderEmailTemplate,
+		"reminder_email_subject":  settings.ReminderEmailSubject,
+		"updated_by_email":        settings.UpdatedByEmail,
+		"can_edit":                canEdit,
 	})
 }
 
@@ -497,7 +638,10 @@ func (h *TeamQuestionsHandler) AdminUpdateTemplate(c *gin.Context) {
 	}
 
 	var body struct {
-		EmailTemplate string `json:"email_template"`
+		EmailTemplate         string `json:"email_template"`
+		EmailSubject          string `json:"email_subject"`
+		ReminderEmailTemplate string `json:"reminder_email_template"`
+		ReminderEmailSubject  string `json:"reminder_email_subject"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
@@ -512,6 +656,9 @@ func (h *TeamQuestionsHandler) AdminUpdateTemplate(c *gin.Context) {
 	}
 
 	settings.EmailTemplate = strings.TrimSpace(body.EmailTemplate)
+	settings.EmailSubject = strings.TrimSpace(body.EmailSubject)
+	settings.ReminderEmailTemplate = strings.TrimSpace(body.ReminderEmailTemplate)
+	settings.ReminderEmailSubject = strings.TrimSpace(body.ReminderEmailSubject)
 	settings.UpdatedByEmail = adminEmail
 
 	if err == gorm.ErrRecordNotFound {
@@ -528,26 +675,57 @@ func (h *TeamQuestionsHandler) AdminUpdateTemplate(c *gin.Context) {
 	if strings.TrimSpace(responseTemplate) == "" {
 		responseTemplate = defaultTeamQuestionsEmailTemplate
 	}
+	responseSubject := settings.EmailSubject
+	if strings.TrimSpace(responseSubject) == "" {
+		responseSubject = defaultTeamQuestionsEmailSubject
+	}
+	responseReminderTemplate := settings.ReminderEmailTemplate
+	if strings.TrimSpace(responseReminderTemplate) == "" {
+		responseReminderTemplate = defaultTeamQuestionsReminderTemplate
+	}
+	responseReminderSubject := settings.ReminderEmailSubject
+	if strings.TrimSpace(responseReminderSubject) == "" {
+		responseReminderSubject = defaultTeamQuestionsReminderSubject
+	}
 	c.JSON(http.StatusOK, gin.H{
-		"email_template":   responseTemplate,
-		"updated_by_email": settings.UpdatedByEmail,
-		"can_edit":         true,
+		"email_template":          responseTemplate,
+		"email_subject":           responseSubject,
+		"reminder_email_template": responseReminderTemplate,
+		"reminder_email_subject":  responseReminderSubject,
+		"updated_by_email":        settings.UpdatedByEmail,
+		"can_edit":                true,
 	})
 }
 
-// AdminPreviewTemplate renders the team questions invite email exactly as
-// issueAndSend does, using a dummy name and an example link, so the preview
-// can never drift from what actually sends.
+// AdminPreviewTemplate renders the team questions invite or reminder email
+// exactly as issueAndSend/issueAndSendReminder do, using a dummy name and an
+// example link, so the preview can never drift from what actually sends.
+// Kind selects which one: "reminder", or anything else (including omitted)
+// for the invite.
 func (h *TeamQuestionsHandler) AdminPreviewTemplate(c *gin.Context) {
 	var body struct {
 		EmailTemplate string `json:"email_template"`
+		EmailSubject  string `json:"email_subject"`
+		Kind          string `json:"kind"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
 	}
 
-	subject, html, err := email.RenderTeamQuestionsInvite("Alex", "Jones", []string{"Development", "Research"}, body.EmailTemplate, h.formURL("example-token"))
+	render := email.RenderTeamQuestionsInvite
+	subjectTemplate := body.EmailSubject
+	if strings.TrimSpace(subjectTemplate) == "" {
+		subjectTemplate = defaultTeamQuestionsEmailSubject
+	}
+	if body.Kind == "reminder" {
+		render = email.RenderTeamQuestionsReminder
+		if strings.TrimSpace(body.EmailSubject) == "" {
+			subjectTemplate = defaultTeamQuestionsReminderSubject
+		}
+	}
+
+	subject, html, err := render("Alex", "Jones", []string{"Development", "Research"}, body.EmailTemplate, subjectTemplate, h.formURL("example-token"))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to render preview"})
 		return

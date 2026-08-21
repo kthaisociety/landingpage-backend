@@ -248,10 +248,13 @@ func SendInterviewInvite(application models.GeneralApplication, templateText, bo
 
 // formatTeamsForSubject renders a team list for use in a subject line, e.g.
 // "Development team" for one team or "Development, Research teams" for several.
+// Team Questions invites are only ever sent to applicants who applied to at
+// least one team, but the empty case still resolves to something sane so an
+// admin-edited {{teams}} placeholder never renders as a dangling blank.
 func formatTeamsForSubject(teams []string) string {
 	switch len(teams) {
 	case 0:
-		return ""
+		return "KTH AI Society"
 	case 1:
 		return teams[0] + " team"
 	default:
@@ -259,13 +262,24 @@ func formatTeamsForSubject(teams []string) string {
 	}
 }
 
+// renderSubject fills the {{first_name}} and {{teams}} placeholders an admin
+// can use in a Team Questions subject line. Plain string substitution, same
+// as the body template — subjects aren't HTML so there's nothing to escape.
+func renderSubject(subjectTemplate, firstName string, teams []string) string {
+	return strings.NewReplacer(
+		"{{first_name}}", firstName,
+		"{{teams}}", formatTeamsForSubject(teams),
+	).Replace(subjectTemplate)
+}
+
 // RenderTeamQuestionsInvite renders the Team Questions invite email's subject and HTML body
-// for the given recipient name, teams, template text, and form link, without sending it. This
-// is the single implementation of the invite's structure — SendTeamQuestionsInvite and the
-// admin template preview endpoint both call it, so a preview is never able to drift from what
-// actually sends. templateText may contain a {{first_name}} placeholder which is replaced
-// by simple string substitution; the form link is always appended as the email's button.
-func RenderTeamQuestionsInvite(firstName, lastName string, teams []string, templateText, formURL string) (subject, html string, err error) {
+// for the given recipient name, teams, template text, subject template, and form link, without
+// sending it. This is the single implementation of the invite's structure —
+// SendTeamQuestionsInvite and the admin template preview endpoint both call it, so a preview is
+// never able to drift from what actually sends. templateText may contain a {{first_name}}
+// placeholder which is replaced by simple string substitution; subjectTemplate may additionally
+// contain {{teams}}. The form link is always appended as the email's button.
+func RenderTeamQuestionsInvite(firstName, lastName string, teams []string, templateText, subjectTemplate, formURL string) (subject, html string, err error) {
 	tmpl, err := parseEmailTemplate("application", "team_questions_invite.html")
 	if err != nil {
 		return "", "", fmt.Errorf("failed to parse team questions invite template: %w", err)
@@ -299,19 +313,66 @@ func RenderTeamQuestionsInvite(firstName, lastName string, teams []string, templ
 		return "", "", fmt.Errorf("failed to execute team questions invite template: %w", err)
 	}
 
-	if teamsText := formatTeamsForSubject(teams); teamsText != "" {
-		subject = fmt.Sprintf("%s's application for %s", firstName, teamsText)
-	} else {
-		subject = fmt.Sprintf("%s's application to KTH AI Society", firstName)
-	}
+	subject = strings.TrimSpace(renderSubject(subjectTemplate, firstName, teams))
 	return subject, htmlBody.String(), nil
 }
 
 // SendTeamQuestionsInvite sends a Team Questions invite containing a one-time form link to an
 // applicant. templateText may contain a {{first_name}} placeholder which is replaced by simple
-// string substitution before sending.
-func SendTeamQuestionsInvite(application models.GeneralApplication, templateText, formURL string) error {
-	subject, html, err := RenderTeamQuestionsInvite(application.FirstName, application.LastName, application.Teams, templateText, formURL)
+// string substitution before sending; subjectTemplate may additionally contain {{teams}}.
+func SendTeamQuestionsInvite(application models.GeneralApplication, templateText, subjectTemplate, formURL string) error {
+	subject, html, err := RenderTeamQuestionsInvite(application.FirstName, application.LastName, application.Teams, templateText, subjectTemplate, formURL)
+	if err != nil {
+		return err
+	}
+	return sendEmail(application.Email, subject, html)
+}
+
+// RenderTeamQuestionsReminder renders the 14-day reminder email. It reuses the invite's
+// template file — same body-text-plus-button structure — with reminder-specific body copy and
+// subject template, so it reads as a nudge rather than a duplicate of the original invite.
+// formURL points at a freshly issued token: the original invite's raw token was never stored
+// (only its hash), so a reminder can't resend the same link and must supersede it.
+func RenderTeamQuestionsReminder(firstName, lastName string, teams []string, templateText, subjectTemplate, formURL string) (subject, html string, err error) {
+	tmpl, err := parseEmailTemplate("application", "team_questions_invite.html")
+	if err != nil {
+		return "", "", fmt.Errorf("failed to parse team questions reminder template: %w", err)
+	}
+
+	rendered := strings.NewReplacer(
+		"{{first_name}}", template.HTMLEscapeString(firstName),
+	).Replace(templateText)
+	rendered = strings.ReplaceAll(rendered, "\n", "<br>")
+
+	type teamQuestionsInviteEmailData struct {
+		EmailData
+		RenderedBody template.HTML
+		FormURL      string
+	}
+
+	data := teamQuestionsInviteEmailData{
+		EmailData:    newEmailData(),
+		RenderedBody: template.HTML(rendered), // #nosec G203 — sanitised above
+		FormURL:      formURL,
+	}
+	data.Profile = models.Profile{
+		FirstName: firstName,
+		LastName:  lastName,
+	}
+
+	var htmlBody bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&htmlBody, "base", data); err != nil {
+		return "", "", fmt.Errorf("failed to execute team questions reminder template: %w", err)
+	}
+
+	subject = strings.TrimSpace(renderSubject(subjectTemplate, firstName, teams))
+	return subject, htmlBody.String(), nil
+}
+
+// SendTeamQuestionsReminder sends the 14-day Team Questions reminder to an applicant who hasn't
+// submitted yet, containing a freshly issued form link.
+func SendTeamQuestionsReminder(application models.GeneralApplication, templateText, subjectTemplate, formURL string) error {
+	subject, html, err := RenderTeamQuestionsReminder(application.FirstName, application.LastName, application.Teams, templateText, subjectTemplate, formURL)
 	if err != nil {
 		return err
 	}

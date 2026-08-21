@@ -185,6 +185,34 @@ func TestApplicationAndInterviewLifecycle(t *testing.T) {
 		require.GreaterOrEqual(t, body.Count, 1)
 	})
 
+	// Bulk-sending is disruptive and hard to undo, so it's gated to the head
+	// of IT specifically — a plain admin, or even a regular IT team member,
+	// must not be able to trigger it. Only checks the preview's can_send flag
+	// and the actual POST's rejection for the non-head case here: actually
+	// letting adminIT send would stamp TeamQuestionsInviteSentAt on this
+	// test's own applicant and break the "resend issues a usable token"
+	// subtest below, which expects that field to still be nil at this point.
+	t.Run("bulk-send is restricted to the head of IT", func(t *testing.T) {
+		rec := doJSONRequest(t, engine, "GET", "/api/v1/applications/admin/team-questions/send-bulk/preview", nil, adminA.cookie)
+		require.Equal(t, http.StatusOK, rec.Code)
+		var notHeadBody struct {
+			CanSend bool `json:"can_send"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &notHeadBody))
+		require.False(t, notHeadBody.CanSend, "a plain admin with no declared team should not be able to bulk-send")
+
+		rec = doJSONRequest(t, engine, "POST", "/api/v1/applications/admin/team-questions/send-bulk", nil, adminA.cookie)
+		require.Equal(t, http.StatusForbidden, rec.Code)
+
+		rec = doJSONRequest(t, engine, "GET", "/api/v1/applications/admin/team-questions/send-bulk/preview", nil, adminIT.cookie)
+		require.Equal(t, http.StatusOK, rec.Code)
+		var headBody struct {
+			CanSend bool `json:"can_send"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &headBody))
+		require.True(t, headBody.CanSend, "the declared head of IT should be able to bulk-send")
+	})
+
 	var rawToken string
 
 	t.Run("resend issues a usable token and stamps team_questions_invite_sent_at", func(t *testing.T) {

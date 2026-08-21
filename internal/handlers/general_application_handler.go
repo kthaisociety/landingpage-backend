@@ -422,6 +422,20 @@ func requesterIsOnTeam(db *gorm.DB, userID uuid.UUID, team string) (bool, error)
 	return profile.AdminTeam == team, nil
 }
 
+// requesterIsHeadOfTeam checks only Profile.AdminTeam — the "which team do
+// you lead" field an admin self-declares via the frontend's "Declare your
+// role" setup — without requesterIsOnTeam's TeamMember fallback. A regular
+// TeamMember row means someone is on the team, not that they lead it, so use
+// this instead of requesterIsOnTeam for actions that must be restricted to
+// the team's head specifically (e.g. bulk-sending on the team's behalf).
+func requesterIsHeadOfTeam(db *gorm.DB, userID uuid.UUID, team string) (bool, error) {
+	var profile models.Profile
+	if err := db.Where("user_uuid = ?", userID).First(&profile).Error; err != nil {
+		return false, err
+	}
+	return profile.AdminTeam == team, nil
+}
+
 func purgeSoftDeletedGeneralApplication(db *gorm.DB, applicationYear int, emailNormalized string) error {
 	return db.Unscoped().
 		Where("application_year = ? AND email_normalized = ? AND deleted_at IS NOT NULL", applicationYear, emailNormalized).

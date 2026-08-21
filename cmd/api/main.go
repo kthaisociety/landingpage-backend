@@ -208,9 +208,11 @@ func main() {
 	// Initialize handlers
 	setupRoutes(r, db, mailchimpApi, lumaApi, cfg)
 
-	// Daily 10:00 (Europe/Stockholm) send of Team Questions invites to any
-	// pending applicant who hasn't been sent one yet.
-	handlers.NewTeamQuestionsHandler(db, cfg).StartDailyInviteScheduler()
+	// Daily 10:00 and 16:00 (Europe/Stockholm) send of Team Questions invites
+	// (to any pending applicant who hasn't been sent one yet) and 14-day
+	// reminders (to anyone invited but still pending) — see
+	// team_questions_scheduler.go for why there are two windows.
+	handlers.NewTeamQuestionsHandler(db, cfg).StartDailyTeamQuestionsScheduler()
 
 	log.Printf("listening on :%s", cfg.Server.Port)
 
