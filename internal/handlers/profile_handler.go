@@ -497,9 +497,11 @@ func (h *ProfileHandler) GetProfilePicture(c *gin.Context) {
 func (h *ProfileHandler) GetPublicProfile(c *gin.Context) {
 	profileID := c.Param("profileId")
 
-	// Accept either the profile UUID (profiles.id) or the user UUID (profiles.user_uuid)
+	// Accept the slug, the profile UUID (profiles.id), or the user UUID
+	// (profiles.user_uuid) — old /members/{uuid} links stay valid forever
+	// even after a profile has a slug.
 	var profile models.Profile
-	if err := h.db.Where("id = ? OR user_uuid = ?", profileID, profileID).First(&profile).Error; err != nil {
+	if err := h.db.Where("slug = ? OR id = ? OR user_uuid = ?", profileID, profileID, profileID).First(&profile).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Profile not found"})
 		return
 	}
@@ -537,6 +539,7 @@ func (h *ProfileHandler) GetPublicProfile(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"id":             profile.Id,
+		"slug":           profile.Slug,
 		"firstName":      profile.FirstName,
 		"lastName":       profile.LastName,
 		"profilePicture": profile.ProfilePicture,

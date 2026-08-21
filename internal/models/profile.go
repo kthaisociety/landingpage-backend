@@ -1,6 +1,10 @@
 package models
 
 import (
+	"fmt"
+
+	"backend/internal/utils"
+
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 	"gorm.io/gorm"
@@ -32,7 +36,14 @@ const (
 
 type Profile struct {
 	gorm.Model
-	Id                     uuid.UUID      `gorm:"uniqueIndex;default:gen_random_uuid()" json:"id"`
+	Id uuid.UUID `gorm:"uniqueIndex;default:gen_random_uuid()" json:"id"`
+	// Slug is the public, human-readable identifier used in profile URLs
+	// (e.g. /members/timothy-lindblom) instead of Id. It's nullable at the DB
+	// level — despite the uniqueIndex, Postgres allows any number of NULLs in
+	// a unique column — so existing rows stay valid until
+	// database.BackfillProfileSlugs assigns one on the next boot; every new
+	// profile gets one immediately via BeforeCreate below.
+	Slug                   string         `gorm:"uniqueIndex" json:"slug,omitempty"`
 	UserUUID               uuid.UUID      `gorm:"not null" json:"user_id"`
 	UserId                 uint           `gorm:"not null" json:"-"`
 	User                   User           `json:"user,omitempty"`
@@ -51,4 +62,37 @@ type Profile struct {
 	BookingPageURL         string         `gorm:"default:''" json:"booking_page_url,omitempty"`
 	InterviewEmailTemplate string         `gorm:"type:text;default:''" json:"interview_email_template,omitempty"`
 	AdminTeam              string         `gorm:"default:''" json:"admin_team,omitempty"`
+}
+
+// BeforeCreate assigns a URL-safe slug derived from the profile's name if
+// one wasn't already set, resolving collisions by appending "-2", "-3", ....
+// This runs for every insertion path — the profile handlers, test fixtures,
+// admin tooling, anything that calls db.Create — not just call sites that
+// remember to set Slug explicitly, which a bare uniqueIndex column can't
+// enforce on its own (a second empty/duplicate slug would otherwise 500 on
+// the unique constraint instead of getting a real one).
+func (p *Profile) BeforeCreate(tx *gorm.DB) error {
+	if p.Slug != "" {
+		return nil
+	}
+
+	base := utils.Slugify(p.FirstName + " " + p.LastName)
+	if base == "" {
+		base = "member"
+	}
+
+	slug := base
+	for suffix := 2; ; suffix++ {
+		var count int64
+		if err := tx.Model(&Profile{}).Where("slug = ?", slug).Count(&count).Error; err != nil {
+			return err
+		}
+		if count == 0 {
+			break
+		}
+		slug = fmt.Sprintf("%s-%d", base, suffix)
+	}
+
+	p.Slug = slug
+	return nil
 }

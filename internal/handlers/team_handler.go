@@ -27,6 +27,7 @@ func NewTeamHandler(db *gorm.DB, cfg *config.Config) *TeamHandler {
 // PublicTeamMember is the shape returned to the frontend
 type PublicTeamMember struct {
 	ProfileID      string `json:"profileId"`
+	Slug           string `json:"slug"`
 	FirstName      string `json:"firstName"`
 	LastName       string `json:"lastName"`
 	ProfilePicture string `json:"profilePicture"`
@@ -72,6 +73,7 @@ func (h *TeamHandler) GetTeamMembers(c *gin.Context) {
 	query := h.db.Table("team_members").
 		Select(`
 			profiles.id         AS profile_id,
+			profiles.slug       AS slug,
 			profiles.first_name AS first_name,
 			profiles.last_name  AS last_name,
 			profiles.profile_picture AS profile_picture,
@@ -98,6 +100,7 @@ func (h *TeamHandler) GetTeamMembers(c *gin.Context) {
 
 	type row struct {
 		ProfileID      string `gorm:"column:profile_id"`
+		Slug           string `gorm:"column:slug"`
 		FirstName      string `gorm:"column:first_name"`
 		LastName       string `gorm:"column:last_name"`
 		ProfilePicture string `gorm:"column:profile_picture"`
@@ -121,6 +124,7 @@ func (h *TeamHandler) GetTeamMembers(c *gin.Context) {
 	for _, r := range rows {
 		result = append(result, PublicTeamMember{
 			ProfileID:      r.ProfileID,
+			Slug:           r.Slug,
 			FirstName:      r.FirstName,
 			LastName:       r.LastName,
 			ProfilePicture: r.ProfilePicture,

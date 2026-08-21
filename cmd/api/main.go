@@ -143,6 +143,8 @@ func main() {
 		log.Fatal("Failed to migrate database:", err)
 	}
 
+	database.BackfillProfileSlugs(db)
+
 	database.SeedDev(db, cfg)
 
 	// Initialize auth
