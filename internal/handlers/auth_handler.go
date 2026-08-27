@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"crypto/subtle"
 	"fmt"
 	"log"
 	"net/http"
@@ -59,6 +60,11 @@ func (h *AuthHandler) Register(r *gin.RouterGroup) {
 		auth.GET("/status", h.Status)
 		auth.GET("/refresh_token", h.RefreshToken)
 		auth.GET("/logout", h.Logout)
+
+		// Server-to-server token exchange for the landingpage-mcp service.
+		// Deliberately not behind AuthRequiredJWT — the caller has no session
+		// yet; it's gated by its own shared-secret check instead.
+		auth.POST("/mcp-exchange", h.ExchangeMCPToken)
 	}
 }
 
@@ -454,6 +460,61 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 	session.Save()
 	h.setJWTCookie(c, "", -1)
 	c.JSON(http.StatusOK, gin.H{"message": "Successfully logged out"})
+}
+
+// ExchangeMCPToken lets the landingpage-mcp service trade a Google email it
+// has already verified itself (via its own OAuth flow) for a backend JWT, so
+// its tool calls can carry the real user's identity/roles instead of a
+// shared service identity. Not a login path: it only issues a token for a
+// User that already exists (created via the normal browser Google flow), and
+// only when the caller proves it's the MCP service via a shared secret.
+type mcpExchangeRequest struct {
+	Email string `json:"email"`
+}
+
+func (h *AuthHandler) ExchangeMCPToken(c *gin.Context) {
+	// Reject before ever touching the DB if the secret isn't configured or
+	// doesn't match — an unset MCPServiceSecret must never be treated as "no
+	// secret required".
+	provided := c.GetHeader("X-Service-Secret")
+	if h.cfg.MCPServiceSecret == "" || provided == "" ||
+		subtle.ConstantTimeCompare([]byte(provided), []byte(h.cfg.MCPServiceSecret)) != 1 {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	var req mcpExchangeRequest
+	if err := c.ShouldBindJSON(&req); err != nil || req.Email == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "email is required"})
+		return
+	}
+
+	var user models.User
+	result := h.db.Where("email = ?", req.Email).First(&user)
+	if result.Error == gorm.ErrRecordNotFound {
+		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+		return
+	} else if result.Error != nil {
+		log.Printf("mcp-exchange: database error looking up %q: %v", req.Email, result.Error)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
+		return
+	}
+
+	// 1 here (not the 15 used by the browser flow) because of WriteJWT's
+	// validMinutes*time.Hour quirk: this yields a ~1-hour real expiry,
+	// matching the practical lifetime a browser session gets from its
+	// maxAge=3600 cookie cap. The browser flow's own 15-hour internal expiry
+	// is masked client-side by that cookie cap; a raw JWT string handed back
+	// here has no such cap, so this path deliberately doesn't reuse the 15.
+	authJwt, err := utils.WriteJWT(user.Email, user.Roles, user.UserId, h.jwtSigningKey, 1)
+	if err != nil {
+		log.Printf("mcp-exchange: JWT signing failed for %q: %v", req.Email, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not mint token"})
+		return
+	}
+
+	log.Printf("mcp-exchange: issued token for %q (roles=%s)", user.Email, strings.Join(user.Roles, ","))
+	c.JSON(http.StatusOK, gin.H{"jwt": authJwt})
 }
 
 func (h *AuthHandler) setJWTCookie(c *gin.Context, value string, maxAge int) {

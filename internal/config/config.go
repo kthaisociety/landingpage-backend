@@ -23,6 +23,12 @@ type Config struct {
 	}
 	Server struct {
 		Port string
+		// Host is the bind address for the API's listener. Empty (the
+		// default) binds all interfaces, which production/Docker needs since
+		// the container's own network namespace has no other interface to
+		// bind. Set to "127.0.0.1" for local dev to keep the dev server off
+		// the network entirely.
+		Host string
 	}
 	OAuth struct {
 		GoogleClientID     string
@@ -56,6 +62,10 @@ type Config struct {
 	}
 	JwtSigningKey    string
 	JwtValidatingKey string
+	// MCPServiceSecret authenticates the landingpage-mcp service when it calls
+	// POST /api/v1/auth/mcp-exchange to trade a verified Google email for a
+	// backend JWT. Must match the value configured on that service.
+	MCPServiceSecret string
 	R2_bucket_name   string
 	R2_access_key    string
 	R2_access_key_id string
@@ -80,6 +90,7 @@ func LoadConfig() (*Config, error) {
 	cfg.Database.DBName = getEnv("DB_NAME", "kthais")
 	cfg.Database.SSLMode = getEnv("DB_SSLMODE", "disable")
 	cfg.Server.Port = getEnv("SERVER_PORT", "8080")
+	cfg.Server.Host = getEnv("SERVER_HOST", "")
 
 	// Redis config
 	cfg.Redis.Host = getEnv("REDIS_HOST", "localhost")
@@ -126,6 +137,8 @@ func LoadConfig() (*Config, error) {
 	// Asymetric key (priate/public) is used for jwt
 	cfg.JwtSigningKey = getEnv("JWTSigningKey", "test123456")
 	cfg.JwtValidatingKey = getEnv("JWTValidatingKey", "test123456")
+
+	cfg.MCPServiceSecret = getEnv("MCP_SERVICE_SECRET", "")
 
 	//Cloudflare R2
 	cfg.R2_bucket_name = getEnv("R2_Bucket", "")
