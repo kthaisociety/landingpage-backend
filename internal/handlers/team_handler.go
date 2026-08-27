@@ -329,14 +329,14 @@ func (h *TeamHandler) AdminRemoveTeamEntry(c *gin.Context) {
 // AdminListAllEntries returns all team member entries with profile info
 func (h *TeamHandler) AdminListAllEntries(c *gin.Context) {
 	type row struct {
-		ID           uint   `gorm:"column:id"`
-		ProfileID    string `gorm:"column:profile_id"`
-		FirstName    string `gorm:"column:first_name"`
-		LastName     string `gorm:"column:last_name"`
-		Email        string `gorm:"column:email"`
-		Role         string `gorm:"column:role"`
-		Department   string `gorm:"column:department"`
-		AcademicYear string `gorm:"column:academic_year"`
+		ID           uint   `gorm:"column:id" json:"id"`
+		ProfileID    string `gorm:"column:profile_id" json:"profile_id"`
+		FirstName    string `gorm:"column:first_name" json:"first_name"`
+		LastName     string `gorm:"column:last_name" json:"last_name"`
+		Email        string `gorm:"column:email" json:"email"`
+		Role         string `gorm:"column:role" json:"role"`
+		Department   string `gorm:"column:department" json:"department"`
+		AcademicYear string `gorm:"column:academic_year" json:"academic_year"`
 	}
 
 	var rows []row
