@@ -259,6 +259,146 @@ const (
 	devAdminLastName  = "Admin"
 )
 
+type devTeamMembershipSeed struct {
+	department   string
+	role         string
+	academicYear string
+}
+
+type devTeamMemberSeed struct {
+	email     string
+	firstName string
+	lastName  string
+	adminTeam string
+	entries   []devTeamMembershipSeed
+}
+
+// devTeamMembers seeds a handful of other admins into team_members (on top of
+// the single dev-admin user above), so the shared-notes @mention directory
+// has more than one person to test locally — including Ludvig, who
+// deliberately has two membership rows across different teams/years, since
+// that's the shape that caused the mention-autocomplete duplicate bug (one
+// person, multiple team_members rows, same email).
+var devTeamMembers = []devTeamMemberSeed{
+	{
+		email:     "ludvig@kthais.local",
+		firstName: "Ludvig",
+		lastName:  "Ek",
+		adminTeam: "Development",
+		entries: []devTeamMembershipSeed{
+			{department: "Development", role: "Head of Development", academicYear: "2025/2026"},
+			{department: "IT", role: "Member", academicYear: "2024/2025"},
+		},
+	},
+	{
+		email:     "sam@kthais.local",
+		firstName: "Sam",
+		lastName:  "Berg",
+		adminTeam: "Growth",
+		entries: []devTeamMembershipSeed{
+			{department: "Growth", role: "Head of Growth", academicYear: "2025/2026"},
+		},
+	},
+	{
+		email:     "maja.admin@kthais.local",
+		firstName: "Maja",
+		lastName:  "Sund",
+		adminTeam: "Business",
+		entries: []devTeamMembershipSeed{
+			{department: "Business", role: "Head of Business", academicYear: "2025/2026"},
+		},
+	},
+}
+
+// seedDevTeamMembers upserts each devTeamMembers person as a user + profile,
+// gives the existing dev-admin a team_members row too (they had none before,
+// so they never showed up in their own mention directory), and creates every
+// listed team_members row — skipping any (user, department, academic_year)
+// combination that already exists, so re-running the seed on restart never
+// duplicates rows itself.
+func seedDevTeamMembers(db *gorm.DB) {
+	created := 0
+
+	createMembership := func(userID uint, m devTeamMembershipSeed) {
+		var count int64
+		db.Model(&models.TeamMember{}).
+			Where("user_id = ? AND team_member_department = ? AND academic_year = ?", userID, m.department, m.academicYear).
+			Count(&count)
+		if count > 0 {
+			return
+		}
+		member := models.TeamMember{
+			UserID:               userID,
+			TeamMemberRole:       m.role,
+			TeamMemberDepartment: m.department,
+			AcademicYear:         m.academicYear,
+		}
+		if err := db.Create(&member).Error; err != nil {
+			log.Printf("[dev seed] failed to seed team member row (user %d, %s): %v", userID, m.department, err)
+			return
+		}
+		created++
+	}
+
+	// The dev-admin user/profile already exist (upserted above) — just add
+	// its team_members row.
+	var devAdminUser models.User
+	if err := db.Where("email = ?", devAdminEmail).First(&devAdminUser).Error; err != nil {
+		log.Printf("[dev seed] failed to reload dev admin for team member seed: %v", err)
+	} else {
+		createMembership(devAdminUser.ID, devTeamMembershipSeed{
+			department:   "IT",
+			role:         "Head of IT",
+			academicYear: "2025/2026",
+		})
+	}
+
+	for _, person := range devTeamMembers {
+		userID := uuid.NewSHA1(uuid.NameSpaceURL, []byte(person.email))
+		user := models.User{
+			UserId:   userID,
+			Email:    person.email,
+			Provider: "dev-seed",
+			Roles:    pq.StringArray{models.RoleUser, models.RoleMember, models.RoleAdmin},
+		}
+		if err := db.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "email"}},
+			DoUpdates: clause.AssignmentColumns([]string{"roles", "provider"}),
+		}).Create(&user).Error; err != nil {
+			log.Printf("[dev seed] failed to upsert team member user %s: %v", person.email, err)
+			continue
+		}
+		if err := db.Where("email = ?", person.email).First(&user).Error; err != nil {
+			log.Printf("[dev seed] failed to reload team member user %s: %v", person.email, err)
+			continue
+		}
+
+		profile := models.Profile{
+			UserUUID:  userID,
+			UserId:    user.ID,
+			Email:     person.email,
+			FirstName: person.firstName,
+			LastName:  person.lastName,
+			AdminTeam: person.adminTeam,
+		}
+		if err := db.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "email"}},
+			DoUpdates: clause.AssignmentColumns([]string{"first_name", "last_name", "user_uuid", "user_id", "admin_team"}),
+		}).Create(&profile).Error; err != nil {
+			log.Printf("[dev seed] failed to upsert team member profile %s: %v", person.email, err)
+			continue
+		}
+
+		for _, m := range person.entries {
+			createMembership(user.ID, m)
+		}
+	}
+
+	if created > 0 {
+		log.Printf("[dev seed] seeded %d team member row(s)", created)
+	}
+}
+
 // SeedDev upserts a local admin user + profile and prints a ready-to-use JWT.
 // It is a no-op when cfg.DevelopmentMode is false.
 func SeedDev(db *gorm.DB, cfg *config.Config) {
@@ -337,6 +477,7 @@ func SeedDev(db *gorm.DB, cfg *config.Config) {
 	// in every environment, so there's nothing dev-specific to seed here.
 	seedTeamQuestions(db)
 	seedApplications(db, cfg, devUserID)
+	seedDevTeamMembers(db)
 }
 
 func seedApplications(db *gorm.DB, cfg *config.Config, devUserID uuid.UUID) {

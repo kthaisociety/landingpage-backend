@@ -138,6 +138,7 @@ func (h *GeneralApplicationHandler) Register(r *gin.RouterGroup) {
 	admin.GET("/:id/notes/shared", h.AdminListSharedNotes)
 	admin.POST("/:id/notes/shared", h.AdminCreateSharedNote)
 	admin.PUT("/:id/notes/shared/:noteId", h.AdminUpdateSharedNote)
+	admin.DELETE("/:id/notes/shared/:noteId", h.AdminDeleteSharedNote)
 }
 
 func (h *GeneralApplicationHandler) Create(c *gin.Context) {
@@ -1160,4 +1161,42 @@ func (h *GeneralApplicationHandler) AdminUpdateSharedNote(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, entry)
+}
+
+// AdminDeleteSharedNote deletes one shared-note entry. Only the admin who
+// wrote it may delete it — same authorship check as editing.
+func (h *GeneralApplicationHandler) AdminDeleteSharedNote(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid application id"})
+		return
+	}
+	noteID, err := uuid.Parse(c.Param("noteId"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid note id"})
+		return
+	}
+
+	adminID, _, ok := getAdminIdentity(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "could not determine admin identity"})
+		return
+	}
+
+	var entry models.ApplicationSharedNoteEntry
+	if err := h.db.First(&entry, "id = ?", noteID).Error; err != nil || entry.ApplicationID != id {
+		c.JSON(http.StatusNotFound, gin.H{"error": "note not found"})
+		return
+	}
+	if entry.AuthorID != adminID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "only the author can delete this note"})
+		return
+	}
+
+	if err := h.db.Delete(&entry).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete shared note"})
+		return
+	}
+
+	c.Status(http.StatusNoContent)
 }
