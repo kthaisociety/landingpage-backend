@@ -13,7 +13,7 @@ type TeamQuestionsSettings struct {
 	// RenderTeamQuestionsInvite in internal/email/email.go.
 	EmailSubject string `gorm:"type:text;not null;default:''" json:"email_subject"`
 	// ReminderEmailTemplate is sent once, automatically, to applicants who
-	// haven't submitted Team Questions 14 days after their invite — see
+	// haven't submitted Team Questions 7 days after their invite — see
 	// teamQuestionsReminderDelay in team_questions_handler.go.
 	ReminderEmailTemplate string `gorm:"type:text;not null;default:''" json:"reminder_email_template"`
 	// ReminderEmailSubject may contain {{first_name}} and {{teams}} placeholders.

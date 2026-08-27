@@ -26,7 +26,7 @@ const teamQuestionsTokenValidity = 30 * 24 * time.Hour
 // teamQuestionsReminderDelay is how long an applicant has to submit Team
 // Questions before the daily scheduler sends them a one-time reminder. Only
 // ever fires once per application — see TeamQuestionsReminderSentAt.
-const teamQuestionsReminderDelay = 14 * 24 * time.Hour
+const teamQuestionsReminderDelay = 7 * 24 * time.Hour
 
 // invalidLinkError is returned for any token lookup failure — unknown, expired,
 // used, or superseded by a resend — so a stale link can't be used to probe
@@ -418,7 +418,7 @@ func (h *TeamQuestionsHandler) SendPendingInvites() (sent int, failed []string, 
 // Team Questions at least teamQuestionsReminderDelay ago, are still pending
 // (haven't submitted, been marked ineligible, or withdrawn), and have never
 // been sent a reminder — so this only ever fires once per application, no
-// matter how many days go by after the 14-day mark.
+// matter how many days go by after the 7-day mark.
 func (h *TeamQuestionsHandler) pendingApplicationsNeedingReminder() ([]models.GeneralApplication, error) {
 	var applications []models.GeneralApplication
 	cutoff := time.Now().Add(-teamQuestionsReminderDelay)
@@ -429,7 +429,7 @@ func (h *TeamQuestionsHandler) pendingApplicationsNeedingReminder() ([]models.Ge
 	return applications, err
 }
 
-// SendPendingReminders emails the 14-day reminder to every application that
+// SendPendingReminders emails the 7-day reminder to every application that
 // pendingApplicationsNeedingReminder finds. Called by the daily scheduler
 // alongside SendPendingInvites.
 func (h *TeamQuestionsHandler) SendPendingReminders() (sent int, failed []string, err error) {

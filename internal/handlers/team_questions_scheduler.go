@@ -34,7 +34,7 @@ func mustLoadLocation(name string) *time.Location {
 }
 
 // StartDailyTeamQuestionsScheduler sends pending Team Questions invites and
-// 14-day reminders at each hour in teamQuestionsRunHours, Europe/Stockholm,
+// 7-day reminders at each hour in teamQuestionsRunHours, Europe/Stockholm,
 // for as long as the process is running. It recomputes the next run time on
 // every iteration rather than sleeping a fixed interval, so DST transitions
 // don't drift the send time.

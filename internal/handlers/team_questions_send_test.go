@@ -104,8 +104,8 @@ func TestSendPendingInvites(t *testing.T) {
 	})
 }
 
-// TestSendPendingReminders covers the 14-day Team Questions reminder: due
-// applications (invited 14+ days ago, still pending, never reminded) get a
+// TestSendPendingReminders covers the 7-day Team Questions reminder: due
+// applications (invited 7+ days ago, still pending, never reminded) get a
 // fresh token and a reminder email; applications invited too recently don't;
 // and re-running never reminds the same application twice.
 //
@@ -172,7 +172,7 @@ func TestSendPendingReminders(t *testing.T) {
 
 	h := NewTeamQuestionsHandler(db, cfg)
 
-	t.Run("only the 14+ day overdue applicant is reminded", func(t *testing.T) {
+	t.Run("only the 7+ day overdue applicant is reminded", func(t *testing.T) {
 		sent, failed, err := h.SendPendingReminders()
 		require.NoError(t, err)
 		require.Empty(t, failed)
