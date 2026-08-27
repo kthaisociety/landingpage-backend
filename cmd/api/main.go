@@ -137,6 +137,7 @@ func main() {
 		&models.GeneralApplication{},
 		&models.AdminInterviewNote{},
 		&models.ApplicationSharedNote{},
+		&models.ApplicationSharedNoteEntry{},
 		&models.NewsletterSubscription{},
 		&models.TeamQuestionsSubmission{},
 		&models.TeamQuestionsToken{},
@@ -148,6 +149,7 @@ func main() {
 	}
 
 	database.BackfillProfileSlugs(db)
+	database.BackfillSharedNoteEntries(db)
 
 	database.SeedDev(db, cfg)
 

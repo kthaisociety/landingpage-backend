@@ -135,8 +135,9 @@ func (h *GeneralApplicationHandler) Register(r *gin.RouterGroup) {
 	admin.PATCH("/:id/restore", h.AdminRestoreApplication)
 	admin.GET("/:id/notes", h.AdminGetNotes)
 	admin.PUT("/:id/notes", h.AdminUpdateNotes)
-	admin.GET("/:id/notes/shared", h.AdminGetSharedNotes)
-	admin.PUT("/:id/notes/shared", h.AdminUpdateSharedNotes)
+	admin.GET("/:id/notes/shared", h.AdminListSharedNotes)
+	admin.POST("/:id/notes/shared", h.AdminCreateSharedNote)
+	admin.PUT("/:id/notes/shared/:noteId", h.AdminUpdateSharedNote)
 }
 
 func (h *GeneralApplicationHandler) Create(c *gin.Context) {
@@ -1056,33 +1057,28 @@ func (h *GeneralApplicationHandler) AdminUpdateNotes(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"note": note.Note})
 }
 
-// AdminGetSharedNotes returns the note on an application that is visible to all admins.
-func (h *GeneralApplicationHandler) AdminGetSharedNotes(c *gin.Context) {
+// AdminListSharedNotes returns every shared-note entry on an application —
+// one per admin comment, oldest first — visible to all admins.
+func (h *GeneralApplicationHandler) AdminListSharedNotes(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid application id"})
 		return
 	}
 
-	var notes []models.ApplicationSharedNote
-	if err := h.db.Where("application_id = ?", id).Limit(1).Find(&notes).Error; err != nil {
+	var entries []models.ApplicationSharedNoteEntry
+	if err := h.db.Where("application_id = ?", id).Order("created_at asc").Find(&entries).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch shared notes"})
 		return
 	}
-	if len(notes) == 0 {
-		c.JSON(http.StatusOK, gin.H{"note": "", "last_edited_email": "", "updated_at": nil})
-		return
-	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"note":              notes[0].Note,
-		"last_edited_email": notes[0].LastEditedEmail,
-		"updated_at":        notes[0].UpdatedAt,
-	})
+	c.JSON(http.StatusOK, gin.H{"entries": entries})
 }
 
-// AdminUpdateSharedNotes upserts the note on an application that is visible to all admins.
-func (h *GeneralApplicationHandler) AdminUpdateSharedNotes(c *gin.Context) {
+// AdminCreateSharedNote appends a new shared-note entry authored by the
+// requesting admin. Entries are never merged — each admin's comments stay
+// their own, unlike the old single-blob note.
+func (h *GeneralApplicationHandler) AdminCreateSharedNote(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid application id"})
@@ -1096,37 +1092,72 @@ func (h *GeneralApplicationHandler) AdminUpdateSharedNotes(c *gin.Context) {
 	}
 
 	var body struct {
-		Note string `json:"note"`
+		Text string `json:"text"`
 	}
-	if err := c.ShouldBindJSON(&body); err != nil {
+	if err := c.ShouldBindJSON(&body); err != nil || strings.TrimSpace(body.Text) == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
 	}
 
-	note := models.ApplicationSharedNote{
-		ApplicationID:   id,
-		Note:            body.Note,
-		LastEditedBy:    adminID,
-		LastEditedEmail: adminEmail,
+	entry := models.ApplicationSharedNoteEntry{
+		Id:            uuid.New(),
+		ApplicationID: id,
+		AuthorID:      adminID,
+		AuthorEmail:   adminEmail,
+		Text:          body.Text,
 	}
-	result := h.db.
-		Where(models.ApplicationSharedNote{ApplicationID: id}).
-		Assign(models.ApplicationSharedNote{Note: body.Note, LastEditedBy: adminID, LastEditedEmail: adminEmail}).
-		FirstOrCreate(&note)
-	if result.Error != nil {
-		// FirstOrCreate may race; fall back to upsert
-		if err := h.db.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "application_id"}},
-			DoUpdates: clause.AssignmentColumns([]string{"note", "last_edited_by", "last_edited_email", "updated_at"}),
-		}).Create(&note).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save shared notes"})
-			return
-		}
+	if err := h.db.Create(&entry).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save shared note"})
+		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"note":              note.Note,
-		"last_edited_email": note.LastEditedEmail,
-		"updated_at":        note.UpdatedAt,
-	})
+	c.JSON(http.StatusOK, entry)
+}
+
+// AdminUpdateSharedNote edits the text of one shared-note entry. Only the
+// admin who wrote it may edit it — everyone else's entries are read-only to
+// them, so attribution stays honest.
+func (h *GeneralApplicationHandler) AdminUpdateSharedNote(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid application id"})
+		return
+	}
+	noteID, err := uuid.Parse(c.Param("noteId"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid note id"})
+		return
+	}
+
+	adminID, _, ok := getAdminIdentity(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "could not determine admin identity"})
+		return
+	}
+
+	var entry models.ApplicationSharedNoteEntry
+	if err := h.db.First(&entry, "id = ?", noteID).Error; err != nil || entry.ApplicationID != id {
+		c.JSON(http.StatusNotFound, gin.H{"error": "note not found"})
+		return
+	}
+	if entry.AuthorID != adminID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "only the author can edit this note"})
+		return
+	}
+
+	var body struct {
+		Text string `json:"text"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || strings.TrimSpace(body.Text) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
+	entry.Text = body.Text
+	if err := h.db.Save(&entry).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update shared note"})
+		return
+	}
+
+	c.JSON(http.StatusOK, entry)
 }

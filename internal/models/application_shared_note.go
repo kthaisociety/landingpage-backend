@@ -5,8 +5,10 @@ import (
 	"gorm.io/gorm"
 )
 
-// ApplicationSharedNote stores a single note on an applicant that all admins can see and edit.
-// One row per application; the last admin to save overwrites the note.
+// ApplicationSharedNote is the legacy single-blob shared note, superseded by
+// ApplicationSharedNoteEntry. Kept only so migrateLegacySharedNotes (in
+// cmd/api/main.go) can carry old notes forward into the new per-entry table;
+// nothing else reads or writes this anymore.
 type ApplicationSharedNote struct {
 	gorm.Model
 	ApplicationID   uuid.UUID `gorm:"type:uuid;not null;uniqueIndex" json:"application_id"`
