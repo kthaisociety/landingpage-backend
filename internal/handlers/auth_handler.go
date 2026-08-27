@@ -25,6 +25,13 @@ import (
 	"gorm.io/gorm"
 )
 
+// How long an admin session lasts before Google login is required again.
+// Enforced by the "jwt" cookie's Max-Age; the JWT's own claim is set to
+// match via WriteJWT's validMinutes arg, which (despite the name) is
+// actually multiplied by time.Hour, not time.Minute.
+const sessionDurationHours = 12
+const sessionCookieMaxAgeSeconds = sessionDurationHours * 3600
+
 // Add this line to ensure AuthHandler implements Handler interface
 type AuthHandler struct {
 	db               *gorm.DB
@@ -108,13 +115,13 @@ func (h *AuthHandler) RefreshToken(c *gin.Context) {
 	if result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not retreive user info"})
 	}
-	newToken, err := utils.WriteJWT(user.Email, user.Roles, user.UserId, h.jwtSigningKey, 15)
+	newToken, err := utils.WriteJWT(user.Email, user.Roles, user.UserId, h.jwtSigningKey, sessionDurationHours)
 	if err != nil {
 		log.Printf("Refresh failed: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not refresh token"})
 		return
 	}
-	h.setJWTCookie(c, newToken, 3600)
+	h.setJWTCookie(c, newToken, sessionCookieMaxAgeSeconds)
 }
 
 func InitAuth(cfg *config.Config) error {
@@ -422,13 +429,13 @@ func (h *AuthHandler) GoogleCallback(c *gin.Context) {
 	// } else {
 	// 	roles = []string{"user"}
 	// }
-	authJwt, err := utils.WriteJWT(email, user.Roles, user.UserId, h.jwtSigningKey, 15)
+	authJwt, err := utils.WriteJWT(email, user.Roles, user.UserId, h.jwtSigningKey, sessionDurationHours)
 	if err != nil {
 		log.Printf("JWT signing failed after OAuth: %v", err)
 		redirectWithError(c, "Server misconfigured: invalid JWT signing key")
 		return
 	}
-	h.setJWTCookie(c, authJwt, 3600)
+	h.setJWTCookie(c, authJwt, sessionCookieMaxAgeSeconds)
 
 	// changed dashboardURL to frontendURL
 	c.Redirect(http.StatusTemporaryRedirect, frontendURL)
@@ -500,12 +507,12 @@ func (h *AuthHandler) ExchangeMCPToken(c *gin.Context) {
 		return
 	}
 
-	// 1 here (not the 15 used by the browser flow) because of WriteJWT's
-	// validMinutes*time.Hour quirk: this yields a ~1-hour real expiry,
-	// matching the practical lifetime a browser session gets from its
-	// maxAge=3600 cookie cap. The browser flow's own 15-hour internal expiry
-	// is masked client-side by that cookie cap; a raw JWT string handed back
-	// here has no such cap, so this path deliberately doesn't reuse the 15.
+	// 1 here (not sessionDurationHours) because of WriteJWT's
+	// validMinutes*time.Hour quirk: this yields a ~1-hour real expiry. The
+	// browser flow's own longer internal expiry is masked client-side by its
+	// cookie's Max-Age cap; a raw JWT string handed back here has no such
+	// cap, so this path deliberately uses a short expiry of its own instead
+	// of reusing sessionDurationHours.
 	authJwt, err := utils.WriteJWT(user.Email, user.Roles, user.UserId, h.jwtSigningKey, 1)
 	if err != nil {
 		log.Printf("mcp-exchange: JWT signing failed for %q: %v", req.Email, err)
