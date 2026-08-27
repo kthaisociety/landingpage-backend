@@ -214,10 +214,10 @@ func main() {
 	// team_questions_scheduler.go for why there are two windows.
 	handlers.NewTeamQuestionsHandler(db, cfg).StartDailyTeamQuestionsScheduler()
 
-	log.Printf("listening on :%s", cfg.Server.Port)
+	log.Printf("listening on %s:%s", cfg.Server.Host, cfg.Server.Port)
 
 	// Run the server
-	r.Run(":" + cfg.Server.Port)
+	r.Run(cfg.Server.Host + ":" + cfg.Server.Port)
 }
 
 func setupRoutes(r *gin.Engine, db *gorm.DB, mailchimpApi *mailchimp.MailchimpAPI, lumaApi *luma.LumaAPI, cfg *config.Config) {
