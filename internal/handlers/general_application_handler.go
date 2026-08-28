@@ -127,6 +127,7 @@ func (h *GeneralApplicationHandler) Register(r *gin.RouterGroup) {
 	admin.PATCH("/:id/status", h.AdminUpdateStatus)
 	admin.DELETE("/:id", h.AdminDelete)
 	admin.GET("/:id/resume", h.AdminDownloadResume)
+	admin.POST("/:id/fast-track", h.AdminFastTrackApplication)
 	admin.POST("/:id/claim", h.AdminClaimApplication)
 	admin.POST("/:id/release", h.AdminReleaseApplication)
 	admin.POST("/:id/cancel-interview", h.AdminCancelInterview)
@@ -717,6 +718,62 @@ func fallbackResumeContentType(ext string) string {
 
 func shouldStoreResumeInDatabase(cfg *config.Config) bool {
 	return cfg.DevelopmentMode
+}
+
+// AdminFastTrackApplication lets any admin move an exceptional candidate
+// straight from pending to available without waiting for them to submit
+// Team Questions, so the candidate can then go through the normal claim flow.
+// Open to any admin (only RoleRequired("admin") applies), not IT-restricted,
+// since who did it and when is recorded on the application for accountability.
+func (h *GeneralApplicationHandler) AdminFastTrackApplication(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid application id"})
+		return
+	}
+
+	_, adminEmail, ok := getAdminIdentity(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "could not determine admin identity"})
+		return
+	}
+
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	reason := strings.TrimSpace(body.Reason)
+	if reason == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "a reason is required to fast-track an application"})
+		return
+	}
+
+	var application models.GeneralApplication
+	if err := h.db.First(&application, "id = ?", id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "application not found"})
+		return
+	}
+
+	if application.Status != models.GeneralApplicationStatusPending {
+		c.JSON(http.StatusConflict, gin.H{"error": "only pending applications can be fast-tracked"})
+		return
+	}
+
+	now := time.Now()
+	application.Status = models.GeneralApplicationStatusAvailable
+	application.FastTracked = true
+	application.FastTrackedByEmail = adminEmail
+	application.FastTrackedAt = &now
+	application.FastTrackReason = reason
+	if err := h.db.Save(&application).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fast-track application"})
+		return
+	}
+
+	c.JSON(http.StatusOK, application)
 }
 
 // AdminClaimApplication locks an available application to the requesting admin.

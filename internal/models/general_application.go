@@ -50,6 +50,10 @@ type GeneralApplication struct {
 	InterviewInviteSentAt       *time.Time               `json:"interview_invite_sent_at"`
 	TeamQuestionsInviteSentAt   *time.Time               `json:"team_questions_invite_sent_at"`
 	TeamQuestionsReminderSentAt *time.Time               `json:"team_questions_reminder_sent_at"`
+	FastTracked                 bool                     `gorm:"not null;default:false" json:"fast_tracked"`
+	FastTrackedByEmail          string                   `gorm:"default:''" json:"fast_tracked_by_email"`
+	FastTrackedAt               *time.Time               `json:"fast_tracked_at"`
+	FastTrackReason             string                   `gorm:"type:text;default:''" json:"fast_track_reason"`
 	CreatedAt                   time.Time                `json:"created_at"`
 	UpdatedAt                   time.Time                `json:"updated_at"`
 }
