@@ -61,6 +61,7 @@ func TestApplicationAndInterviewLifecycle(t *testing.T) {
 		&models.TeamQuestionsToken{},
 		&models.TeamQuestionsSettings{},
 		&models.TeamQuestion{},
+		&models.GeneralApplicationSettings{},
 	))
 
 	// The public "/applications/general" and "/applications/team-questions/:token"
@@ -444,6 +445,90 @@ func TestApplicationAndInterviewLifecycle(t *testing.T) {
 		require.NoError(t, db.First(&after, "id = ?", withdrawAllID).Error)
 		require.Equal(t, models.GeneralApplicationStatusWithdrawn, after.Status)
 		require.Empty(t, []string(after.Teams))
+	})
+
+	t.Run("recruitment period settings are public to read, admin-only to write, and enforced on submission", func(t *testing.T) {
+		t.Cleanup(func() {
+			db.Unscoped().Where("1 = 1").Delete(&models.GeneralApplicationSettings{})
+		})
+
+		rec := doJSONRequest(t, engine, "GET", "/api/v1/applications/settings", nil, nil)
+		require.Equal(t, http.StatusOK, rec.Code, "the deadline must be readable with no auth")
+		var publicBody struct {
+			SubmissionDeadline time.Time `json:"submission_deadline"`
+			ClosedHeading      string    `json:"closed_heading"`
+			ClosedMessage      string    `json:"closed_message"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &publicBody))
+		require.False(t, publicBody.SubmissionDeadline.IsZero(), "an unconfigured deadline must still fall back to a default, not a zero time")
+		require.NotEmpty(t, publicBody.ClosedHeading, "unconfigured closed-screen copy must still fall back to a default")
+		require.NotEmpty(t, publicBody.ClosedMessage, "unconfigured closed-screen copy must still fall back to a default")
+
+		rec = doJSONRequest(t, engine, "PUT", "/api/v1/applications/admin/settings",
+			map[string]any{"submission_deadline": publicBody.SubmissionDeadline}, nil)
+		require.Equal(t, http.StatusUnauthorized, rec.Code, "an unauthenticated caller must not be able to change the deadline")
+
+		future := time.Now().Add(30 * 24 * time.Hour).UTC().Truncate(time.Second)
+		rec = doJSONRequest(t, engine, "PUT", "/api/v1/applications/admin/settings", map[string]any{
+			"submission_deadline": future,
+			"closed_heading":      "Thanks for applying!",
+			"closed_message":      "Custom closed-page copy for this test.",
+		}, adminA.cookie)
+		require.Equal(t, http.StatusOK, rec.Code, "any admin, not just IT, may set the recruitment deadline")
+		var updateBody struct {
+			SubmissionDeadline time.Time `json:"submission_deadline"`
+			ClosedHeading      string    `json:"closed_heading"`
+			ClosedMessage      string    `json:"closed_message"`
+			UpdatedByEmail     string    `json:"updated_by_email"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &updateBody))
+		require.True(t, future.Equal(updateBody.SubmissionDeadline))
+		require.Equal(t, "Thanks for applying!", updateBody.ClosedHeading)
+		require.Equal(t, "Custom closed-page copy for this test.", updateBody.ClosedMessage)
+		require.Equal(t, adminA.email, updateBody.UpdatedByEmail)
+
+		rec = doJSONRequest(t, engine, "GET", "/api/v1/applications/settings", nil, nil)
+		require.Equal(t, http.StatusOK, rec.Code)
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &publicBody))
+		require.True(t, future.Equal(publicBody.SubmissionDeadline), "the public endpoint must reflect the saved value, not the default")
+		require.Equal(t, "Thanks for applying!", publicBody.ClosedHeading)
+		require.Equal(t, "Custom closed-page copy for this test.", publicBody.ClosedMessage)
+
+		// Clearing the copy resets it to the default rather than saving an
+		// empty heading/message — same convention as the Team Questions
+		// email template fields.
+		rec = doJSONRequest(t, engine, "PUT", "/api/v1/applications/admin/settings", map[string]any{
+			"submission_deadline": future,
+			"closed_heading":      "",
+			"closed_message":      "",
+		}, adminA.cookie)
+		require.Equal(t, http.StatusOK, rec.Code)
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &updateBody))
+		require.NotEmpty(t, updateBody.ClosedHeading, "an empty heading must resolve back to the default, not save as blank")
+		require.NotEmpty(t, updateBody.ClosedMessage, "an empty message must resolve back to the default, not save as blank")
+
+		past := time.Now().Add(-24 * time.Hour).UTC().Truncate(time.Second)
+		rec = doJSONRequest(t, engine, "PUT", "/api/v1/applications/admin/settings",
+			map[string]any{"submission_deadline": past}, adminA.cookie)
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		rec = doMultipartRequest(t, engine, "POST", "/api/v1/applications/general", map[string]string{
+			"firstName":            "Late",
+			"lastName":             "Applicant",
+			"email":                fmt.Sprintf("lifecycle-late-%s@seed.local", suffix),
+			"gender":               "Prefer not to say",
+			"university":           "KTH Royal Institute of Technology",
+			"programme":            "Computer Science",
+			"graduationYear":       "2027",
+			"linkedinUrl":          "https://linkedin.com/in/lifecycle-late-" + suffix,
+			"availability":         "4-6 hours",
+			"contribution":         "I will contribute meaningfully to this team over the coming year.",
+			"dataRetentionConsent": "true",
+		}, map[string][]string{
+			"teams":     {"Development"},
+			"interests": {"Machine Learning"},
+		})
+		require.Equal(t, http.StatusForbidden, rec.Code, "submissions must be rejected once the configured deadline has passed")
 	})
 
 	t.Run("team question CRUD is scoped to that team's own admins", func(t *testing.T) {

@@ -143,6 +143,7 @@ func main() {
 		&models.TeamQuestionsToken{},
 		&models.TeamQuestionsSettings{},
 		&models.TeamQuestion{},
+		&models.GeneralApplicationSettings{},
 	)
 	if err != nil {
 		log.Fatal("Failed to migrate database:", err)

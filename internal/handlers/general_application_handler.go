@@ -32,6 +32,16 @@ const (
 	generalApplicationMaxResume   = generalApplicationMaxResumeMB << 20
 )
 
+// defaultSubmissionDeadline is used until an admin explicitly sets one via
+// the admin Recruitment Period panel. teamQuestionsInviteTZ (Europe/Stockholm)
+// is declared in team_questions_scheduler.go, in this same package.
+var defaultSubmissionDeadline = time.Date(2026, time.September, 6, 23, 59, 0, 0, teamQuestionsInviteTZ)
+
+// defaultClosedHeading and defaultClosedMessage are the /apply closed
+// screen's copy until an admin customises it via the Settings panel.
+const defaultClosedHeading = "Applications are now closed"
+const defaultClosedMessage = "Thank you to everyone who applied to KTH AI Society this year. We're reviewing every application and will follow up by email with next steps by September 22, 2026. In the meantime, join our Luma community to stay in the loop on events and future opportunities."
+
 var allowedApplicationTeams = map[string]struct{}{
 	"Business":    {},
 	"Development": {},
@@ -119,10 +129,16 @@ func NewGeneralApplicationHandler(db *gorm.DB, cfg *config.Config, lumaApi *luma
 func (h *GeneralApplicationHandler) Register(r *gin.RouterGroup) {
 	applications := r.Group("/applications")
 	applications.POST("/general", middleware.RateLimit(), h.Create)
+	// Not rate-limited: this is read-only, non-sensitive config data, fetched
+	// on every /apply page load. It shares no budget with the rate-limited
+	// public routes above, which exist to gate write/submission attempts.
+	applications.GET("/settings", h.Settings)
 
 	admin := applications.Group("/admin")
 	admin.Use(middleware.AuthRequiredJWT(h.cfg))
 	admin.Use(middleware.RoleRequired(h.cfg, "admin"))
+	admin.GET("/settings", h.AdminGetSettings)
+	admin.PUT("/settings", h.AdminUpdateSettings)
 	admin.GET("", h.AdminList)
 	admin.PATCH("/:id/status", h.AdminUpdateStatus)
 	admin.DELETE("/:id", h.AdminDelete)
@@ -143,6 +159,16 @@ func (h *GeneralApplicationHandler) Register(r *gin.RouterGroup) {
 }
 
 func (h *GeneralApplicationHandler) Create(c *gin.Context) {
+	settings, err := h.getGeneralApplicationSettings()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load application settings"})
+		return
+	}
+	if time.Now().After(settings.SubmissionDeadline) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "applications are closed"})
+		return
+	}
+
 	input, err := parseGeneralApplicationForm(c)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -399,6 +425,118 @@ func (h *GeneralApplicationHandler) AdminDelete(c *gin.Context) {
 	}
 
 	c.Status(http.StatusNoContent)
+}
+
+// getGeneralApplicationSettings always returns a usable, fully-populated
+// row: saved values where an admin has set them, defaults (defaultSubmission
+// Deadline/defaultClosedHeading/defaultClosedMessage) for whatever fields
+// haven't been. Callers never have to special-case "nothing configured yet".
+func (h *GeneralApplicationHandler) getGeneralApplicationSettings() (models.GeneralApplicationSettings, error) {
+	var settings models.GeneralApplicationSettings
+	err := h.db.First(&settings).Error
+	if err != nil && err != gorm.ErrRecordNotFound {
+		return settings, err
+	}
+	if settings.SubmissionDeadline.IsZero() {
+		settings.SubmissionDeadline = defaultSubmissionDeadline
+	}
+	if strings.TrimSpace(settings.ClosedHeading) == "" {
+		settings.ClosedHeading = defaultClosedHeading
+	}
+	if strings.TrimSpace(settings.ClosedMessage) == "" {
+		settings.ClosedMessage = defaultClosedMessage
+	}
+	return settings, nil
+}
+
+// Settings is the public counterpart to AdminGetSettings: the submission
+// deadline and closed-screen copy, so the frontend never has to hardcode them.
+func (h *GeneralApplicationHandler) Settings(c *gin.Context) {
+	settings, err := h.getGeneralApplicationSettings()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load application settings"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"submission_deadline": settings.SubmissionDeadline,
+		"closed_heading":      settings.ClosedHeading,
+		"closed_message":      settings.ClosedMessage,
+	})
+}
+
+func (h *GeneralApplicationHandler) AdminGetSettings(c *gin.Context) {
+	settings, err := h.getGeneralApplicationSettings()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load application settings"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"submission_deadline": settings.SubmissionDeadline,
+		"closed_heading":      settings.ClosedHeading,
+		"closed_message":      settings.ClosedMessage,
+		"updated_by_email":    settings.UpdatedByEmail,
+	})
+}
+
+// AdminUpdateSettings is open to any admin (only RoleRequired("admin")
+// applies), not IT-restricted — same reasoning as AdminFastTrackApplication:
+// who changed it and when is recorded on the row for accountability.
+func (h *GeneralApplicationHandler) AdminUpdateSettings(c *gin.Context) {
+	_, adminEmail, ok := getAdminIdentity(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "could not determine admin identity"})
+		return
+	}
+
+	var body struct {
+		SubmissionDeadline time.Time `json:"submission_deadline" binding:"required"`
+		// Empty means "reset to default" — same convention as the Team
+		// Questions email template fields.
+		ClosedHeading string `json:"closed_heading"`
+		ClosedMessage string `json:"closed_message"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
+	var settings models.GeneralApplicationSettings
+	err := h.db.First(&settings).Error
+	if err != nil && err != gorm.ErrRecordNotFound {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load application settings"})
+		return
+	}
+
+	settings.SubmissionDeadline = body.SubmissionDeadline
+	settings.ClosedHeading = strings.TrimSpace(body.ClosedHeading)
+	settings.ClosedMessage = strings.TrimSpace(body.ClosedMessage)
+	settings.UpdatedByEmail = adminEmail
+
+	if err == gorm.ErrRecordNotFound {
+		err = h.db.Create(&settings).Error
+	} else {
+		err = h.db.Save(&settings).Error
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save application settings"})
+		return
+	}
+
+	responseHeading := settings.ClosedHeading
+	if responseHeading == "" {
+		responseHeading = defaultClosedHeading
+	}
+	responseMessage := settings.ClosedMessage
+	if responseMessage == "" {
+		responseMessage = defaultClosedMessage
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"submission_deadline": settings.SubmissionDeadline,
+		"closed_heading":      responseHeading,
+		"closed_message":      responseMessage,
+		"updated_by_email":    settings.UpdatedByEmail,
+	})
 }
 
 // requesterIsOnTeam resolves a user's admin team the same way the frontend
