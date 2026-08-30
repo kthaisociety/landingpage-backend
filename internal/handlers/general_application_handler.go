@@ -50,6 +50,16 @@ var allowedApplicationTeams = map[string]struct{}{
 	"IT":          {},
 }
 
+// applicationTeamNames is allowedApplicationTeams as a slice, for use in a
+// SQL IN clause (see requesterAcceptTeam in general_application_finalize.go).
+var applicationTeamNames = func() []string {
+	names := make([]string, 0, len(allowedApplicationTeams))
+	for name := range allowedApplicationTeams {
+		names = append(names, name)
+	}
+	return names
+}()
+
 var allowedApplicationAvailability = map[string]struct{}{
 	"4-6 hours":       {},
 	"6-8 hours":       {},
@@ -60,12 +70,32 @@ var allowedApplicationInterests = validation.AllowedInterests
 
 var allowedApplicationGenders = validation.AllowedGenders
 
+// allowedApplicationStatuses gates AdminUpdateStatus (the writable set).
+// Accepted/rejected are deliberately not in this map: they're terminal
+// recruitment decisions reachable only via AdminFinalizeDecision, which
+// requires the finalize recruitment phase to be open. Do not add them here —
+// add them to allowedApplicationListStatuses instead if a read-only view
+// needs them.
 var allowedApplicationStatuses = map[models.GeneralApplicationStatus]struct{}{
 	models.GeneralApplicationStatusPending:      {},
 	models.GeneralApplicationStatusAvailable:    {},
 	models.GeneralApplicationStatusInterviewing: {},
 	models.GeneralApplicationStatusIneligible:   {},
 	models.GeneralApplicationStatusWithdrawn:    {},
+}
+
+// allowedApplicationListStatuses gates AdminList's status filter only. It's a
+// superset of allowedApplicationStatuses: listing already-decided applicants
+// is safe to expose read-only even though setting accepted/rejected requires
+// the finalize recruitment phase to be open (see AdminFinalizeDecision).
+var allowedApplicationListStatuses = map[models.GeneralApplicationStatus]struct{}{
+	models.GeneralApplicationStatusPending:      {},
+	models.GeneralApplicationStatusAvailable:    {},
+	models.GeneralApplicationStatusInterviewing: {},
+	models.GeneralApplicationStatusIneligible:   {},
+	models.GeneralApplicationStatusWithdrawn:    {},
+	models.GeneralApplicationStatusAccepted:     {},
+	models.GeneralApplicationStatusRejected:     {},
 }
 
 var allowedResumeExtensions = map[string]struct{}{
@@ -156,6 +186,15 @@ func (h *GeneralApplicationHandler) Register(r *gin.RouterGroup) {
 	admin.POST("/:id/notes/shared", h.AdminCreateSharedNote)
 	admin.PUT("/:id/notes/shared/:noteId", h.AdminUpdateSharedNote)
 	admin.DELETE("/:id/notes/shared/:noteId", h.AdminDeleteSharedNote)
+
+	// Finalize recruitment: terminal accept/reject decisions, gated behind an
+	// explicit, org-wide phase — opened by an IT admin, closed only by the
+	// head of IT. Any admin may act while it's open. See
+	// general_application_finalize.go.
+	admin.POST("/finalize/phase/open", h.AdminOpenFinalizePhase)
+	admin.GET("/finalize/phase", h.AdminFinalizePhaseStatus)
+	admin.POST("/finalize/phase/close", h.AdminCloseFinalizePhase)
+	admin.POST("/:id/finalize", h.AdminFinalizeDecision)
 }
 
 func (h *GeneralApplicationHandler) Create(c *gin.Context) {
@@ -321,7 +360,7 @@ func (h *GeneralApplicationHandler) AdminList(c *gin.Context) {
 
 	if rawStatus := strings.TrimSpace(c.Query("status")); rawStatus != "" {
 		status := models.GeneralApplicationStatus(rawStatus)
-		if _, ok := allowedApplicationStatuses[status]; !ok {
+		if _, ok := allowedApplicationListStatuses[status]; !ok {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status"})
 			return
 		}

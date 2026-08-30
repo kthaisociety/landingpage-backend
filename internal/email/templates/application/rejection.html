@@ -1,0 +1,17 @@
+{{define "email_message_pre"}}
+<p>Thank you for applying to KTH AI Society for {{.Application.ApplicationYear}}, and for taking the time to interview with us.</p>
+
+<p>After careful consideration, we're not able to offer you a place on the team this time. This was a difficult decision given the number of strong applicants this year, and it isn't a reflection of your potential.</p>
+
+<p>We'd still love to have you around — join our events and community on Luma to stay in the loop, and consider applying again in the future.</p>
+{{end}}
+
+{{define "email_button_url"}}{{.URL}}{{end}}
+
+{{define "email_button_text"}}Visit KTH AI Society{{end}}
+
+{{define "email_message_post"}}
+<p>Thanks again for your interest in KTH AI Society. If you have any questions, reach out to us at <a href="mailto:{{.AppEmailContact}}">{{.AppEmailContact}}</a>.</p>
+{{end}}
+
+{{template "base" .}}

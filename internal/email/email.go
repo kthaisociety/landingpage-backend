@@ -406,6 +406,63 @@ func SendGeneralApplicationConfirmation(application models.GeneralApplication) e
 	return sendEmail(application.Email, "KTH AI Society application received", htmlBody.String())
 }
 
+// SendGeneralApplicationAcceptance sends the acceptance email once an admin
+// finalizes an interviewed applicant as accepted, in finalize god mode. This
+// is separate from onboarding proper (account creation etc.) — it's the
+// "you're in, more details soon" notice.
+func SendGeneralApplicationAcceptance(application models.GeneralApplication) error {
+	tmpl, err := parseEmailTemplate("application", "acceptance.html")
+	if err != nil {
+		return fmt.Errorf("failed to parse templates: %w", err)
+	}
+
+	data := GeneralApplicationEmailData{
+		EmailData:   newEmailData(),
+		Application: application,
+	}
+	data.Profile = models.Profile{
+		Email:     application.Email,
+		FirstName: application.FirstName,
+		LastName:  application.LastName,
+	}
+	data.URL = "https://kthais.com/"
+
+	var htmlBody bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&htmlBody, "base", data); err != nil {
+		return fmt.Errorf("failed to execute template: %w", err)
+	}
+
+	return sendEmail(application.Email, "Welcome to KTH AI Society!", htmlBody.String())
+}
+
+// SendGeneralApplicationRejection sends the "not selected this time" email
+// once an admin finalizes an interviewed applicant as rejected, in finalize
+// god mode.
+func SendGeneralApplicationRejection(application models.GeneralApplication) error {
+	tmpl, err := parseEmailTemplate("application", "rejection.html")
+	if err != nil {
+		return fmt.Errorf("failed to parse templates: %w", err)
+	}
+
+	data := GeneralApplicationEmailData{
+		EmailData:   newEmailData(),
+		Application: application,
+	}
+	data.Profile = models.Profile{
+		Email:     application.Email,
+		FirstName: application.FirstName,
+		LastName:  application.LastName,
+	}
+	data.URL = "https://kthais.com/"
+
+	var htmlBody bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&htmlBody, "base", data); err != nil {
+		return fmt.Errorf("failed to execute template: %w", err)
+	}
+
+	return sendEmail(application.Email, "Your KTH AI Society application", htmlBody.String())
+}
+
 // TeamQuestionsAnswer pairs a single team question with the applicant's answer, in
 // display order, for rendering in the submission confirmation email.
 type TeamQuestionsAnswer struct {

@@ -16,6 +16,15 @@ const (
 	GeneralApplicationStatusInterviewing GeneralApplicationStatus = "interviewing"
 	GeneralApplicationStatusIneligible   GeneralApplicationStatus = "ineligible"
 	GeneralApplicationStatusWithdrawn    GeneralApplicationStatus = "withdrawn"
+	// GeneralApplicationStatusAccepted and GeneralApplicationStatusRejected are
+	// terminal recruitment decisions. They are deliberately absent from
+	// allowedApplicationStatuses in general_application_handler.go — the only
+	// way to reach them is AdminFinalizeDecision, which requires the finalize
+	// recruitment phase (see FinalizeRecruitmentPhase) to be open. Never add
+	// them to that map; that would let the ordinary AdminUpdateStatus endpoint
+	// set them with no phase gate.
+	GeneralApplicationStatusAccepted GeneralApplicationStatus = "accepted"
+	GeneralApplicationStatusRejected GeneralApplicationStatus = "rejected"
 )
 
 type GeneralApplication struct {
@@ -54,6 +63,9 @@ type GeneralApplication struct {
 	FastTrackedByEmail          string                   `gorm:"default:''" json:"fast_tracked_by_email"`
 	FastTrackedAt               *time.Time               `json:"fast_tracked_at"`
 	FastTrackReason             string                   `gorm:"type:text;default:''" json:"fast_track_reason"`
+	AssignedTeam                string                   `gorm:"default:''" json:"assigned_team"`
+	FinalizedByEmail            string                   `gorm:"default:''" json:"finalized_by_email"`
+	FinalizedAt                 *time.Time               `json:"finalized_at"`
 	CreatedAt                   time.Time                `json:"created_at"`
 	UpdatedAt                   time.Time                `json:"updated_at"`
 }
