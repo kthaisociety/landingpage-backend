@@ -406,6 +406,54 @@ func SendGeneralApplicationConfirmation(application models.GeneralApplication) e
 	return sendEmail(application.Email, "KTH AI Society application received", htmlBody.String())
 }
 
+// TeamQuestionsAnswer pairs a single team question with the applicant's answer, in
+// display order, for rendering in the submission confirmation email.
+type TeamQuestionsAnswer struct {
+	Question string
+	Answer   string
+}
+
+// TeamQuestionsTeamAnswers groups an applicant's answers by team, in the same order
+// the teams appeared on the form.
+type TeamQuestionsTeamAnswers struct {
+	Team    string
+	Answers []TeamQuestionsAnswer
+}
+
+type teamQuestionsSubmissionEmailData struct {
+	EmailData
+	TeamAnswers    []TeamQuestionsTeamAnswers
+	WithdrawnTeams []string
+}
+
+// SendTeamQuestionsConfirmation sends a confirmation email after an applicant submits
+// their team-specific follow-up answers, including a copy of what they submitted.
+func SendTeamQuestionsConfirmation(application models.GeneralApplication, teamAnswers []TeamQuestionsTeamAnswers, withdrawnTeams []string) error {
+	tmpl, err := parseEmailTemplate("application", "team_questions_confirmation.html")
+	if err != nil {
+		return fmt.Errorf("failed to parse templates: %w", err)
+	}
+
+	data := teamQuestionsSubmissionEmailData{
+		EmailData:      newEmailData(),
+		TeamAnswers:    teamAnswers,
+		WithdrawnTeams: withdrawnTeams,
+	}
+	data.Profile = models.Profile{
+		Email:     application.Email,
+		FirstName: application.FirstName,
+		LastName:  application.LastName,
+	}
+	data.URL = "https://kthais.com/"
+
+	var htmlBody bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&htmlBody, "base", data); err != nil {
+		return fmt.Errorf("failed to execute template: %w", err)
+	}
+
+	return sendEmail(application.Email, "KTH AI Society: your team questions answers", htmlBody.String())
+}
+
 // Sends a registration confirmation email
 //
 // Parameters:

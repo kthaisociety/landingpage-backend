@@ -258,6 +258,27 @@ func (h *TeamQuestionsHandler) SubmitForm(c *gin.Context) {
 		return
 	}
 
+	teamAnswers := make([]email.TeamQuestionsTeamAnswers, 0, len(effectiveTeams))
+	for _, team := range effectiveTeams {
+		answers := make([]email.TeamQuestionsAnswer, 0, len(questionsByTeam[team]))
+		for _, question := range questionsByTeam[team] {
+			answers = append(answers, email.TeamQuestionsAnswer{
+				Question: question.Text,
+				Answer:   body.Answers[team][question.ID],
+			})
+		}
+		teamAnswers = append(teamAnswers, email.TeamQuestionsTeamAnswers{
+			Team:    team,
+			Answers: answers,
+		})
+	}
+
+	go func(application models.GeneralApplication, teamAnswers []email.TeamQuestionsTeamAnswers, withdrawnTeams []string) {
+		if err := email.SendTeamQuestionsConfirmation(application, teamAnswers, withdrawnTeams); err != nil {
+			log.Printf("failed to send team questions confirmation email for %s: %v", application.Id, err)
+		}
+	}(application, teamAnswers, body.WithdrawnTeams)
+
 	c.JSON(http.StatusOK, gin.H{"status": newStatus})
 }
 

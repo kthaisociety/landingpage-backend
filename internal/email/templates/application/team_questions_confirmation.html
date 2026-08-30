@@ -1,0 +1,28 @@
+{{define "email_message_pre"}}
+<p>Thank you — we have received your answers to the team-specific questions for your KTH AI Society application.</p>
+
+{{if .WithdrawnTeams}}
+<p>You withdrew your interest in: {{range $i, $team := .WithdrawnTeams}}{{if $i}}, {{end}}{{$team}}{{end}}.</p>
+{{end}}
+
+{{if .TeamAnswers}}
+<p>Here is a copy of what you submitted:</p>
+{{range .TeamAnswers}}
+<h3>{{.Team}}</h3>
+{{range .Answers}}
+<p><strong>{{.Question}}</strong><br>
+<span style="white-space: pre-wrap;">{{if .Answer}}{{.Answer}}{{else}}<em>No answer provided</em>{{end}}</span></p>
+{{end}}
+{{end}}
+{{end}}
+{{end}}
+
+{{define "email_button_url"}}{{.URL}}{{end}}
+
+{{define "email_button_text"}}Visit KTH AI Society{{end}}
+
+{{define "email_message_post"}}
+<p>We will review your answers as part of your application. If you did not submit this, contact us at <a href="mailto:{{.AppEmailContact}}">{{.AppEmailContact}}</a>.</p>
+{{end}}
+
+{{template "base" .}}
