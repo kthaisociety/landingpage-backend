@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 
+	"backend/internal/database"
 	"backend/internal/mailchimp"
 	"backend/internal/models"
 	"backend/internal/utils"
@@ -72,6 +73,11 @@ func (h *AuthHandler) Register(r *gin.RouterGroup) {
 		// Deliberately not behind AuthRequiredJWT — the caller has no session
 		// yet; it's gated by its own shared-secret check instead.
 		auth.POST("/mcp-exchange", h.ExchangeMCPToken)
+
+		// Local-dev convenience: logs the browser in as the seeded dev admin
+		// without the Google OAuth round trip. Gated by DevelopmentMode
+		// inside the handler, so it 404s in any real deployment.
+		auth.GET("/dev-login", h.DevLogin)
 	}
 }
 
@@ -522,6 +528,51 @@ func (h *AuthHandler) ExchangeMCPToken(c *gin.Context) {
 
 	log.Printf("mcp-exchange: issued token for %q (roles=%s)", user.Email, strings.Join(user.Roles, ","))
 	c.JSON(http.StatusOK, gin.H{"jwt": authJwt})
+}
+
+// DevLogin sets the same "jwt" cookie the real Google OAuth callback sets,
+// but for the stable dev admin seeded by database.SeedDev — so a local
+// `dev.sh` run can be logged into from the browser by just visiting this URL
+// once, instead of copy-pasting a cookie value out of devtools. Only ever
+// reachable when DevelopmentMode is on (SeedDev is itself a no-op otherwise,
+// so the lookup below would 404 anyway even without this check — checked
+// explicitly first so the 404 reason is unambiguous in the response).
+func (h *AuthHandler) DevLogin(c *gin.Context) {
+	if !h.cfg.DevelopmentMode {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+
+	var user models.User
+	if err := h.db.Where("email = ?", database.DevAdminEmail).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "dev admin not seeded yet — start the backend with DEVELOPMENT_MODE=true first",
+		})
+		return
+	}
+
+	authJwt, err := utils.WriteJWT(user.Email, user.Roles, user.UserId, h.jwtSigningKey, sessionDurationHours)
+	if err != nil {
+		log.Printf("dev-login: JWT signing failed: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to mint dev token"})
+		return
+	}
+	h.setJWTCookie(c, authJwt, sessionCookieMaxAgeSeconds)
+
+	redirect := c.Query("redirect")
+	if redirect == "" {
+		redirect = devLoginDefaultRedirect(h.cfg)
+	}
+	c.Redirect(http.StatusTemporaryRedirect, redirect)
+}
+
+// devLoginDefaultRedirect mirrors BeginGoogleAuth's own origin fallback, so
+// dev-login lands somewhere sensible without a ?redirect= param.
+func devLoginDefaultRedirect(cfg *config.Config) string {
+	if len(cfg.AllowedOrigins) > 0 {
+		return cfg.AllowedOrigins[0] + "/member/admin"
+	}
+	return "http://localhost:3000/member/admin"
 }
 
 func (h *AuthHandler) setJWTCookie(c *gin.Context, value string, maxAge int) {

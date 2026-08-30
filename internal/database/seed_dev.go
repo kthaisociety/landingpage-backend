@@ -254,7 +254,7 @@ var devApplications = []seedApplication{
 }
 
 const (
-	devAdminEmail     = "dev-admin@kthais.local"
+	DevAdminEmail     = "dev-admin@kthais.local"
 	devAdminFirstName = "Dev"
 	devAdminLastName  = "Admin"
 )
@@ -343,7 +343,7 @@ func seedDevTeamMembers(db *gorm.DB) {
 	// The dev-admin user/profile already exist (upserted above) — just add
 	// its team_members row.
 	var devAdminUser models.User
-	if err := db.Where("email = ?", devAdminEmail).First(&devAdminUser).Error; err != nil {
+	if err := db.Where("email = ?", DevAdminEmail).First(&devAdminUser).Error; err != nil {
 		log.Printf("[dev seed] failed to reload dev admin for team member seed: %v", err)
 	} else {
 		createMembership(devAdminUser.ID, devTeamMembershipSeed{
@@ -409,11 +409,11 @@ func SeedDev(db *gorm.DB, cfg *config.Config) {
 	log.Println("=== [dev seed] running dev admin seed ===")
 
 	// Stable UUID so the seed is idempotent across restarts.
-	devUserID := uuid.NewSHA1(uuid.NameSpaceURL, []byte(devAdminEmail))
+	devUserID := uuid.NewSHA1(uuid.NameSpaceURL, []byte(DevAdminEmail))
 
 	user := models.User{
 		UserId:   devUserID,
-		Email:    devAdminEmail,
+		Email:    DevAdminEmail,
 		Provider: "dev-seed",
 		Roles:    pq.StringArray{models.RoleUser, models.RoleMember, models.RoleAdmin},
 	}
@@ -428,7 +428,7 @@ func SeedDev(db *gorm.DB, cfg *config.Config) {
 	}
 
 	// Reload to get the correct primary key for the profile FK.
-	if err := db.Where("email = ?", devAdminEmail).First(&user).Error; err != nil {
+	if err := db.Where("email = ?", DevAdminEmail).First(&user).Error; err != nil {
 		log.Printf("[dev seed] failed to reload user: %v", err)
 		return
 	}
@@ -436,7 +436,7 @@ func SeedDev(db *gorm.DB, cfg *config.Config) {
 	profile := models.Profile{
 		UserUUID:  devUserID,
 		UserId:    user.ID,
-		Email:     devAdminEmail,
+		Email:     DevAdminEmail,
 		FirstName: devAdminFirstName,
 		LastName:  devAdminLastName,
 		// IT so the seeded admin can exercise the IT-only Team Questions
@@ -454,7 +454,7 @@ func SeedDev(db *gorm.DB, cfg *config.Config) {
 
 	// Mint a long-lived JWT (30 days) for local testing.
 	token, err := utils.WriteJWT(
-		devAdminEmail,
+		DevAdminEmail,
 		[]string{models.RoleUser, models.RoleMember, models.RoleAdmin},
 		devUserID,
 		cfg.JwtSigningKey,
@@ -466,7 +466,7 @@ func SeedDev(db *gorm.DB, cfg *config.Config) {
 	}
 
 	log.Println("=== [dev seed] admin user ready ===")
-	log.Printf("  email : %s", devAdminEmail)
+	log.Printf("  email : %s", DevAdminEmail)
 	log.Printf("  userID: %s", devUserID)
 	log.Println("  JWT cookie — paste this in your browser devtools:")
 	log.Println("  document.cookie = `jwt=" + token + "; path=/`")
@@ -530,7 +530,7 @@ func seedApplications(db *gorm.DB, cfg *config.Config, devUserID uuid.UUID) {
 
 		if a.claimedByDevAdmin {
 			app.InterviewingByUserID = &devUserID
-			app.InterviewingByEmail = devAdminEmail
+			app.InterviewingByEmail = DevAdminEmail
 		}
 
 		if err := db.Create(&app).Error; err != nil {
