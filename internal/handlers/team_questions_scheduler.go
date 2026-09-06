@@ -51,6 +51,15 @@ func mustLoadLocation(name string) *time.Location {
 // before the final-call window, then only final calls until submissions close.
 // Runs stay at teamQuestionsRunHours in Europe/Stockholm. Recomputing the next
 // local run time on every iteration keeps DST transitions from moving it.
+//
+// The loop below never exits on its own, even once Team Questions is closed:
+// the cutoff is admin-editable (TeamQuestionsSettings.SubmissionCutoff), so
+// unlike when these dates were hardcoded, "closed now" doesn't mean "closed
+// for the rest of this process's life" — an admin can save an extension at
+// any time, and nothing else would ever start a replacement goroutine if
+// this one had already returned. Continuing to wake up at the same
+// twice-daily cadence forever is cheap (one getSettings() call, at most two
+// DB round trips) even in the ordinary case where it stays closed.
 func (h *TeamQuestionsHandler) StartDailyTeamQuestionsScheduler() {
 	// Warm the deadline-override cache synchronously before the loop below
 	// ever reads it — a boot-time settings-load failure just means this
@@ -65,23 +74,17 @@ func (h *TeamQuestionsHandler) StartDailyTeamQuestionsScheduler() {
 		}
 		for {
 			next := nextTeamQuestionsRun(h.now().In(teamQuestionsInviteTZ))
-			// Reload before this specific decision, rather than trusting
-			// whatever getSettings() last cached: this is the one place a
-			// stale cutoff can do lasting damage — returning here ends the
-			// goroutine for the rest of the process's life, so an admin
-			// extension saved after the cache went stale would otherwise
-			// never have a chance to be seen at all. runTeamQuestionsScheduledSend
-			// itself deliberately doesn't do this (it stays cache-only, and
-			// is exercised with a nil-DB handler in tests specifically to
-			// assert it never touches the DB once closed) — only reaching
-			// this one-time stop decision earns a fresh read.
-			if _, err := h.getSettings(); err != nil {
-				log.Printf("failed to refresh team questions settings before deciding whether to keep scheduling — using cached deadlines: %v", err)
-			}
-			if teamQuestionsClosed(next, h.effectiveSubmissionCutoff()) {
-				return
-			}
 			time.Sleep(time.Until(next))
+			// Reload right before this run, not just at boot or the last
+			// time a send happened to touch settings — this is what lets a
+			// deadline extension saved after the cutoff was last thought
+			// reached actually take effect, since runTeamQuestionsScheduledSend
+			// itself stays cache-only (it's exercised with a nil-DB handler
+			// in tests specifically to assert it never touches the DB once
+			// closed).
+			if _, err := h.getSettings(); err != nil {
+				log.Printf("failed to refresh team questions settings before a scheduled run — using cached deadlines: %v", err)
+			}
 			h.runTeamQuestionsScheduledSend()
 		}
 	}()
