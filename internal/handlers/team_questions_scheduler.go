@@ -65,6 +65,19 @@ func (h *TeamQuestionsHandler) StartDailyTeamQuestionsScheduler() {
 		}
 		for {
 			next := nextTeamQuestionsRun(h.now().In(teamQuestionsInviteTZ))
+			// Reload before this specific decision, rather than trusting
+			// whatever getSettings() last cached: this is the one place a
+			// stale cutoff can do lasting damage — returning here ends the
+			// goroutine for the rest of the process's life, so an admin
+			// extension saved after the cache went stale would otherwise
+			// never have a chance to be seen at all. runTeamQuestionsScheduledSend
+			// itself deliberately doesn't do this (it stays cache-only, and
+			// is exercised with a nil-DB handler in tests specifically to
+			// assert it never touches the DB once closed) — only reaching
+			// this one-time stop decision earns a fresh read.
+			if _, err := h.getSettings(); err != nil {
+				log.Printf("failed to refresh team questions settings before deciding whether to keep scheduling — using cached deadlines: %v", err)
+			}
 			if teamQuestionsClosed(next, h.effectiveSubmissionCutoff()) {
 				return
 			}

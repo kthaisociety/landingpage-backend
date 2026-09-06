@@ -71,9 +71,16 @@ type TeamQuestionsHandler struct {
 	// teamQuestionsFinalCallWindow) never need a DB read. nil means "not
 	// configured" — effectiveFinalCallStart/effectiveSubmissionCutoff fall
 	// back to the hardcoded defaults. The cache is refreshed by getSettings(),
-	// so it can lag a saved override by up to one scheduler tick on another
-	// process; that staleness window is accepted rather than solved with a
-	// ticker or pub-sub, to keep this change small.
+	// called from most admin endpoints, once at scheduler boot, and once per
+	// scheduler loop iteration (see StartDailyTeamQuestionsScheduler) — so an
+	// admin-saved override reaches every consumer within this same process
+	// immediately (cmd/api/main.go constructs exactly one TeamQuestionsHandler
+	// and shares it between route registration and the scheduler — a second
+	// instance would keep its own permanently-stale copy). Across separate
+	// processes (multiple replicas), a saved override still only reaches each
+	// other process on its own next getSettings() call; that cross-process
+	// staleness window is accepted rather than solved with a ticker or
+	// pub-sub, to keep this change small.
 	finalCallStartOverride   atomic.Pointer[time.Time]
 	submissionCutoffOverride atomic.Pointer[time.Time]
 }
