@@ -720,6 +720,43 @@ func TestApplicationAndInterviewLifecycle(t *testing.T) {
 		require.Equal(t, http.StatusOK, rec.Code)
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &readBody))
 		require.True(t, overrideStart.Equal(readBody.FinalCallStart), "the read endpoint must reflect the saved override, not the default")
+
+		// Regression check for the partial-update contract: the email
+		// templates and the deadlines are edited from two separate admin
+		// panels, so a save from one must never revert whatever the other
+		// currently has saved, in either direction.
+		rec = doJSONRequest(t, engine, "PUT", "/api/v1/applications/admin/team-questions/template", map[string]any{
+			"email_template": "Custom invite body saved from the templates panel.",
+			"email_subject":  "Custom subject",
+		}, adminIT.cookie)
+		require.Equal(t, http.StatusOK, rec.Code, "a request touching only the email fields must be accepted")
+		var afterEmailOnlySave struct {
+			EmailTemplate            string     `json:"email_template"`
+			FinalCallStartOverride   *time.Time `json:"final_call_start_override"`
+			SubmissionCutoffOverride *time.Time `json:"submission_cutoff_override"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &afterEmailOnlySave))
+		require.Equal(t, "Custom invite body saved from the templates panel.", afterEmailOnlySave.EmailTemplate)
+		require.NotNil(t, afterEmailOnlySave.FinalCallStartOverride, "saving only the email fields must not clear the deadline override saved moments ago")
+		require.True(t, overrideStart.Equal(*afterEmailOnlySave.FinalCallStartOverride))
+		require.NotNil(t, afterEmailOnlySave.SubmissionCutoffOverride)
+		require.True(t, overrideCutoff.Equal(*afterEmailOnlySave.SubmissionCutoffOverride))
+
+		newOverrideStart := overrideStart.Add(-time.Hour)
+		rec = doJSONRequest(t, engine, "PUT", "/api/v1/applications/admin/team-questions/template", map[string]any{
+			"final_call_start_override": newOverrideStart,
+		}, adminIT.cookie)
+		require.Equal(t, http.StatusOK, rec.Code, "a request touching only one deadline field must be accepted")
+		var afterDeadlineOnlySave struct {
+			EmailTemplate            string     `json:"email_template"`
+			FinalCallStart           time.Time  `json:"final_call_start"`
+			SubmissionCutoffOverride *time.Time `json:"submission_cutoff_override"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &afterDeadlineOnlySave))
+		require.True(t, newOverrideStart.Equal(afterDeadlineOnlySave.FinalCallStart))
+		require.Equal(t, "Custom invite body saved from the templates panel.", afterDeadlineOnlySave.EmailTemplate, "saving only one deadline field must not revert the email template saved moments ago")
+		require.NotNil(t, afterDeadlineOnlySave.SubmissionCutoffOverride, "saving only final_call_start_override must not clear the other deadline override")
+		require.True(t, overrideCutoff.Equal(*afterDeadlineOnlySave.SubmissionCutoffOverride))
 	})
 
 	t.Run("delivery events are readable by any admin and reflect earlier sends", func(t *testing.T) {

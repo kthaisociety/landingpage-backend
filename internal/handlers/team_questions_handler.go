@@ -1194,29 +1194,19 @@ func (h *TeamQuestionsHandler) AdminUpdateTemplate(c *gin.Context) {
 		return
 	}
 
-	var body struct {
-		EmailTemplate         string     `json:"email_template"`
-		EmailSubject          string     `json:"email_subject"`
-		ReminderEmailTemplate string     `json:"reminder_email_template"`
-		ReminderEmailSubject  string     `json:"reminder_email_subject"`
-		FinalCallStart        *time.Time `json:"final_call_start_override"`
-		SubmissionCutoff      *time.Time `json:"submission_cutoff_override"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil {
+	// Decoded as raw key presence, not a plain struct: this is a partial
+	// update. The email templates and the deadlines are edited from two
+	// separate admin panels, potentially by two different admins at close to
+	// the same time — binding into a struct with the full set of fields
+	// required on every request would mean whichever request lands second
+	// silently reverts the other's change back to whatever it happened to
+	// have loaded. A key's presence means "set this field" (including
+	// explicitly to null, for the two deadline overrides, which is how the
+	// admin UI resets one to the default); a key's absence means "leave
+	// whatever is already saved alone."
+	var raw map[string]json.RawMessage
+	if err := c.ShouldBindJSON(&raw); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
-		return
-	}
-
-	effStart := defaultTeamQuestionsFinalCallStart
-	if body.FinalCallStart != nil {
-		effStart = *body.FinalCallStart
-	}
-	effCutoff := defaultTeamQuestionsSubmissionCutoff
-	if body.SubmissionCutoff != nil {
-		effCutoff = *body.SubmissionCutoff
-	}
-	if !effStart.Before(effCutoff) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "final call start must be before the submission cutoff"})
 		return
 	}
 
@@ -1226,16 +1216,52 @@ func (h *TeamQuestionsHandler) AdminUpdateTemplate(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load email template"})
 		return
 	}
+	isNew := errors.Is(err, gorm.ErrRecordNotFound)
 
-	settings.EmailTemplate = strings.TrimSpace(body.EmailTemplate)
-	settings.EmailSubject = strings.TrimSpace(body.EmailSubject)
-	settings.ReminderEmailTemplate = strings.TrimSpace(body.ReminderEmailTemplate)
-	settings.ReminderEmailSubject = strings.TrimSpace(body.ReminderEmailSubject)
-	settings.FinalCallStart = body.FinalCallStart
-	settings.SubmissionCutoff = body.SubmissionCutoff
+	setString := func(key string, dst *string) bool {
+		v, present := raw[key]
+		if !present {
+			return true
+		}
+		var s string
+		if err := json.Unmarshal(v, &s); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": key + " must be a string"})
+			return false
+		}
+		*dst = strings.TrimSpace(s)
+		return true
+	}
+	setTimePtr := func(key string, dst **time.Time) bool {
+		v, present := raw[key]
+		if !present {
+			return true
+		}
+		var t *time.Time
+		if err := json.Unmarshal(v, &t); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": key + " must be a timestamp or null"})
+			return false
+		}
+		*dst = t
+		return true
+	}
+
+	if !setString("email_template", &settings.EmailTemplate) ||
+		!setString("email_subject", &settings.EmailSubject) ||
+		!setString("reminder_email_template", &settings.ReminderEmailTemplate) ||
+		!setString("reminder_email_subject", &settings.ReminderEmailSubject) ||
+		!setTimePtr("final_call_start_override", &settings.FinalCallStart) ||
+		!setTimePtr("submission_cutoff_override", &settings.SubmissionCutoff) {
+		return
+	}
+
+	if !effectiveTeamQuestionsFinalCallStart(settings).Before(effectiveTeamQuestionsSubmissionCutoff(settings)) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "final call start must be before the submission cutoff"})
+		return
+	}
+
 	settings.UpdatedByEmail = adminEmail
 
-	if err == gorm.ErrRecordNotFound {
+	if isNew {
 		err = h.db.Create(&settings).Error
 	} else {
 		err = h.db.Save(&settings).Error
