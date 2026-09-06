@@ -84,7 +84,7 @@ func tqFormTokenStep(applicationID uuid.UUID) tqSQLStep {
 	return tqSQLStep{
 		kind: "query", contains: []string{`FROM "team_questions_tokens"`, "token_hash =", "used_at IS NULL", "expires_at >"},
 		columns: []string{"id", "application_id", "token_hash", "expires_at", "used_at"},
-		rows:    [][]driver.Value{{int64(11), applicationID.String(), utils.HashToken("test-form-token"), teamQuestionsSubmissionCutoff, nil}},
+		rows:    [][]driver.Value{{int64(11), applicationID.String(), utils.HashToken("test-form-token"), defaultTeamQuestionsSubmissionCutoff, nil}},
 	}
 }
 
@@ -160,7 +160,7 @@ func TestTeamQuestionsSubmitRechecksTimeAndTokenUnderLock(t *testing.T) {
 			h := NewTeamQuestionsHandler(db, &config.Config{FrontendURL: "https://example.com"})
 			h.now = func() time.Time {
 				if closed.Load() {
-					return teamQuestionsSubmissionCutoff
+					return defaultTeamQuestionsSubmissionCutoff
 				}
 				return before
 			}

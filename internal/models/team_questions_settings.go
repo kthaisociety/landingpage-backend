@@ -1,6 +1,10 @@
 package models
 
-import "gorm.io/gorm"
+import (
+	"time"
+
+	"gorm.io/gorm"
+)
 
 // TeamQuestionsSettings is a singleton row holding the shared Team Questions
 // invite email template. Any admin can read it; only IT admins may write it
@@ -18,5 +22,13 @@ type TeamQuestionsSettings struct {
 	ReminderEmailTemplate string `gorm:"type:text;not null;default:''" json:"reminder_email_template"`
 	// ReminderEmailSubject may contain {{first_name}} and {{teams}} placeholders.
 	ReminderEmailSubject string `gorm:"type:text;not null;default:''" json:"reminder_email_subject"`
-	UpdatedByEmail       string `gorm:"type:text;not null;default:''" json:"updated_by_email"`
+	// FinalCallStart and SubmissionCutoff override the hardcoded
+	// defaultTeamQuestionsFinalCallStart / defaultTeamQuestionsSubmissionCutoff
+	// (see team_questions_scheduler.go) when non-nil. nil means "not
+	// configured" — every reader must fall back to the default, so a database
+	// with no row (or a row that never set these) behaves exactly as it did
+	// before these fields existed.
+	FinalCallStart   *time.Time `json:"final_call_start_override"`
+	SubmissionCutoff *time.Time `json:"submission_cutoff_override"`
+	UpdatedByEmail   string     `gorm:"type:text;not null;default:''" json:"updated_by_email"`
 }

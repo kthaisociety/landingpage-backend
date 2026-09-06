@@ -61,7 +61,7 @@ func tqOrdinaryStamp(column string) tqSQLStep {
 func TestIssueAndSendOrdinaryReleasesLockBeforeSendAndRetriesOnFailure(t *testing.T) {
 	db, script := newTeamQuestionsSQL(t)
 	h := NewTeamQuestionsHandler(db, &config.Config{FrontendURL: "https://example.com"})
-	h.now = func() time.Time { return teamQuestionsFinalCallStart.Add(-time.Hour) }
+	h.now = func() time.Time { return defaultTeamQuestionsFinalCallStart.Add(-time.Hour) }
 
 	id := uuid.New()
 	application := models.GeneralApplication{Id: id, Status: models.GeneralApplicationStatusPending}
@@ -89,6 +89,7 @@ func TestIssueAndSendOrdinaryReleasesLockBeforeSendAndRetriesOnFailure(t *testin
 		tqOrdinaryTokenInsert(t, id, &insertedHash), tqSQLStep{kind: "commit"})
 	script.add(tqNotStaleSteps(t, id)...)
 	script.add(tqOrdinaryTokenDelete())
+	script.add(tqDeliveryEvent(t, id, models.TeamQuestionsDeliveryOutcomeFailed))
 	err := h.issueAndSendOrdinary(application, "body", "subject", false, false)
 	require.ErrorIs(t, err, sendFailure)
 	require.Equal(t, 1, calls)
@@ -100,6 +101,7 @@ func TestIssueAndSendOrdinaryReleasesLockBeforeSendAndRetriesOnFailure(t *testin
 		tqOrdinaryTokenInsert(t, id, &insertedHash), tqSQLStep{kind: "commit"})
 	script.add(tqNotStaleSteps(t, id)...)
 	script.add(tqOrdinaryStamp("team_questions_invite_sent_at"))
+	script.add(tqDeliveryEvent(t, id, models.TeamQuestionsDeliveryOutcomeSent))
 	err = h.issueAndSendOrdinary(application, "body", "subject", false, false)
 	require.NoError(t, err)
 	require.Equal(t, 2, calls)
@@ -124,7 +126,7 @@ func TestIssueAndSendOrdinarySkipsWhenSuperseded(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			db, script := newTeamQuestionsSQL(t)
 			h := NewTeamQuestionsHandler(db, &config.Config{FrontendURL: "https://example.com"})
-			h.now = func() time.Time { return teamQuestionsFinalCallStart.Add(-time.Hour) }
+			h.now = func() time.Time { return defaultTeamQuestionsFinalCallStart.Add(-time.Hour) }
 			h.sendInvite = func(models.GeneralApplication, string, string, string) error {
 				t.Fatal("unexpected send: a superseded/stale token must never be dispatched")
 				return nil
@@ -141,6 +143,7 @@ func TestIssueAndSendOrdinarySkipsWhenSuperseded(t *testing.T) {
 				script.add(tqSQLStep{kind: "query", contains: []string{`SELECT "status" FROM "general_applications"`}, columns: []string{"status"}, rows: [][]driver.Value{{string(tc.status)}}})
 			}
 			script.add(tqOrdinaryTokenDelete())
+			script.add(tqDeliveryEvent(t, id, models.TeamQuestionsDeliveryOutcomeSuperseded))
 
 			err := h.issueAndSendOrdinary(application, "body", "subject", false, false)
 			require.ErrorIs(t, err, errTeamQuestionsTokenSuperseded)
@@ -155,7 +158,7 @@ func TestIssueAndSendOrdinarySkipsWhenSuperseded(t *testing.T) {
 func TestIssueAndSendOrdinaryDeliveryNotRecorded(t *testing.T) {
 	db, script := newTeamQuestionsSQL(t)
 	h := NewTeamQuestionsHandler(db, &config.Config{FrontendURL: "https://example.com"})
-	h.now = func() time.Time { return teamQuestionsFinalCallStart.Add(-time.Hour) }
+	h.now = func() time.Time { return defaultTeamQuestionsFinalCallStart.Add(-time.Hour) }
 	calls := 0
 	h.sendInvite = func(models.GeneralApplication, string, string, string) error { calls++; return nil }
 
@@ -170,6 +173,7 @@ func TestIssueAndSendOrdinaryDeliveryNotRecorded(t *testing.T) {
 	stamp := tqOrdinaryStamp("team_questions_invite_sent_at")
 	stamp.err = stampFailure
 	script.add(stamp)
+	script.add(tqDeliveryEvent(t, id, models.TeamQuestionsDeliveryOutcomeNotRecorded))
 
 	err := h.issueAndSendOrdinary(application, "body", "subject", false, false)
 	require.ErrorIs(t, err, errTeamQuestionsDeliveryNotRecorded)

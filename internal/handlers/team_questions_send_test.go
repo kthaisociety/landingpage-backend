@@ -45,6 +45,7 @@ func TestSendPendingInvites(t *testing.T) {
 		&models.GeneralApplication{},
 		&models.TeamQuestionsToken{},
 		&models.TeamQuestionsSettings{},
+		&models.TeamQuestionsDeliveryEvent{},
 	))
 
 	suffix := uuid.New().String()[:8]
@@ -134,6 +135,7 @@ func TestSendPendingReminders(t *testing.T) {
 		&models.GeneralApplication{},
 		&models.TeamQuestionsToken{},
 		&models.TeamQuestionsSettings{},
+		&models.TeamQuestionsDeliveryEvent{},
 	))
 
 	suffix := uuid.New().String()[:8]

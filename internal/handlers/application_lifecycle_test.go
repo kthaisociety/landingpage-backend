@@ -62,6 +62,7 @@ func TestApplicationAndInterviewLifecycle(t *testing.T) {
 		&models.TeamQuestionsSettings{},
 		&models.TeamQuestion{},
 		&models.GeneralApplicationSettings{},
+		&models.TeamQuestionsDeliveryEvent{},
 	))
 
 	// The public "/applications/general" and "/applications/team-questions/:token"
@@ -127,6 +128,7 @@ func TestApplicationAndInterviewLifecycle(t *testing.T) {
 		if err := db.Where("email_normalized = ?", applicantEmail).First(&app).Error; err == nil {
 			db.Where("application_id = ?", app.Id).Delete(&models.TeamQuestionsSubmission{})
 			db.Where("application_id = ?", app.Id).Delete(&models.TeamQuestionsToken{})
+			db.Where("application_id = ?", app.Id).Unscoped().Delete(&models.TeamQuestionsDeliveryEvent{})
 			db.Unscoped().Delete(&app)
 		}
 		db.Where("email = ?", adminA.email).Unscoped().Delete(&models.Profile{})
@@ -651,6 +653,101 @@ func TestApplicationAndInterviewLifecycle(t *testing.T) {
 		t.Cleanup(func() {
 			db.Where("team = ?", "IT").Unscoped().Delete(&models.TeamQuestion{})
 		})
+	})
+
+	t.Run("team questions deadline overrides are IT-only to write, fall back to defaults, and are readable by any admin", func(t *testing.T) {
+		t.Cleanup(func() {
+			db.Unscoped().Where("1 = 1").Delete(&models.TeamQuestionsSettings{})
+			// Restore the shared handler's cache to defaults so no later run
+			// (or a re-run of this test) inherits this subtest's override.
+			teamQuestionsHandler.applyDeadlineCache(models.TeamQuestionsSettings{})
+		})
+
+		rec := doJSONRequest(t, engine, "GET", "/api/v1/applications/admin/team-questions/template", nil, adminA.cookie)
+		require.Equal(t, http.StatusOK, rec.Code, "any admin may read the template and deadline settings")
+		var readBody struct {
+			FinalCallStart           time.Time  `json:"final_call_start"`
+			SubmissionCutoff         time.Time  `json:"submission_cutoff"`
+			FinalCallStartOverride   *time.Time `json:"final_call_start_override"`
+			SubmissionCutoffOverride *time.Time `json:"submission_cutoff_override"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &readBody))
+		require.True(t, defaultTeamQuestionsFinalCallStart.Equal(readBody.FinalCallStart), "unconfigured must resolve to the hardcoded default final call start")
+		require.True(t, defaultTeamQuestionsSubmissionCutoff.Equal(readBody.SubmissionCutoff), "unconfigured must resolve to the hardcoded default submission cutoff")
+		require.Nil(t, readBody.FinalCallStartOverride)
+		require.Nil(t, readBody.SubmissionCutoffOverride)
+
+		rec = doJSONRequest(t, engine, "PUT", "/api/v1/applications/admin/team-questions/template", map[string]any{
+			"final_call_start_override":  defaultTeamQuestionsSubmissionCutoff,
+			"submission_cutoff_override": defaultTeamQuestionsFinalCallStart,
+		}, adminIT.cookie)
+		require.Equal(t, http.StatusBadRequest, rec.Code, "a final call start on or after the cutoff must be rejected")
+
+		rec = doJSONRequest(t, engine, "PUT", "/api/v1/applications/admin/team-questions/template", map[string]any{
+			"final_call_start_override":  defaultTeamQuestionsFinalCallStart,
+			"submission_cutoff_override": defaultTeamQuestionsSubmissionCutoff,
+		}, adminA.cookie)
+		require.Equal(t, http.StatusForbidden, rec.Code, "only IT may edit the deadline overrides")
+
+		overrideStart := defaultTeamQuestionsFinalCallStart.Add(-24 * time.Hour)
+		overrideCutoff := defaultTeamQuestionsSubmissionCutoff.Add(-24 * time.Hour)
+		rec = doJSONRequest(t, engine, "PUT", "/api/v1/applications/admin/team-questions/template", map[string]any{
+			"final_call_start_override":  overrideStart,
+			"submission_cutoff_override": overrideCutoff,
+		}, adminIT.cookie)
+		require.Equal(t, http.StatusOK, rec.Code)
+		var updateBody struct {
+			FinalCallStart           time.Time  `json:"final_call_start"`
+			SubmissionCutoff         time.Time  `json:"submission_cutoff"`
+			FinalCallStartOverride   *time.Time `json:"final_call_start_override"`
+			SubmissionCutoffOverride *time.Time `json:"submission_cutoff_override"`
+			UpdatedByEmail           string     `json:"updated_by_email"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &updateBody))
+		require.True(t, overrideStart.Equal(updateBody.FinalCallStart))
+		require.True(t, overrideCutoff.Equal(updateBody.SubmissionCutoff))
+		require.NotNil(t, updateBody.FinalCallStartOverride)
+		require.True(t, overrideStart.Equal(*updateBody.FinalCallStartOverride))
+		require.Equal(t, adminIT.email, updateBody.UpdatedByEmail)
+
+		// The live handler's cache — the thing GetForm/SubmitForm/the
+		// scheduler actually read — must reflect the saved override
+		// immediately, since AdminUpdateTemplate refreshes it explicitly.
+		require.True(t, overrideStart.Equal(teamQuestionsHandler.effectiveFinalCallStart()))
+		require.True(t, overrideCutoff.Equal(teamQuestionsHandler.effectiveSubmissionCutoff()))
+
+		rec = doJSONRequest(t, engine, "GET", "/api/v1/applications/admin/team-questions/template", nil, adminA.cookie)
+		require.Equal(t, http.StatusOK, rec.Code)
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &readBody))
+		require.True(t, overrideStart.Equal(readBody.FinalCallStart), "the read endpoint must reflect the saved override, not the default")
+	})
+
+	t.Run("delivery events are readable by any admin and reflect earlier sends", func(t *testing.T) {
+		// Earlier subtests (the resend above) already triggered at least one
+		// recorded send outcome; this just confirms it surfaced.
+		rec := doJSONRequest(t, engine, "GET", "/api/v1/applications/admin/team-questions/delivery-events", nil, adminA.cookie)
+		require.Equal(t, http.StatusOK, rec.Code, "any admin, not just IT, may read delivery events")
+		var body struct {
+			Events []struct {
+				ApplicationID string `json:"application_id"`
+				Kind          string `json:"kind"`
+				Outcome       string `json:"outcome"`
+				Automatic     bool   `json:"automatic"`
+			} `json:"events"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+		require.NotEmpty(t, body.Events, "the earlier resend should have recorded a delivery event")
+
+		var sawInviteSent bool
+		for _, event := range body.Events {
+			if event.ApplicationID == applicationID && event.Kind == "invite" && event.Outcome == "sent" {
+				sawInviteSent = true
+			}
+		}
+		require.True(t, sawInviteSent, "the earlier admin resend should show up as a sent invite event")
+
+		rec = doJSONRequest(t, engine, "GET", "/api/v1/applications/admin/team-questions/delivery-events", nil, nil)
+		require.Equal(t, http.StatusUnauthorized, rec.Code, "an unauthenticated caller must not see delivery events")
 	})
 }
 

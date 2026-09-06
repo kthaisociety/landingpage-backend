@@ -141,6 +141,7 @@ func main() {
 		&models.TeamQuestion{},
 		&models.GeneralApplicationSettings{},
 		&models.FinalizeRecruitmentPhase{},
+		&models.TeamQuestionsDeliveryEvent{},
 	)
 	if err != nil {
 		log.Fatal("Failed to migrate database:", err)
@@ -205,13 +206,21 @@ func main() {
 		log.Printf("Warning: Luma disabled: %v", err)
 	}
 
+	// Constructed once and shared with the scheduler below: each instance
+	// caches Team Questions deadline overrides in its own process-local
+	// fields (see TeamQuestionsHandler.applyDeadlineCache), so a second
+	// instance would keep its own stale copy indefinitely — the public
+	// GetForm/SubmitForm routes would never see an admin-saved override, and
+	// the scheduler would never see one saved through the admin API either.
+	teamQuestionsHandler := handlers.NewTeamQuestionsHandler(db, cfg)
+
 	// Initialize handlers
-	setupRoutes(r, db, mailchimpApi, lumaApi, cfg)
+	setupRoutes(r, db, mailchimpApi, lumaApi, cfg, teamQuestionsHandler)
 
 	// Daily 10:00 and 16:00 (Europe/Stockholm) send of Team Questions invites
 	// and 7-day reminders, switching to final calls September 7 at 10:00
 	// and stopping at September 9 at 00:00. See team_questions_scheduler.go.
-	handlers.NewTeamQuestionsHandler(db, cfg).StartDailyTeamQuestionsScheduler()
+	teamQuestionsHandler.StartDailyTeamQuestionsScheduler()
 
 	log.Printf("listening on %s:%s", cfg.Server.Host, cfg.Server.Port)
 
@@ -219,7 +228,7 @@ func main() {
 	r.Run(cfg.Server.Host + ":" + cfg.Server.Port)
 }
 
-func setupRoutes(r *gin.Engine, db *gorm.DB, mailchimpApi *mailchimp.MailchimpAPI, lumaApi *luma.LumaAPI, cfg *config.Config) {
+func setupRoutes(r *gin.Engine, db *gorm.DB, mailchimpApi *mailchimp.MailchimpAPI, lumaApi *luma.LumaAPI, cfg *config.Config, teamQuestionsHandler *handlers.TeamQuestionsHandler) {
 	api := r.Group("/api/v1")
 
 	// Public routes
@@ -238,7 +247,7 @@ func setupRoutes(r *gin.Engine, db *gorm.DB, mailchimpApi *mailchimp.MailchimpAP
 		handlers.NewProjectHandler(db, cfg),
 		handlers.NewTeamHandler(db, cfg),
 		handlers.NewGeneralApplicationHandler(db, cfg, lumaApi),
-		handlers.NewTeamQuestionsHandler(db, cfg),
+		teamQuestionsHandler,
 	}
 
 	for _, h := range allHandlers {
