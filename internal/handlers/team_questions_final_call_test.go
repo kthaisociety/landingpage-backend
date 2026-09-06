@@ -23,7 +23,7 @@ func newTQFinalHandler(t *testing.T) (*TeamQuestionsHandler, *tqSQLScript) {
 	t.Helper()
 	db, script := newTeamQuestionsSQL(t)
 	h := NewTeamQuestionsHandler(db, &config.Config{FrontendURL: "https://example.com"})
-	h.now = func() time.Time { return teamQuestionsFinalCallStart.Add(time.Hour) }
+	h.now = func() time.Time { return defaultTeamQuestionsFinalCallStart.Add(time.Hour) }
 	h.sendFinalCall = func(models.GeneralApplication, string, string, string) error {
 		t.Fatal("unexpected final-call send")
 		return nil
@@ -87,7 +87,7 @@ func tqFinalTokenInsert(t *testing.T, id uuid.UUID, insertedHash *string) tqSQLS
 			require.Equal(t, id.String(), values["application_id"])
 			expiresAt, ok := values["expires_at"].(time.Time)
 			require.True(t, ok)
-			require.True(t, expiresAt.Equal(teamQuestionsSubmissionCutoff), "fresh links expire at the Stockholm cutoff")
+			require.True(t, expiresAt.Equal(defaultTeamQuestionsSubmissionCutoff), "fresh links expire at the Stockholm cutoff")
 			hash, ok := values["token_hash"].(string)
 			require.True(t, ok)
 			require.NotEmpty(t, hash)
@@ -307,17 +307,17 @@ func TestTeamQuestionsFinalCallCrossingCutoff(t *testing.T) {
 		t.Run(stage, func(t *testing.T) {
 			h, script := newTQFinalHandler(t)
 			id := uuid.New()
-			now := teamQuestionsSubmissionCutoff.Add(-time.Second)
+			now := defaultTeamQuestionsSubmissionCutoff.Add(-time.Second)
 			h.now = func() time.Time { return now }
 			locked := tqFinalLockedApplication(t, id, tqFinalRow(id, 2026, models.GeneralApplicationStatusPending, nil))
 			if stage == "waiting for application lock" {
-				locked.after = func() { now = teamQuestionsSubmissionCutoff }
+				locked.after = func() { now = defaultTeamQuestionsSubmissionCutoff }
 			}
 			script.add(tqSQLStep{kind: "begin"}, locked)
 			calls := 0
 			h.sendFinalCall = func(models.GeneralApplication, string, string, string) error {
 				calls++
-				now = teamQuestionsSubmissionCutoff
+				now = defaultTeamQuestionsSubmissionCutoff
 				return nil
 			}
 			if stage == "waiting for application lock" {
@@ -325,7 +325,7 @@ func TestTeamQuestionsFinalCallCrossingCutoff(t *testing.T) {
 			} else {
 				insert := tqFinalTokenInsert(t, id, nil)
 				if stage == "after token insert" {
-					insert.after = func() { now = teamQuestionsSubmissionCutoff }
+					insert.after = func() { now = defaultTeamQuestionsSubmissionCutoff }
 				}
 				script.add(tqFinalSubmissionCount(t, id, 0), insert)
 				if stage == "after token insert" {
@@ -333,7 +333,7 @@ func TestTeamQuestionsFinalCallCrossingCutoff(t *testing.T) {
 				} else {
 					script.add(tqSQLStep{kind: "commit"})
 					script.add(tqNotStaleSteps(t, id)...)
-					script.add(tqFinalStamp(t, id, teamQuestionsSubmissionCutoff))
+					script.add(tqFinalStamp(t, id, defaultTeamQuestionsSubmissionCutoff))
 				}
 			}
 			delivered, err := h.issueAndSendFinalCall(id)
@@ -398,9 +398,9 @@ func TestTeamQuestionsFinalCallSkipsOutsideWindowAndInDevelopment(t *testing.T) 
 		now         time.Time
 		development bool
 	}{
-		{name: "before final-call window", now: teamQuestionsFinalCallStart.Add(-time.Second)},
-		{name: "at closure", now: teamQuestionsSubmissionCutoff},
-		{name: "development does not consume final call", now: teamQuestionsFinalCallStart, development: true},
+		{name: "before final-call window", now: defaultTeamQuestionsFinalCallStart.Add(-time.Second)},
+		{name: "at closure", now: defaultTeamQuestionsSubmissionCutoff},
+		{name: "development does not consume final call", now: defaultTeamQuestionsFinalCallStart, development: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h, _ := newTQFinalHandler(t)

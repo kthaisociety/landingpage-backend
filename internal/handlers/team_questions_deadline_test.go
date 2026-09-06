@@ -38,10 +38,10 @@ func TestTeamQuestionsOrdinarySendWindow(t *testing.T) {
 		automatic error
 		manual    error
 	}{
-		{name: "before final calls", now: teamQuestionsFinalCallStart.Add(-time.Second)},
-		{name: "at final-call start", now: teamQuestionsFinalCallStart, automatic: errTeamQuestionsOrdinarySendEnded},
-		{name: "last second of September 8", now: teamQuestionsSubmissionCutoff.Add(-time.Second), automatic: errTeamQuestionsOrdinarySendEnded},
-		{name: "at closure", now: teamQuestionsSubmissionCutoff, automatic: errTeamQuestionsClosed, manual: errTeamQuestionsClosed},
+		{name: "before final calls", now: defaultTeamQuestionsFinalCallStart.Add(-time.Second)},
+		{name: "at final-call start", now: defaultTeamQuestionsFinalCallStart, automatic: errTeamQuestionsOrdinarySendEnded},
+		{name: "last second of September 8", now: defaultTeamQuestionsSubmissionCutoff.Add(-time.Second), automatic: errTeamQuestionsOrdinarySendEnded},
+		{name: "at closure", now: defaultTeamQuestionsSubmissionCutoff, automatic: errTeamQuestionsClosed, manual: errTeamQuestionsClosed},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -54,9 +54,9 @@ func TestTeamQuestionsOrdinarySendWindow(t *testing.T) {
 
 func TestTeamQuestionsOrdinaryAutomaticSendsStopAtFinalCallStart(t *testing.T) {
 	for _, now := range []time.Time{
-		teamQuestionsFinalCallStart,
-		teamQuestionsSubmissionCutoff.Add(-time.Second),
-		teamQuestionsSubmissionCutoff,
+		defaultTeamQuestionsFinalCallStart,
+		defaultTeamQuestionsSubmissionCutoff.Add(-time.Second),
+		defaultTeamQuestionsSubmissionCutoff,
 	} {
 		t.Run(now.Format(time.RFC3339), func(t *testing.T) {
 			h := newTeamQuestionsDeadlineTestHandler(t, now)
@@ -77,11 +77,11 @@ func TestTeamQuestionsOrdinaryAutomaticSendsStopAtFinalCallStart(t *testing.T) {
 
 func TestTeamQuestionsOrdinarySendGuardsBeforeDatabaseAccess(t *testing.T) {
 	application := models.GeneralApplication{Id: uuid.New(), Email: "applicant@example.com"}
-	h := newTeamQuestionsDeadlineTestHandler(t, teamQuestionsFinalCallStart)
+	h := newTeamQuestionsDeadlineTestHandler(t, defaultTeamQuestionsFinalCallStart)
 	require.ErrorIs(t, h.issueAndSendOrdinary(application, "", "", false, true), errTeamQuestionsOrdinarySendEnded)
 	require.ErrorIs(t, h.issueAndSendReminder(application, "", ""), errTeamQuestionsOrdinarySendEnded)
 
-	h = newTeamQuestionsDeadlineTestHandler(t, teamQuestionsSubmissionCutoff)
+	h = newTeamQuestionsDeadlineTestHandler(t, defaultTeamQuestionsSubmissionCutoff)
 	require.ErrorIs(t, h.issueAndSend(application, "", ""), errTeamQuestionsClosed)
 	require.ErrorIs(t, h.issueAndSendOrdinary(application, "", "", false, true), errTeamQuestionsClosed)
 	require.ErrorIs(t, h.issueAndSendReminder(application, "", ""), errTeamQuestionsClosed)
@@ -89,9 +89,9 @@ func TestTeamQuestionsOrdinarySendGuardsBeforeDatabaseAccess(t *testing.T) {
 
 func TestTeamQuestionsFinalCallsOnlyRunInsideWindow(t *testing.T) {
 	for _, now := range []time.Time{
-		teamQuestionsFinalCallStart.Add(-time.Second),
-		teamQuestionsSubmissionCutoff,
-		teamQuestionsSubmissionCutoff.Add(24 * time.Hour),
+		defaultTeamQuestionsFinalCallStart.Add(-time.Second),
+		defaultTeamQuestionsSubmissionCutoff,
+		defaultTeamQuestionsSubmissionCutoff.Add(24 * time.Hour),
 	} {
 		t.Run(now.Format(time.RFC3339), func(t *testing.T) {
 			h := newTeamQuestionsDeadlineTestHandler(t, now)
@@ -107,7 +107,7 @@ func TestTeamQuestionsFinalCallsOnlyRunInsideWindow(t *testing.T) {
 }
 
 func TestTeamQuestionsDevelopmentFinalCallSkipDoesNotSend(t *testing.T) {
-	h := newTeamQuestionsDeadlineTestHandler(t, teamQuestionsFinalCallStart)
+	h := newTeamQuestionsDeadlineTestHandler(t, defaultTeamQuestionsFinalCallStart)
 	h.cfg.DevelopmentMode = true
 	sent, failed, err := h.SendPendingFinalCalls()
 	require.NoError(t, err)
@@ -136,7 +136,7 @@ func TestTeamQuestionsClosedHTTPGuards(t *testing.T) {
 		{name: "bulk missing identity and body", method: http.MethodPost, route: "/bulk", path: "/bulk", handler: (*TeamQuestionsHandler).AdminSendBulk},
 		{name: "bulk malformed body", method: http.MethodPost, route: "/bulk", path: "/bulk", body: "{", handler: (*TeamQuestionsHandler).AdminSendBulk},
 	}
-	for _, now := range []time.Time{teamQuestionsSubmissionCutoff, teamQuestionsSubmissionCutoff.Add(24 * time.Hour)} {
+	for _, now := range []time.Time{defaultTeamQuestionsSubmissionCutoff, defaultTeamQuestionsSubmissionCutoff.Add(24 * time.Hour)} {
 		t.Run(now.Format(time.RFC3339), func(t *testing.T) {
 			for _, tc := range cases {
 				t.Run(tc.name, func(t *testing.T) {
@@ -156,7 +156,7 @@ func TestTeamQuestionsClosedHTTPGuards(t *testing.T) {
 }
 
 func TestTeamQuestionsBlankTokensRemainInvalidBeforeClosure(t *testing.T) {
-	for _, now := range []time.Time{teamQuestionsFinalCallStart.Add(-time.Second), teamQuestionsSubmissionCutoff.Add(-time.Second)} {
+	for _, now := range []time.Time{defaultTeamQuestionsFinalCallStart.Add(-time.Second), defaultTeamQuestionsSubmissionCutoff.Add(-time.Second)} {
 		t.Run(now.Format(time.RFC3339), func(t *testing.T) {
 			for _, method := range []string{http.MethodGet, http.MethodPost} {
 				t.Run(method, func(t *testing.T) {

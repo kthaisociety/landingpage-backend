@@ -652,6 +652,73 @@ func TestApplicationAndInterviewLifecycle(t *testing.T) {
 			db.Where("team = ?", "IT").Unscoped().Delete(&models.TeamQuestion{})
 		})
 	})
+
+	t.Run("team questions deadline overrides are IT-only to write, fall back to defaults, and are readable by any admin", func(t *testing.T) {
+		t.Cleanup(func() {
+			db.Unscoped().Where("1 = 1").Delete(&models.TeamQuestionsSettings{})
+			// Restore the shared handler's cache to defaults so no later run
+			// (or a re-run of this test) inherits this subtest's override.
+			teamQuestionsHandler.applyDeadlineCache(models.TeamQuestionsSettings{})
+		})
+
+		rec := doJSONRequest(t, engine, "GET", "/api/v1/applications/admin/team-questions/template", nil, adminA.cookie)
+		require.Equal(t, http.StatusOK, rec.Code, "any admin may read the template and deadline settings")
+		var readBody struct {
+			FinalCallStart           time.Time  `json:"final_call_start"`
+			SubmissionCutoff         time.Time  `json:"submission_cutoff"`
+			FinalCallStartOverride   *time.Time `json:"final_call_start_override"`
+			SubmissionCutoffOverride *time.Time `json:"submission_cutoff_override"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &readBody))
+		require.True(t, defaultTeamQuestionsFinalCallStart.Equal(readBody.FinalCallStart), "unconfigured must resolve to the hardcoded default final call start")
+		require.True(t, defaultTeamQuestionsSubmissionCutoff.Equal(readBody.SubmissionCutoff), "unconfigured must resolve to the hardcoded default submission cutoff")
+		require.Nil(t, readBody.FinalCallStartOverride)
+		require.Nil(t, readBody.SubmissionCutoffOverride)
+
+		rec = doJSONRequest(t, engine, "PUT", "/api/v1/applications/admin/team-questions/template", map[string]any{
+			"final_call_start_override":  defaultTeamQuestionsSubmissionCutoff,
+			"submission_cutoff_override": defaultTeamQuestionsFinalCallStart,
+		}, adminIT.cookie)
+		require.Equal(t, http.StatusBadRequest, rec.Code, "a final call start on or after the cutoff must be rejected")
+
+		rec = doJSONRequest(t, engine, "PUT", "/api/v1/applications/admin/team-questions/template", map[string]any{
+			"final_call_start_override":  defaultTeamQuestionsFinalCallStart,
+			"submission_cutoff_override": defaultTeamQuestionsSubmissionCutoff,
+		}, adminA.cookie)
+		require.Equal(t, http.StatusForbidden, rec.Code, "only IT may edit the deadline overrides")
+
+		overrideStart := defaultTeamQuestionsFinalCallStart.Add(-24 * time.Hour)
+		overrideCutoff := defaultTeamQuestionsSubmissionCutoff.Add(-24 * time.Hour)
+		rec = doJSONRequest(t, engine, "PUT", "/api/v1/applications/admin/team-questions/template", map[string]any{
+			"final_call_start_override":  overrideStart,
+			"submission_cutoff_override": overrideCutoff,
+		}, adminIT.cookie)
+		require.Equal(t, http.StatusOK, rec.Code)
+		var updateBody struct {
+			FinalCallStart           time.Time  `json:"final_call_start"`
+			SubmissionCutoff         time.Time  `json:"submission_cutoff"`
+			FinalCallStartOverride   *time.Time `json:"final_call_start_override"`
+			SubmissionCutoffOverride *time.Time `json:"submission_cutoff_override"`
+			UpdatedByEmail           string     `json:"updated_by_email"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &updateBody))
+		require.True(t, overrideStart.Equal(updateBody.FinalCallStart))
+		require.True(t, overrideCutoff.Equal(updateBody.SubmissionCutoff))
+		require.NotNil(t, updateBody.FinalCallStartOverride)
+		require.True(t, overrideStart.Equal(*updateBody.FinalCallStartOverride))
+		require.Equal(t, adminIT.email, updateBody.UpdatedByEmail)
+
+		// The live handler's cache — the thing GetForm/SubmitForm/the
+		// scheduler actually read — must reflect the saved override
+		// immediately, since AdminUpdateTemplate refreshes it explicitly.
+		require.True(t, overrideStart.Equal(teamQuestionsHandler.effectiveFinalCallStart()))
+		require.True(t, overrideCutoff.Equal(teamQuestionsHandler.effectiveSubmissionCutoff()))
+
+		rec = doJSONRequest(t, engine, "GET", "/api/v1/applications/admin/team-questions/template", nil, adminA.cookie)
+		require.Equal(t, http.StatusOK, rec.Code)
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &readBody))
+		require.True(t, overrideStart.Equal(readBody.FinalCallStart), "the read endpoint must reflect the saved override, not the default")
+	})
 }
 
 type testAdmin struct {

@@ -106,8 +106,8 @@ func TestTeamQuestionsWindowBoundaries(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			require.True(t, tc.stockholm.Equal(tc.utc), "Stockholm must be UTC+2 at these boundaries")
 			for _, now := range []time.Time{tc.stockholm, tc.utc} {
-				require.Equal(t, tc.finalCall, teamQuestionsFinalCallWindow(now), "at %s", now)
-				require.Equal(t, tc.closed, teamQuestionsClosed(now), "at %s", now)
+				require.Equal(t, tc.finalCall, teamQuestionsFinalCallWindow(now, defaultTeamQuestionsFinalCallStart, defaultTeamQuestionsSubmissionCutoff), "at %s", now)
+				require.Equal(t, tc.closed, teamQuestionsClosed(now, defaultTeamQuestionsSubmissionCutoff), "at %s", now)
 			}
 		})
 	}
@@ -115,8 +115,8 @@ func TestTeamQuestionsWindowBoundaries(t *testing.T) {
 
 func TestTeamQuestionsSchedulerDoesNothingAfterClosure(t *testing.T) {
 	for _, now := range []time.Time{
-		teamQuestionsSubmissionCutoff,
-		teamQuestionsSubmissionCutoff.Add(24 * time.Hour),
+		defaultTeamQuestionsSubmissionCutoff,
+		defaultTeamQuestionsSubmissionCutoff.Add(24 * time.Hour),
 	} {
 		t.Run(now.Format(time.RFC3339), func(t *testing.T) {
 			h := newTeamQuestionsDeadlineTestHandler(t, now)

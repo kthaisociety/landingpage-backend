@@ -61,7 +61,7 @@ func tqOrdinaryStamp(column string) tqSQLStep {
 func TestIssueAndSendOrdinaryReleasesLockBeforeSendAndRetriesOnFailure(t *testing.T) {
 	db, script := newTeamQuestionsSQL(t)
 	h := NewTeamQuestionsHandler(db, &config.Config{FrontendURL: "https://example.com"})
-	h.now = func() time.Time { return teamQuestionsFinalCallStart.Add(-time.Hour) }
+	h.now = func() time.Time { return defaultTeamQuestionsFinalCallStart.Add(-time.Hour) }
 
 	id := uuid.New()
 	application := models.GeneralApplication{Id: id, Status: models.GeneralApplicationStatusPending}
@@ -124,7 +124,7 @@ func TestIssueAndSendOrdinarySkipsWhenSuperseded(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			db, script := newTeamQuestionsSQL(t)
 			h := NewTeamQuestionsHandler(db, &config.Config{FrontendURL: "https://example.com"})
-			h.now = func() time.Time { return teamQuestionsFinalCallStart.Add(-time.Hour) }
+			h.now = func() time.Time { return defaultTeamQuestionsFinalCallStart.Add(-time.Hour) }
 			h.sendInvite = func(models.GeneralApplication, string, string, string) error {
 				t.Fatal("unexpected send: a superseded/stale token must never be dispatched")
 				return nil
@@ -155,7 +155,7 @@ func TestIssueAndSendOrdinarySkipsWhenSuperseded(t *testing.T) {
 func TestIssueAndSendOrdinaryDeliveryNotRecorded(t *testing.T) {
 	db, script := newTeamQuestionsSQL(t)
 	h := NewTeamQuestionsHandler(db, &config.Config{FrontendURL: "https://example.com"})
-	h.now = func() time.Time { return teamQuestionsFinalCallStart.Add(-time.Hour) }
+	h.now = func() time.Time { return defaultTeamQuestionsFinalCallStart.Add(-time.Hour) }
 	calls := 0
 	h.sendInvite = func(models.GeneralApplication, string, string, string) error { calls++; return nil }
 

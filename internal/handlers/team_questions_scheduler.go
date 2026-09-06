@@ -11,15 +11,20 @@ import (
 // correctly shift across Sweden's DST transitions.
 var teamQuestionsInviteTZ = mustLoadLocation("Europe/Stockholm")
 
-var teamQuestionsFinalCallStart = time.Date(2026, time.September, 7, 10, 0, 0, 0, teamQuestionsInviteTZ)
-var teamQuestionsSubmissionCutoff = time.Date(2026, time.September, 9, 0, 0, 0, 0, teamQuestionsInviteTZ)
+// defaultTeamQuestionsFinalCallStart and defaultTeamQuestionsSubmissionCutoff
+// are the fallback instants used whenever TeamQuestionsSettings hasn't
+// configured an override (see TeamQuestionsHandler.effectiveFinalCallStart /
+// effectiveSubmissionCutoff) — matching the defaultTeamQuestions*Template
+// naming convention used for the other admin-overridable defaults.
+var defaultTeamQuestionsFinalCallStart = time.Date(2026, time.September, 7, 10, 0, 0, 0, teamQuestionsInviteTZ)
+var defaultTeamQuestionsSubmissionCutoff = time.Date(2026, time.September, 9, 0, 0, 0, 0, teamQuestionsInviteTZ)
 
-func teamQuestionsClosed(now time.Time) bool {
-	return !now.Before(teamQuestionsSubmissionCutoff)
+func teamQuestionsClosed(now, cutoff time.Time) bool {
+	return !now.Before(cutoff)
 }
 
-func teamQuestionsFinalCallWindow(now time.Time) bool {
-	return !now.Before(teamQuestionsFinalCallStart) && !teamQuestionsClosed(now)
+func teamQuestionsFinalCallWindow(now, start, cutoff time.Time) bool {
+	return !now.Before(start) && !teamQuestionsClosed(now, cutoff)
 }
 
 // teamQuestionsRunHours are the local hours the scheduler fires at, every
@@ -47,13 +52,20 @@ func mustLoadLocation(name string) *time.Location {
 // Runs stay at teamQuestionsRunHours in Europe/Stockholm. Recomputing the next
 // local run time on every iteration keeps DST transitions from moving it.
 func (h *TeamQuestionsHandler) StartDailyTeamQuestionsScheduler() {
+	// Warm the deadline-override cache synchronously before the loop below
+	// ever reads it — a boot-time settings-load failure just means this
+	// process runs on the hardcoded defaults until its next successful
+	// getSettings() call, never a crash.
+	if _, err := h.getSettings(); err != nil {
+		log.Printf("failed to load team questions settings at startup — using default deadlines: %v", err)
+	}
 	go func() {
-		if teamQuestionsFinalCallWindow(h.now()) {
+		if teamQuestionsFinalCallWindow(h.now(), h.effectiveFinalCallStart(), h.effectiveSubmissionCutoff()) {
 			h.runTeamQuestionsScheduledSend()
 		}
 		for {
 			next := nextTeamQuestionsRun(h.now().In(teamQuestionsInviteTZ))
-			if teamQuestionsClosed(next) {
+			if teamQuestionsClosed(next, h.effectiveSubmissionCutoff()) {
 				return
 			}
 			time.Sleep(time.Until(next))
@@ -64,10 +76,10 @@ func (h *TeamQuestionsHandler) StartDailyTeamQuestionsScheduler() {
 
 func (h *TeamQuestionsHandler) runTeamQuestionsScheduledSend() {
 	now := h.now()
-	if teamQuestionsClosed(now) {
+	if teamQuestionsClosed(now, h.effectiveSubmissionCutoff()) {
 		return
 	}
-	if teamQuestionsFinalCallWindow(now) {
+	if teamQuestionsFinalCallWindow(now, h.effectiveFinalCallStart(), h.effectiveSubmissionCutoff()) {
 		sent, failed, err := h.SendPendingFinalCalls()
 		if err != nil {
 			log.Printf("team questions final call send failed: %v", err)
