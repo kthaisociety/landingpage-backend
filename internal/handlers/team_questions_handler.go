@@ -2,9 +2,11 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -19,6 +21,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const teamQuestionsTokenValidity = 30 * 24 * time.Hour
@@ -33,13 +36,53 @@ const teamQuestionsReminderDelay = 7 * 24 * time.Hour
 // which of those states it's actually in.
 var invalidLinkError = gin.H{"error": "this link is invalid or has expired"}
 
+var errTeamQuestionsClosed = errors.New("team questions submissions closed after September 8, 2026 (Europe/Stockholm)")
+var errTeamQuestionsOrdinarySendEnded = errors.New("ordinary automatic team questions emails have ended")
+
+// errTeamQuestionsTokenSuperseded means a token committed by this call was
+// no longer safe to deliver by the time its lock-free pre-dispatch check
+// ran: a concurrent resend/reminder/final-call minted a newer token for the
+// same application (this one's link would already be dead on arrival — see
+// lookupTokenInDB), or the application left pending by some other path.
+// Whatever superseded it is expected to cover the applicant instead.
+var errTeamQuestionsTokenSuperseded = errors.New("a concurrent update superseded this send")
+
+// errTeamQuestionsDeliveryNotRecorded wraps a failure to persist
+// team_questions_{invite,reminder,final_call}_sent_at after the provider
+// already accepted the message. Callers must never treat this the same as
+// an ordinary send failure: the email is out, so counting it as failed (and
+// inviting a resend) risks double-emailing the applicant. It's surfaced
+// loudly instead, for manual reconciliation.
+var errTeamQuestionsDeliveryNotRecorded = errors.New("team questions email was delivered but its delivery could not be recorded")
+
 type TeamQuestionsHandler struct {
-	db  *gorm.DB
-	cfg *config.Config
+	db               *gorm.DB
+	cfg              *config.Config
+	now              func() time.Time
+	sendFinalCall    func(models.GeneralApplication, string, string, string) error
+	sendInvite       func(models.GeneralApplication, string, string, string) error
+	sendReminder     func(models.GeneralApplication, string, string, string) error
+	sendConfirmation func(models.GeneralApplication, []email.TeamQuestionsTeamAnswers, []string) error
 }
 
 func NewTeamQuestionsHandler(db *gorm.DB, cfg *config.Config) *TeamQuestionsHandler {
-	return &TeamQuestionsHandler{db: db, cfg: cfg}
+	return &TeamQuestionsHandler{
+		db:               db,
+		cfg:              cfg,
+		now:              time.Now,
+		sendFinalCall:    email.SendTeamQuestionsInvite,
+		sendInvite:       email.SendTeamQuestionsInvite,
+		sendReminder:     email.SendTeamQuestionsReminder,
+		sendConfirmation: email.SendTeamQuestionsConfirmation,
+	}
+}
+
+func (h *TeamQuestionsHandler) rejectClosed(c *gin.Context) bool {
+	if teamQuestionsClosed(h.now()) {
+		c.JSON(http.StatusGone, gin.H{"error": errTeamQuestionsClosed.Error()})
+		return true
+	}
+	return false
 }
 
 func (h *TeamQuestionsHandler) Register(r *gin.RouterGroup) {
@@ -69,18 +112,22 @@ func (h *TeamQuestionsHandler) Register(r *gin.RouterGroup) {
 // the same application (resending issues a fresh row, which retires every
 // older row for that application even though those rows aren't deleted).
 func (h *TeamQuestionsHandler) lookupToken(raw string) (*models.TeamQuestionsToken, error) {
+	return h.lookupTokenInDB(h.db, raw)
+}
+
+func (h *TeamQuestionsHandler) lookupTokenInDB(db *gorm.DB, raw string) (*models.TeamQuestionsToken, error) {
 	if strings.TrimSpace(raw) == "" {
 		return nil, gorm.ErrRecordNotFound
 	}
 
 	var token models.TeamQuestionsToken
-	if err := h.db.Where("token_hash = ? AND used_at IS NULL AND expires_at > ?", utils.HashToken(raw), time.Now()).
+	if err := db.Where("token_hash = ? AND used_at IS NULL AND expires_at > ?", utils.HashToken(raw), h.now()).
 		First(&token).Error; err != nil {
 		return nil, err
 	}
 
 	var newerCount int64
-	if err := h.db.Model(&models.TeamQuestionsToken{}).
+	if err := db.Model(&models.TeamQuestionsToken{}).
 		Where("application_id = ? AND id > ?", token.ApplicationID, token.ID).
 		Count(&newerCount).Error; err != nil {
 		return nil, err
@@ -90,6 +137,37 @@ func (h *TeamQuestionsHandler) lookupToken(raw string) (*models.TeamQuestionsTok
 	}
 
 	return &token, nil
+}
+
+// sendCandidateStale reports whether a token committed by issueAndSendOrdinary
+// or issueAndSendFinalCall is no longer safe to actually deliver. It's called
+// after that token's transaction commits and its row lock is released — a
+// concurrent resend, reminder, or final call may have minted a newer token
+// for the same application in the meantime (this one's link would already
+// be dead on arrival: lookupTokenInDB only accepts the newest unused token),
+// or the application may have left pending by some other path entirely
+// (e.g. a direct status change) while nothing held the row lock. Either way,
+// this token's send should not go out.
+//
+// This narrows the race rather than closing it — there's still a small gap
+// between this check and the sender call actually being invoked — the same
+// order of remaining risk this file already accepts elsewhere (see the
+// final-call stamp's "not atomic" comment below).
+func (h *TeamQuestionsHandler) sendCandidateStale(applicationID uuid.UUID, tokenID uint) (bool, error) {
+	var newerCount int64
+	if err := h.db.Model(&models.TeamQuestionsToken{}).
+		Where("application_id = ? AND id > ?", applicationID, tokenID).
+		Count(&newerCount).Error; err != nil {
+		return false, err
+	}
+	if newerCount > 0 {
+		return true, nil
+	}
+	var current models.GeneralApplication
+	if err := h.db.Select("status").Where("id = ?", applicationID).First(&current).Error; err != nil {
+		return false, err
+	}
+	return current.Status != models.GeneralApplicationStatusPending, nil
 }
 
 // scopedTeamQuestions loads the configured questions for exactly the given
@@ -116,6 +194,9 @@ func (h *TeamQuestionsHandler) scopedTeamQuestions(teams []string) (map[string][
 }
 
 func (h *TeamQuestionsHandler) GetForm(c *gin.Context) {
+	if h.rejectClosed(c) {
+		return
+	}
 	token, err := h.lookupToken(c.Param("token"))
 	if err != nil {
 		c.JSON(http.StatusNotFound, invalidLinkError)
@@ -138,6 +219,9 @@ func (h *TeamQuestionsHandler) GetForm(c *gin.Context) {
 		return
 	}
 
+	if h.rejectClosed(c) {
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"first_name": application.FirstName,
 		"teams":      application.Teams,
@@ -146,6 +230,9 @@ func (h *TeamQuestionsHandler) GetForm(c *gin.Context) {
 }
 
 func (h *TeamQuestionsHandler) SubmitForm(c *gin.Context) {
+	if h.rejectClosed(c) {
+		return
+	}
 	token, err := h.lookupToken(c.Param("token"))
 	if err != nil {
 		c.JSON(http.StatusNotFound, invalidLinkError)
@@ -233,11 +320,35 @@ func (h *TeamQuestionsHandler) SubmitForm(c *gin.Context) {
 	}
 
 	err = h.db.Transaction(func(tx *gorm.DB) error {
+		// Serialize submission with final calls and manual resends. A sender
+		// that gets the lock next must see this submission before emailing.
+		var current models.GeneralApplication
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			First(&current, "id = ?", application.Id).Error; err != nil {
+			return err
+		}
+		if teamQuestionsClosed(h.now()) {
+			return errTeamQuestionsClosed
+		}
+		if current.Status != models.GeneralApplicationStatusPending || !slices.Equal(current.Teams, application.Teams) {
+			return gorm.ErrRecordNotFound
+		}
+		// A final call may have superseded the link while this request was
+		// being validated. Check it again using the locked transaction.
+		var err error
+		token, err = h.lookupTokenInDB(tx, c.Param("token"))
+		if err != nil {
+			return err
+		}
+		now := h.now()
+		if teamQuestionsClosed(now) {
+			return errTeamQuestionsClosed
+		}
 		submission := models.TeamQuestionsSubmission{
 			ApplicationID:  application.Id,
 			Answers:        string(answersJSON),
 			WithdrawnTeams: pq.StringArray(body.WithdrawnTeams),
-			SubmittedAt:    time.Now(),
+			SubmittedAt:    now,
 		}
 		if err := tx.Create(&submission).Error; err != nil {
 			return err
@@ -245,14 +356,27 @@ func (h *TeamQuestionsHandler) SubmitForm(c *gin.Context) {
 
 		application.Teams = pq.StringArray(effectiveTeams)
 		application.Status = newStatus
-		if err := tx.Save(&application).Error; err != nil {
+		if err := tx.Model(&models.GeneralApplication{}).Where("id = ?", application.Id).
+			Updates(map[string]interface{}{"teams": application.Teams, "status": newStatus}).Error; err != nil {
 			return err
 		}
 
-		now := time.Now()
-		token.UsedAt = &now
-		return tx.Save(token).Error
+		if err := tx.Model(token).Update("used_at", now).Error; err != nil {
+			return err
+		}
+		if teamQuestionsClosed(h.now()) {
+			return errTeamQuestionsClosed
+		}
+		return nil
 	})
+	if errors.Is(err, errTeamQuestionsClosed) {
+		c.JSON(http.StatusGone, gin.H{"error": err.Error()})
+		return
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		c.JSON(http.StatusNotFound, invalidLinkError)
+		return
+	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to submit team questions"})
 		return
@@ -273,8 +397,12 @@ func (h *TeamQuestionsHandler) SubmitForm(c *gin.Context) {
 		})
 	}
 
+	// The submission above is already committed and its HTTP response is a
+	// success — whether the deadline happens to fall between that commit and
+	// this goroutine running is irrelevant to whether the applicant earned a
+	// copy of what they submitted, so this does not recheck teamQuestionsClosed.
 	go func(application models.GeneralApplication, teamAnswers []email.TeamQuestionsTeamAnswers, withdrawnTeams []string) {
-		if err := email.SendTeamQuestionsConfirmation(application, teamAnswers, withdrawnTeams); err != nil {
+		if err := h.sendConfirmation(application, teamAnswers, withdrawnTeams); err != nil {
 			log.Printf("failed to send team questions confirmation email for %s: %v", application.Id, err)
 		}
 	}(application, teamAnswers, body.WithdrawnTeams)
@@ -304,6 +432,9 @@ const defaultTeamQuestionsReminderTemplate = "Just a reminder — we still haven
 // the same way defaultTeamQuestionsEmailSubject is for the initial invite.
 const defaultTeamQuestionsReminderSubject = "Reminder: {{first_name}}'s application for {{teams}}"
 
+const defaultTeamQuestionsFinalCallTemplate = "Final call — we still haven't received your answers to the team questions for your 2026 KTH AI Society application.\n\nPlease submit your answers by the end of September 8, 2026 (Europe/Stockholm). The form closes at 00:00 on September 9, and we cannot accept submissions after that.\n\nUse the button below for your new Team Questions link. It replaces any previous link."
+const defaultTeamQuestionsFinalCallSubject = "FINAL CALL: {{first_name}}'s application for {{teams}}"
+
 // getSettings always returns usable, non-empty templates and subjects: the
 // saved ones if an IT admin has set them, otherwise the defaults above.
 // Sending never has to block on "configure a template first", and the admin
@@ -329,15 +460,9 @@ func (h *TeamQuestionsHandler) getSettings() (models.TeamQuestionsSettings, erro
 	return settings, nil
 }
 
-// AdminSendBulk emails the Team Questions invite to every pending application
-// (application_year = current year, not ineligible/withdrawn) that has never
-// been sent one before. Applications that already have a token — whether
-// they've submitted or are still waiting — are untouched; use the per-
-// application resend action for those.
-// pendingUninvitedApplications finds every application that AdminSendBulk
-// would email: pending, and never previously issued a Team Questions token.
-// Shared with AdminSendBulkPreview so the preview count can never drift from
-// what a send actually processes.
+// pendingUninvitedApplications finds pending applications never previously
+// issued a Team Questions token. Before the final-call window, this query
+// is shared by the scheduler, admin bulk send, and its preview.
 func (h *TeamQuestionsHandler) pendingUninvitedApplications() ([]models.GeneralApplication, error) {
 	var applications []models.GeneralApplication
 	// general_applications.id is a text column while team_questions_tokens.application_id
@@ -361,20 +486,34 @@ func (h *TeamQuestionsHandler) AdminSendBulkPreview(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "could not determine admin identity"})
 		return
 	}
+	if teamQuestionsClosed(h.now()) {
+		c.JSON(http.StatusOK, gin.H{"count": 0, "can_send": false, "next_send_at": nil})
+		return
+	}
 	canSend, err := requesterIsHeadOfTeam(h.db, adminID, "IT")
 	if err != nil {
 		canSend = false
 	}
 
-	applications, err := h.pendingUninvitedApplications()
+	var applications []models.GeneralApplication
+	if teamQuestionsFinalCallWindow(h.now()) {
+		applications, err = h.pendingApplicationsNeedingFinalCall()
+	} else {
+		applications, err = h.pendingUninvitedApplications()
+	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load pending applications"})
 		return
 	}
+	var nextSendAt *time.Time
+	next := nextTeamQuestionsRun(h.now().In(teamQuestionsInviteTZ))
+	if next.Before(teamQuestionsSubmissionCutoff) {
+		nextSendAt = &next
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"count":        len(applications),
 		"can_send":     canSend,
-		"next_send_at": nextTeamQuestionsRun(time.Now().In(teamQuestionsInviteTZ)),
+		"next_send_at": nextSendAt,
 	})
 }
 
@@ -383,7 +522,11 @@ func (h *TeamQuestionsHandler) AdminSendBulkPreview(c *gin.Context) {
 // TeamQuestionsInviteSentAt) that it shouldn't be something any IT team
 // member can trigger, unlike the per-team Team Questions CRUD endpoints
 // which use the broader requesterIsOnTeam.
+// During the final-call window, bulk send retries only unsent final calls.
 func (h *TeamQuestionsHandler) AdminSendBulk(c *gin.Context) {
+	if h.rejectClosed(c) {
+		return
+	}
 	adminID, _, ok := getAdminIdentity(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "could not determine admin identity"})
@@ -395,7 +538,18 @@ func (h *TeamQuestionsHandler) AdminSendBulk(c *gin.Context) {
 		return
 	}
 
-	sent, failed, err := h.SendPendingInvites()
+	var sent int
+	var failed []string
+	if teamQuestionsFinalCallWindow(h.now()) {
+		sent, failed, err = h.SendPendingFinalCalls()
+	} else {
+		sent, failed, err = h.SendPendingInvites()
+	}
+	// Report whatever was actually sent even if the window closed partway
+	// through — an admin relies on these counts, and discarding them here
+	// just because the deadline passed mid-send loses that information for
+	// no benefit (the pre-send h.rejectClosed(c) above already refuses to
+	// start a send that's already closed).
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to send team questions invites"})
 		return
@@ -409,6 +563,9 @@ func (h *TeamQuestionsHandler) AdminSendBulk(c *gin.Context) {
 // admin bulk-send endpoint and the daily scheduler so both go through the
 // exact same send path.
 func (h *TeamQuestionsHandler) SendPendingInvites() (sent int, failed []string, err error) {
+	if !h.now().Before(teamQuestionsFinalCallStart) {
+		return 0, nil, nil
+	}
 	applications, err := h.pendingUninvitedApplications()
 	if err != nil {
 		return 0, nil, err
@@ -424,7 +581,18 @@ func (h *TeamQuestionsHandler) SendPendingInvites() (sent int, failed []string, 
 
 	failed = []string{}
 	for _, application := range applications {
-		if err := h.issueAndSend(application, settings.EmailTemplate, settings.EmailSubject); err != nil {
+		if err := h.issueAndSendOrdinary(application, settings.EmailTemplate, settings.EmailSubject, false, true); err != nil {
+			if errors.Is(err, errTeamQuestionsClosed) || errors.Is(err, errTeamQuestionsOrdinarySendEnded) {
+				break
+			}
+			if errors.Is(err, errTeamQuestionsTokenSuperseded) {
+				continue // Something else already covers this application.
+			}
+			if errors.Is(err, errTeamQuestionsDeliveryNotRecorded) {
+				log.Printf("ATTENTION: team questions invite for application %s was delivered but not recorded — verify manually before resending: %v", application.Id, err)
+				sent++
+				continue
+			}
 			log.Printf("failed to send team questions invite for application %s: %v", application.Id, err)
 			failed = append(failed, application.Id.String())
 			continue
@@ -442,7 +610,7 @@ func (h *TeamQuestionsHandler) SendPendingInvites() (sent int, failed []string, 
 // matter how many days go by after the 7-day mark.
 func (h *TeamQuestionsHandler) pendingApplicationsNeedingReminder() ([]models.GeneralApplication, error) {
 	var applications []models.GeneralApplication
-	cutoff := time.Now().Add(-teamQuestionsReminderDelay)
+	cutoff := h.now().Add(-teamQuestionsReminderDelay)
 	err := h.db.
 		Where("application_year = ? AND status = ? AND team_questions_invite_sent_at IS NOT NULL AND team_questions_invite_sent_at <= ? AND team_questions_reminder_sent_at IS NULL",
 			generalApplicationYear, models.GeneralApplicationStatusPending, cutoff).
@@ -454,6 +622,9 @@ func (h *TeamQuestionsHandler) pendingApplicationsNeedingReminder() ([]models.Ge
 // pendingApplicationsNeedingReminder finds. Called by the daily scheduler
 // alongside SendPendingInvites.
 func (h *TeamQuestionsHandler) SendPendingReminders() (sent int, failed []string, err error) {
+	if !h.now().Before(teamQuestionsFinalCallStart) {
+		return 0, nil, nil
+	}
 	applications, err := h.pendingApplicationsNeedingReminder()
 	if err != nil {
 		return 0, nil, err
@@ -470,6 +641,17 @@ func (h *TeamQuestionsHandler) SendPendingReminders() (sent int, failed []string
 	failed = []string{}
 	for _, application := range applications {
 		if err := h.issueAndSendReminder(application, settings.ReminderEmailTemplate, settings.ReminderEmailSubject); err != nil {
+			if errors.Is(err, errTeamQuestionsClosed) || errors.Is(err, errTeamQuestionsOrdinarySendEnded) {
+				break
+			}
+			if errors.Is(err, errTeamQuestionsTokenSuperseded) {
+				continue // Something else already covers this application.
+			}
+			if errors.Is(err, errTeamQuestionsDeliveryNotRecorded) {
+				log.Printf("ATTENTION: team questions reminder for application %s was delivered but not recorded — verify manually before resending: %v", application.Id, err)
+				sent++
+				continue
+			}
 			log.Printf("failed to send team questions reminder for application %s: %v", application.Id, err)
 			failed = append(failed, application.Id.String())
 			continue
@@ -486,32 +668,147 @@ func (h *TeamQuestionsHandler) SendPendingReminders() (sent int, failed []string
 // this application is never picked up by pendingApplicationsNeedingReminder
 // again, regardless of whether the applicant ever responds.
 func (h *TeamQuestionsHandler) issueAndSendReminder(application models.GeneralApplication, templateText, subjectTemplate string) error {
-	raw, hash, err := utils.GenerateToken()
+	return h.issueAndSendOrdinary(application, templateText, subjectTemplate, true, true)
+}
+
+// pendingApplicationsNeedingFinalCall includes never-invited applicants too.
+// Status alone is insufficient: an admin can reset a submitted application
+// to pending. Exclude every existing submission, including soft-deleted ones.
+func (h *TeamQuestionsHandler) pendingApplicationsNeedingFinalCall() ([]models.GeneralApplication, error) {
+	var applications []models.GeneralApplication
+	err := h.db.Where("application_year = ? AND status = ? AND team_questions_final_call_sent_at IS NULL", generalApplicationYear, models.GeneralApplicationStatusPending).
+		Where("NOT EXISTS (SELECT 1 FROM team_questions_submissions WHERE application_id::text = general_applications.id)").
+		Find(&applications).Error
+	return applications, err
+}
+
+func (h *TeamQuestionsHandler) SendPendingFinalCalls() (sent int, failed []string, err error) {
+	if !teamQuestionsFinalCallWindow(h.now()) {
+		return 0, nil, nil
+	}
+	// A development-mode skip is not a successful delivery. Leave the token
+	// and final-call marker untouched so a later real send remains possible.
+	if h.cfg.DevelopmentMode {
+		log.Print("[dev] skipping team questions final calls")
+		return 0, nil, nil
+	}
+	applications, err := h.pendingApplicationsNeedingFinalCall()
 	if err != nil {
-		return err
+		return 0, nil, err
+	}
+	failed = []string{}
+	for _, application := range applications {
+		if !teamQuestionsFinalCallWindow(h.now()) {
+			break
+		}
+		delivered, err := h.issueAndSendFinalCall(application.Id)
+		if err != nil {
+			if errors.Is(err, errTeamQuestionsDeliveryNotRecorded) {
+				log.Printf("ATTENTION: team questions final call for application %s was delivered but not recorded — verify manually before resending: %v", application.Id, err)
+				sent++
+				continue
+			}
+			log.Printf("failed to send team questions final call for application %s: %v", application.Id, err)
+			failed = append(failed, application.Id.String())
+			continue
+		}
+		if delivered {
+			sent++
+		}
+	}
+	return sent, failed, nil
+}
+
+// The row lock is released (by committing the token) before sendFinalCall is
+// called — final calls run against many applications in quick succession, so
+// holding the lock (and a DB connection) across each SES round-trip would
+// serialize unrelated work on the same application row and, in a large
+// batch, risks exhausting the pool. Unlike issueAndSendOrdinary, a failed
+// send here leaves the committed-but-unsent token in place rather than
+// deleting it: pendingApplicationsNeedingFinalCall doesn't consult the
+// tokens table, so the application is retried regardless, and a stray token
+// is harmless — it simply expires unused.
+func (h *TeamQuestionsHandler) issueAndSendFinalCall(applicationID uuid.UUID) (bool, error) {
+	if h.cfg.DevelopmentMode || !teamQuestionsFinalCallWindow(h.now()) {
+		return false, nil
 	}
 
-	token := models.TeamQuestionsToken{
-		ApplicationID: application.Id,
-		TokenHash:     hash,
-		ExpiresAt:     time.Now().Add(teamQuestionsTokenValidity),
-	}
-	if err := h.db.Create(&token).Error; err != nil {
-		return err
-	}
-
-	if !h.cfg.DevelopmentMode {
-		if err := email.SendTeamQuestionsReminder(application, templateText, subjectTemplate, h.formURL(raw)); err != nil {
+	var application models.GeneralApplication
+	var raw string
+	var tokenID uint
+	ready := false
+	err := h.db.Transaction(func(tx *gorm.DB) error {
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&application, "id = ?", applicationID).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		if err != nil {
 			return err
 		}
-	} else {
-		log.Printf("[dev] skipping SES — would have sent team questions reminder to %s (%s %s) for application %s",
-			application.Email, application.FirstName, application.LastName, application.Id)
+		if !teamQuestionsFinalCallWindow(h.now()) || application.ApplicationYear != generalApplicationYear ||
+			application.Status != models.GeneralApplicationStatusPending || application.TeamQuestionsFinalCallSentAt != nil {
+			return nil
+		}
+		var submitted int64
+		if err := tx.Unscoped().Model(&models.TeamQuestionsSubmission{}).Where("application_id = ?", applicationID).Count(&submitted).Error; err != nil {
+			return err
+		}
+		if submitted > 0 {
+			return nil
+		}
+		var hash string
+		raw, hash, err = utils.GenerateToken()
+		if err != nil {
+			return err
+		}
+		token := models.TeamQuestionsToken{ApplicationID: applicationID, TokenHash: hash, ExpiresAt: teamQuestionsSubmissionCutoff}
+		if err := tx.Create(&token).Error; err != nil {
+			return err
+		}
+		tokenID = token.ID
+		// One more check before committing and releasing the lock — a window
+		// closing here still rolls back the unsent token along with it.
+		if !teamQuestionsFinalCallWindow(h.now()) {
+			return errTeamQuestionsClosed
+		}
+		ready = true
+		return nil
+	})
+	if err != nil || !ready {
+		return false, err
 	}
 
-	now := time.Now()
-	application.TeamQuestionsReminderSentAt = &now
-	return h.db.Save(&application).Error
+	// The lock is released; before spending a network round-trip, make sure
+	// nothing superseded this token in the meantime — see sendCandidateStale.
+	if stale, staleErr := h.sendCandidateStale(applicationID, tokenID); staleErr != nil {
+		return false, staleErr
+	} else if stale {
+		if delErr := h.db.Exec("DELETE FROM team_questions_tokens WHERE id = ?", tokenID).Error; delErr != nil {
+			log.Printf("failed to remove superseded team questions token for application %s: %v", applicationID, delErr)
+		}
+		return false, nil
+	}
+
+	if err := h.sendFinalCall(application, defaultTeamQuestionsFinalCallTemplate, defaultTeamQuestionsFinalCallSubject, h.formURL(raw)); err != nil {
+		return false, err
+	}
+	// Explicit SQL is intentional: ordinary GORM saves cannot update this
+	// marker. Record accepted delivery even if the send finished after cutoff.
+	// SES acceptance and this commit are not atomic; a crash between them
+	// can still cause a duplicate on retry.
+	//
+	// Any failure from here on is wrapped in errTeamQuestionsDeliveryNotRecorded:
+	// the email is already sent, so callers must never treat this as an
+	// ordinary send failure (which would invite a duplicate resend) — it
+	// needs a human to reconcile instead.
+	result := h.db.Exec("UPDATE general_applications SET team_questions_final_call_sent_at = ? WHERE id = ? AND team_questions_final_call_sent_at IS NULL", h.now(), applicationID)
+	if result.Error != nil {
+		return false, fmt.Errorf("%w: %w", errTeamQuestionsDeliveryNotRecorded, result.Error)
+	}
+	if result.RowsAffected != 1 {
+		return false, fmt.Errorf("%w: final call delivered but its timestamp was not recorded", errTeamQuestionsDeliveryNotRecorded)
+	}
+	return true, nil
 }
 
 // AdminResend issues a fresh token for a single application (retiring any
@@ -519,6 +816,9 @@ func (h *TeamQuestionsHandler) issueAndSendReminder(application models.GeneralAp
 // application is still pending — once Team Questions has been submitted,
 // marked ineligible, or withdrawn, there is nothing to resend.
 func (h *TeamQuestionsHandler) AdminResend(c *gin.Context) {
+	if h.rejectClosed(c) {
+		return
+	}
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid application id"})
@@ -542,6 +842,19 @@ func (h *TeamQuestionsHandler) AdminResend(c *gin.Context) {
 	}
 
 	if err := h.issueAndSend(application, settings.EmailTemplate, settings.EmailSubject); err != nil {
+		if errors.Is(err, errTeamQuestionsClosed) {
+			c.JSON(http.StatusGone, gin.H{"error": err.Error()})
+			return
+		}
+		if errors.Is(err, errTeamQuestionsTokenSuperseded) {
+			c.JSON(http.StatusConflict, gin.H{"error": "a concurrent update issued a newer link for this application; refresh and try again"})
+			return
+		}
+		if errors.Is(err, errTeamQuestionsDeliveryNotRecorded) {
+			log.Printf("ATTENTION: team questions resend for application %s was delivered but not recorded — verify manually before resending: %v", application.Id, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "the email was sent but could not be recorded — check this application manually before resending"})
+			return
+		}
 		log.Printf("failed to resend team questions invite for application %s: %v", application.Id, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to send team questions invite"})
 		return
@@ -558,32 +871,111 @@ func (h *TeamQuestionsHandler) AdminResend(c *gin.Context) {
 }
 
 func (h *TeamQuestionsHandler) issueAndSend(application models.GeneralApplication, templateText, subjectTemplate string) error {
-	raw, hash, err := utils.GenerateToken()
+	return h.issueAndSendOrdinary(application, templateText, subjectTemplate, false, false)
+}
+
+func (h *TeamQuestionsHandler) ordinarySendWindowError(automatic bool) error {
+	now := h.now()
+	if teamQuestionsClosed(now) {
+		return errTeamQuestionsClosed
+	}
+	if automatic && !now.Before(teamQuestionsFinalCallStart) {
+		return errTeamQuestionsOrdinarySendEnded
+	}
+	return nil
+}
+
+// Keep manual resends available until closure. Automatic invites/reminders
+// stop at the final-call boundary, including a batch already in progress.
+//
+// Token creation is committed (and the row lock released) before the SES
+// call: that call can take seconds, and holding the row lock — and a DB
+// connection — for the whole round-trip would block a concurrent submission
+// or resend on this same application and, during a bulk send, risks
+// exhausting the pool. If the send fails, the now-unusable token is removed
+// so this application is retried on the next run instead of being treated
+// as already invited forever.
+func (h *TeamQuestionsHandler) issueAndSendOrdinary(application models.GeneralApplication, templateText, subjectTemplate string, reminder, automatic bool) error {
+	if err := h.ordinarySendWindowError(automatic); err != nil {
+		return err
+	}
+
+	var current models.GeneralApplication
+	var raw string
+	var tokenID uint
+	err := h.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&current, "id = ?", application.Id).Error; err != nil {
+			return err
+		}
+		if err := h.ordinarySendWindowError(automatic); err != nil {
+			return err
+		}
+		if current.Status != models.GeneralApplicationStatusPending {
+			return gorm.ErrRecordNotFound
+		}
+		var hash string
+		var tokenErr error
+		raw, hash, tokenErr = utils.GenerateToken()
+		if tokenErr != nil {
+			return tokenErr
+		}
+		token := models.TeamQuestionsToken{
+			ApplicationID: current.Id,
+			TokenHash:     hash,
+			ExpiresAt:     h.now().Add(teamQuestionsTokenValidity),
+		}
+		if err := tx.Create(&token).Error; err != nil {
+			return err
+		}
+		tokenID = token.ID
+		// One more check before committing and releasing the lock — a window
+		// closing here still rolls back the unsent token along with it.
+		return h.ordinarySendWindowError(automatic)
+	})
 	if err != nil {
 		return err
 	}
 
-	token := models.TeamQuestionsToken{
-		ApplicationID: application.Id,
-		TokenHash:     hash,
-		ExpiresAt:     time.Now().Add(teamQuestionsTokenValidity),
-	}
-	if err := h.db.Create(&token).Error; err != nil {
-		return err
+	// The lock is released; before spending a network round-trip, make sure
+	// nothing superseded this token in the meantime — see sendCandidateStale.
+	if stale, staleErr := h.sendCandidateStale(current.Id, tokenID); staleErr != nil {
+		return staleErr
+	} else if stale {
+		if delErr := h.db.Exec("DELETE FROM team_questions_tokens WHERE id = ?", tokenID).Error; delErr != nil {
+			log.Printf("failed to remove superseded team questions token for application %s: %v", current.Id, delErr)
+		}
+		return errTeamQuestionsTokenSuperseded
 	}
 
+	sender := h.sendInvite
+	stampSQL := "UPDATE general_applications SET team_questions_invite_sent_at = ? WHERE id = ?"
+	if reminder {
+		sender = h.sendReminder
+		stampSQL = "UPDATE general_applications SET team_questions_reminder_sent_at = ? WHERE id = ?"
+	}
 	if !h.cfg.DevelopmentMode {
-		if err := email.SendTeamQuestionsInvite(application, templateText, subjectTemplate, h.formURL(raw)); err != nil {
+		if err := sender(current, templateText, subjectTemplate, h.formURL(raw)); err != nil {
+			// Raw SQL, deliberately outside any transaction: a plain
+			// tx.Delete/Update here would each open their own implicit
+			// transaction for a single statement, for no benefit.
+			if delErr := h.db.Exec("DELETE FROM team_questions_tokens WHERE id = ?", tokenID).Error; delErr != nil {
+				log.Printf("failed to remove unsent team questions token for application %s: %v", current.Id, delErr)
+			}
 			return err
 		}
 	} else {
-		log.Printf("[dev] skipping SES — would have sent team questions invite to %s (%s %s) for application %s",
-			application.Email, application.FirstName, application.LastName, application.Id)
+		log.Printf("[dev] skipping SES — would have sent team questions email for application %s", current.Id)
 	}
-
-	now := time.Now()
-	application.TeamQuestionsInviteSentAt = &now
-	return h.db.Save(&application).Error
+	// The email is already out at this point (or dev-mode skipped it): a
+	// failure here must never be reported as an ordinary send failure — the
+	// token stays in place so the automatic queries don't pick this
+	// application up again, but errTeamQuestionsDeliveryNotRecorded tells
+	// callers delivery happened and only the bookkeeping failed, so a human
+	// reconciles it instead of resending.
+	if err := h.db.Exec(stampSQL, h.now(), current.Id).Error; err != nil {
+		return fmt.Errorf("%w: %w", errTeamQuestionsDeliveryNotRecorded, err)
+	}
+	return nil
 }
 
 func (h *TeamQuestionsHandler) AdminGetSubmission(c *gin.Context) {

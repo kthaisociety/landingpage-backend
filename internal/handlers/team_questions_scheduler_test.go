@@ -69,3 +69,87 @@ func TestNextTeamQuestionsRun(t *testing.T) {
 		require.Equal(t, 10, next.Hour())
 	})
 }
+
+func TestTeamQuestionsWindowBoundaries(t *testing.T) {
+	cases := []struct {
+		name      string
+		stockholm time.Time
+		utc       time.Time
+		finalCall bool
+		closed    bool
+	}{
+		{
+			name:      "September 7 at 09:59:59 keeps ordinary sends",
+			stockholm: time.Date(2026, time.September, 7, 9, 59, 59, 0, teamQuestionsInviteTZ),
+			utc:       time.Date(2026, time.September, 7, 7, 59, 59, 0, time.UTC),
+		},
+		{
+			name:      "September 7 at 10:00 starts final calls",
+			stockholm: time.Date(2026, time.September, 7, 10, 0, 0, 0, teamQuestionsInviteTZ),
+			utc:       time.Date(2026, time.September, 7, 8, 0, 0, 0, time.UTC),
+			finalCall: true,
+		},
+		{
+			name:      "September 8 at 23:59:59 stays open",
+			stockholm: time.Date(2026, time.September, 8, 23, 59, 59, 0, teamQuestionsInviteTZ),
+			utc:       time.Date(2026, time.September, 8, 21, 59, 59, 0, time.UTC),
+			finalCall: true,
+		},
+		{
+			name:      "September 9 at 00:00 closes submissions and emails",
+			stockholm: time.Date(2026, time.September, 9, 0, 0, 0, 0, teamQuestionsInviteTZ),
+			utc:       time.Date(2026, time.September, 8, 22, 0, 0, 0, time.UTC),
+			closed:    true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.True(t, tc.stockholm.Equal(tc.utc), "Stockholm must be UTC+2 at these boundaries")
+			for _, now := range []time.Time{tc.stockholm, tc.utc} {
+				require.Equal(t, tc.finalCall, teamQuestionsFinalCallWindow(now), "at %s", now)
+				require.Equal(t, tc.closed, teamQuestionsClosed(now), "at %s", now)
+			}
+		})
+	}
+}
+
+func TestTeamQuestionsSchedulerDoesNothingAfterClosure(t *testing.T) {
+	for _, now := range []time.Time{
+		teamQuestionsSubmissionCutoff,
+		teamQuestionsSubmissionCutoff.Add(24 * time.Hour),
+	} {
+		t.Run(now.Format(time.RFC3339), func(t *testing.T) {
+			h := newTeamQuestionsDeadlineTestHandler(t, now)
+			// A database access would panic because this handler has no DB.
+			require.NotPanics(t, h.runTeamQuestionsScheduledSend)
+		})
+	}
+}
+
+func TestTeamQuestionsSchedulerSelectsEmailPhase(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		now       time.Time
+		finalCall bool
+	}{
+		{name: "ordinary before September 7 at 10", now: time.Date(2026, time.September, 7, 9, 59, 59, 0, teamQuestionsInviteTZ)},
+		{name: "final calls at September 7 at 10", now: time.Date(2026, time.September, 7, 10, 0, 0, 0, teamQuestionsInviteTZ), finalCall: true},
+		{name: "final calls through September 8", now: time.Date(2026, time.September, 8, 23, 59, 59, 0, teamQuestionsInviteTZ), finalCall: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, script := newTQFinalHandler(t)
+			h.now = func() time.Time { return tc.now }
+			if tc.finalCall {
+				script.add(tqFinalCandidates(t))
+			} else {
+				// Empty recipient lists keep the old send path entirely offline.
+				// Unexpected final-call selection or extra queries fail the script.
+				script.add(
+					tqSQLStep{kind: "query", contains: []string{"id NOT IN (SELECT application_id::text FROM team_questions_tokens)"}, columns: []string{"id"}},
+					tqSQLStep{kind: "query", contains: []string{"team_questions_invite_sent_at <=", "team_questions_reminder_sent_at IS NULL"}, columns: []string{"id"}},
+				)
+			}
+			h.runTeamQuestionsScheduledSend()
+		})
+	}
+}
