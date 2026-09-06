@@ -40,14 +40,25 @@ var errTeamQuestionsClosed = errors.New("team questions submissions closed after
 var errTeamQuestionsOrdinarySendEnded = errors.New("ordinary automatic team questions emails have ended")
 
 type TeamQuestionsHandler struct {
-	db            *gorm.DB
-	cfg           *config.Config
-	now           func() time.Time
-	sendFinalCall func(models.GeneralApplication, string, string, string) error
+	db               *gorm.DB
+	cfg              *config.Config
+	now              func() time.Time
+	sendFinalCall    func(models.GeneralApplication, string, string, string) error
+	sendInvite       func(models.GeneralApplication, string, string, string) error
+	sendReminder     func(models.GeneralApplication, string, string, string) error
+	sendConfirmation func(models.GeneralApplication, []email.TeamQuestionsTeamAnswers, []string) error
 }
 
 func NewTeamQuestionsHandler(db *gorm.DB, cfg *config.Config) *TeamQuestionsHandler {
-	return &TeamQuestionsHandler{db: db, cfg: cfg, now: time.Now, sendFinalCall: email.SendTeamQuestionsInvite}
+	return &TeamQuestionsHandler{
+		db:               db,
+		cfg:              cfg,
+		now:              time.Now,
+		sendFinalCall:    email.SendTeamQuestionsInvite,
+		sendInvite:       email.SendTeamQuestionsInvite,
+		sendReminder:     email.SendTeamQuestionsReminder,
+		sendConfirmation: email.SendTeamQuestionsConfirmation,
+	}
 }
 
 func (h *TeamQuestionsHandler) rejectClosed(c *gin.Context) bool {
@@ -339,11 +350,12 @@ func (h *TeamQuestionsHandler) SubmitForm(c *gin.Context) {
 		})
 	}
 
+	// The submission above is already committed and its HTTP response is a
+	// success — whether the deadline happens to fall between that commit and
+	// this goroutine running is irrelevant to whether the applicant earned a
+	// copy of what they submitted, so this does not recheck teamQuestionsClosed.
 	go func(application models.GeneralApplication, teamAnswers []email.TeamQuestionsTeamAnswers, withdrawnTeams []string) {
-		if teamQuestionsClosed(h.now()) {
-			return
-		}
-		if err := email.SendTeamQuestionsConfirmation(application, teamAnswers, withdrawnTeams); err != nil {
+		if err := h.sendConfirmation(application, teamAnswers, withdrawnTeams); err != nil {
 			log.Printf("failed to send team questions confirmation email for %s: %v", application.Id, err)
 		}
 	}(application, teamAnswers, body.WithdrawnTeams)
@@ -639,13 +651,24 @@ func (h *TeamQuestionsHandler) SendPendingFinalCalls() (sent int, failed []strin
 	return sent, failed, nil
 }
 
+// The row lock is released (by committing the token) before sendFinalCall is
+// called — final calls run against many applications in quick succession, so
+// holding the lock (and a DB connection) across each SES round-trip would
+// serialize unrelated work on the same application row and, in a large
+// batch, risks exhausting the pool. Unlike issueAndSendOrdinary, a failed
+// send here leaves the committed-but-unsent token in place rather than
+// deleting it: pendingApplicationsNeedingFinalCall doesn't consult the
+// tokens table, so the application is retried regardless, and a stray token
+// is harmless — it simply expires unused.
 func (h *TeamQuestionsHandler) issueAndSendFinalCall(applicationID uuid.UUID) (bool, error) {
 	if h.cfg.DevelopmentMode || !teamQuestionsFinalCallWindow(h.now()) {
 		return false, nil
 	}
-	delivered := false
+
+	var application models.GeneralApplication
+	var raw string
+	ready := false
 	err := h.db.Transaction(func(tx *gorm.DB) error {
-		var application models.GeneralApplication
 		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&application, "id = ?", applicationID).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil
@@ -664,7 +687,8 @@ func (h *TeamQuestionsHandler) issueAndSendFinalCall(applicationID uuid.UUID) (b
 		if submitted > 0 {
 			return nil
 		}
-		raw, hash, err := utils.GenerateToken()
+		var hash string
+		raw, hash, err = utils.GenerateToken()
 		if err != nil {
 			return err
 		}
@@ -672,27 +696,33 @@ func (h *TeamQuestionsHandler) issueAndSendFinalCall(applicationID uuid.UUID) (b
 		if err := tx.Create(&token).Error; err != nil {
 			return err
 		}
+		// One more check before committing and releasing the lock — a window
+		// closing here still rolls back the unsent token along with it.
 		if !teamQuestionsFinalCallWindow(h.now()) {
-			return errTeamQuestionsClosed // Roll back the unsent token.
+			return errTeamQuestionsClosed
 		}
-		if err := h.sendFinalCall(application, defaultTeamQuestionsFinalCallTemplate, defaultTeamQuestionsFinalCallSubject, h.formURL(raw)); err != nil {
-			return err
-		}
-		// Explicit SQL is intentional: ordinary GORM saves cannot update this
-		// marker. Record accepted delivery even if the send finished after cutoff.
-		// SES acceptance and this commit are not atomic; a crash between them
-		// can still cause a duplicate on retry.
-		result := tx.Exec("UPDATE general_applications SET team_questions_final_call_sent_at = ? WHERE id = ? AND team_questions_final_call_sent_at IS NULL", h.now(), applicationID)
-		if result.Error != nil {
-			return result.Error
-		}
-		if result.RowsAffected != 1 {
-			return fmt.Errorf("final call delivered but its timestamp was not recorded")
-		}
-		delivered = true
+		ready = true
 		return nil
 	})
-	return delivered && err == nil, err
+	if err != nil || !ready {
+		return false, err
+	}
+
+	if err := h.sendFinalCall(application, defaultTeamQuestionsFinalCallTemplate, defaultTeamQuestionsFinalCallSubject, h.formURL(raw)); err != nil {
+		return false, err
+	}
+	// Explicit SQL is intentional: ordinary GORM saves cannot update this
+	// marker. Record accepted delivery even if the send finished after cutoff.
+	// SES acceptance and this commit are not atomic; a crash between them
+	// can still cause a duplicate on retry.
+	result := h.db.Exec("UPDATE general_applications SET team_questions_final_call_sent_at = ? WHERE id = ? AND team_questions_final_call_sent_at IS NULL", h.now(), applicationID)
+	if result.Error != nil {
+		return false, result.Error
+	}
+	if result.RowsAffected != 1 {
+		return false, fmt.Errorf("final call delivered but its timestamp was not recorded")
+	}
+	return true, nil
 }
 
 // AdminResend issues a fresh token for a single application (retiring any
@@ -762,12 +792,23 @@ func (h *TeamQuestionsHandler) ordinarySendWindowError(automatic bool) error {
 
 // Keep manual resends available until closure. Automatic invites/reminders
 // stop at the final-call boundary, including a batch already in progress.
+//
+// Token creation is committed (and the row lock released) before the SES
+// call: that call can take seconds, and holding the row lock — and a DB
+// connection — for the whole round-trip would block a concurrent submission
+// or resend on this same application and, during a bulk send, risks
+// exhausting the pool. If the send fails, the now-unusable token is removed
+// so this application is retried on the next run instead of being treated
+// as already invited forever.
 func (h *TeamQuestionsHandler) issueAndSendOrdinary(application models.GeneralApplication, templateText, subjectTemplate string, reminder, automatic bool) error {
 	if err := h.ordinarySendWindowError(automatic); err != nil {
 		return err
 	}
-	return h.db.Transaction(func(tx *gorm.DB) error {
-		var current models.GeneralApplication
+
+	var current models.GeneralApplication
+	var raw string
+	var tokenID uint
+	err := h.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&current, "id = ?", application.Id).Error; err != nil {
 			return err
 		}
@@ -777,9 +818,11 @@ func (h *TeamQuestionsHandler) issueAndSendOrdinary(application models.GeneralAp
 		if current.Status != models.GeneralApplicationStatusPending {
 			return gorm.ErrRecordNotFound
 		}
-		raw, hash, err := utils.GenerateToken()
-		if err != nil {
-			return err
+		var hash string
+		var tokenErr error
+		raw, hash, tokenErr = utils.GenerateToken()
+		if tokenErr != nil {
+			return tokenErr
 		}
 		token := models.TeamQuestionsToken{
 			ApplicationID: current.Id,
@@ -789,24 +832,35 @@ func (h *TeamQuestionsHandler) issueAndSendOrdinary(application models.GeneralAp
 		if err := tx.Create(&token).Error; err != nil {
 			return err
 		}
-		if err := h.ordinarySendWindowError(automatic); err != nil {
+		tokenID = token.ID
+		// One more check before committing and releasing the lock — a window
+		// closing here still rolls back the unsent token along with it.
+		return h.ordinarySendWindowError(automatic)
+	})
+	if err != nil {
+		return err
+	}
+
+	sender := h.sendInvite
+	stampSQL := "UPDATE general_applications SET team_questions_invite_sent_at = ? WHERE id = ?"
+	if reminder {
+		sender = h.sendReminder
+		stampSQL = "UPDATE general_applications SET team_questions_reminder_sent_at = ? WHERE id = ?"
+	}
+	if !h.cfg.DevelopmentMode {
+		if err := sender(current, templateText, subjectTemplate, h.formURL(raw)); err != nil {
+			// Raw SQL, deliberately outside any transaction: a plain
+			// tx.Delete/Update here would each open their own implicit
+			// transaction for a single statement, for no benefit.
+			if delErr := h.db.Exec("DELETE FROM team_questions_tokens WHERE id = ?", tokenID).Error; delErr != nil {
+				log.Printf("failed to remove unsent team questions token for application %s: %v", current.Id, delErr)
+			}
 			return err
 		}
-		sender := email.SendTeamQuestionsInvite
-		column := "team_questions_invite_sent_at"
-		if reminder {
-			sender = email.SendTeamQuestionsReminder
-			column = "team_questions_reminder_sent_at"
-		}
-		if !h.cfg.DevelopmentMode {
-			if err := sender(current, templateText, subjectTemplate, h.formURL(raw)); err != nil {
-				return err
-			}
-		} else {
-			log.Printf("[dev] skipping SES — would have sent team questions email for application %s", current.Id)
-		}
-		return tx.Model(&models.GeneralApplication{}).Where("id = ?", current.Id).Update(column, h.now()).Error
-	})
+	} else {
+		log.Printf("[dev] skipping SES — would have sent team questions email for application %s", current.Id)
+	}
+	return h.db.Exec(stampSQL, h.now(), current.Id).Error
 }
 
 func (h *TeamQuestionsHandler) AdminGetSubmission(c *gin.Context) {

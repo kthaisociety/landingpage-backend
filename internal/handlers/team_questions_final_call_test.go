@@ -146,13 +146,13 @@ func TestTeamQuestionsFinalCallFailureRetryAndSuccessfulSkip(t *testing.T) {
 	}
 
 	script.add(tqSQLStep{kind: "begin"}, tqFinalLockedApplication(t, id, row), tqFinalSubmissionCount(t, id, 0),
-		tqFinalTokenInsert(t, id, &insertedHash), tqSQLStep{kind: "rollback"})
+		tqFinalTokenInsert(t, id, &insertedHash), tqSQLStep{kind: "commit"})
 	delivered, err := h.issueAndSendFinalCall(id)
 	require.ErrorIs(t, err, sendFailure)
 	require.False(t, delivered)
 
 	script.add(tqSQLStep{kind: "begin"}, tqFinalLockedApplication(t, id, row), tqFinalSubmissionCount(t, id, 0),
-		tqFinalTokenInsert(t, id, &insertedHash), tqFinalStamp(t, id, h.now()), tqSQLStep{kind: "commit"})
+		tqFinalTokenInsert(t, id, &insertedHash), tqSQLStep{kind: "commit"}, tqFinalStamp(t, id, h.now()))
 	delivered, err = h.issueAndSendFinalCall(id)
 	require.NoError(t, err)
 	require.True(t, delivered)
@@ -202,7 +202,11 @@ func TestTeamQuestionsFinalCallRechecksEligibilityUnderLock(t *testing.T) {
 }
 
 func TestTeamQuestionsFinalCallDatabaseFailuresRemainUnsuccessful(t *testing.T) {
-	for _, stage := range []string{"insert", "stamp", "stamp affected no row", "commit"} {
+	// "insert" and "commit" fail before the token is committed, so the send
+	// never happens. "stamp" and "stamp affected no row" fail in the bare
+	// UPDATE issued after a successful send, once the row lock has already
+	// been released.
+	for _, stage := range []string{"insert", "commit", "stamp", "stamp affected no row"} {
 		t.Run(stage, func(t *testing.T) {
 			h, script := newTQFinalHandler(t)
 			id := uuid.New()
@@ -211,22 +215,20 @@ func TestTeamQuestionsFinalCallDatabaseFailuresRemainUnsuccessful(t *testing.T) 
 			h.sendFinalCall = func(models.GeneralApplication, string, string, string) error { calls++; return nil }
 			script.add(tqSQLStep{kind: "begin"}, tqFinalLockedApplication(t, id, tqFinalRow(id, 2026, models.GeneralApplicationStatusPending, nil)), tqFinalSubmissionCount(t, id, 0))
 			insert := tqFinalTokenInsert(t, id, nil)
-			if stage == "insert" {
+			switch stage {
+			case "insert":
 				insert.err = failure
 				script.add(insert, tqSQLStep{kind: "rollback"})
-			} else {
+			case "commit":
+				script.add(insert, tqSQLStep{kind: "commit", err: failure})
+			default:
 				stamp := tqFinalStamp(t, id, h.now())
 				if stage == "stamp" {
 					stamp.err = failure
-				} else if stage == "stamp affected no row" {
+				} else {
 					stamp.affected = 0
 				}
-				script.add(insert, stamp)
-				if stage == "commit" {
-					script.add(tqSQLStep{kind: "commit", err: failure})
-				} else {
-					script.add(tqSQLStep{kind: "rollback"})
-				}
+				script.add(insert, tqSQLStep{kind: "commit"}, stamp)
 			}
 			delivered, err := h.issueAndSendFinalCall(id)
 			require.Error(t, err)
@@ -234,7 +236,7 @@ func TestTeamQuestionsFinalCallDatabaseFailuresRemainUnsuccessful(t *testing.T) 
 				require.ErrorIs(t, err, failure)
 			}
 			require.False(t, delivered)
-			if stage == "insert" {
+			if stage == "insert" || stage == "commit" {
 				require.Zero(t, calls)
 			} else {
 				require.Equal(t, 1, calls)
@@ -272,7 +274,7 @@ func TestTeamQuestionsFinalCallCrossingCutoff(t *testing.T) {
 				if stage == "after token insert" {
 					script.add(tqSQLStep{kind: "rollback"})
 				} else {
-					script.add(tqFinalStamp(t, id, teamQuestionsSubmissionCutoff), tqSQLStep{kind: "commit"})
+					script.add(tqSQLStep{kind: "commit"}, tqFinalStamp(t, id, teamQuestionsSubmissionCutoff))
 				}
 			}
 			delivered, err := h.issueAndSendFinalCall(id)
@@ -311,8 +313,8 @@ func TestTeamQuestionsFinalCallBatchContinuesAfterFailedDelivery(t *testing.T) {
 	first := tqFinalRow(firstID, 2026, models.GeneralApplicationStatusPending, nil)
 	second := tqFinalRow(secondID, 2026, models.GeneralApplicationStatusPending, nil)
 	script.add(tqFinalCandidates(t, first, second),
-		tqSQLStep{kind: "begin"}, tqFinalLockedApplication(t, firstID, first), tqFinalSubmissionCount(t, firstID, 0), tqFinalTokenInsert(t, firstID, nil), tqSQLStep{kind: "rollback"},
-		tqSQLStep{kind: "begin"}, tqFinalLockedApplication(t, secondID, second), tqFinalSubmissionCount(t, secondID, 0), tqFinalTokenInsert(t, secondID, nil), tqFinalStamp(t, secondID, h.now()), tqSQLStep{kind: "commit"})
+		tqSQLStep{kind: "begin"}, tqFinalLockedApplication(t, firstID, first), tqFinalSubmissionCount(t, firstID, 0), tqFinalTokenInsert(t, firstID, nil), tqSQLStep{kind: "commit"},
+		tqSQLStep{kind: "begin"}, tqFinalLockedApplication(t, secondID, second), tqFinalSubmissionCount(t, secondID, 0), tqFinalTokenInsert(t, secondID, nil), tqSQLStep{kind: "commit"}, tqFinalStamp(t, secondID, h.now()))
 	var recipients []uuid.UUID
 	h.sendFinalCall = func(application models.GeneralApplication, _, _, _ string) error {
 		recipients = append(recipients, application.Id)

@@ -189,8 +189,11 @@ func TestTeamQuestionsSubmitRechecksTimeAndTokenUnderLock(t *testing.T) {
 				} else {
 					wantStatus = http.StatusOK
 					// Commit completes at midnight. The accepted submission remains
-					// successful; the closure guard suppresses its asynchronous
-					// confirmation so this test cannot reach a real email sender.
+					// successful and its asynchronous confirmation still fires
+					// regardless of the clock; this test never provides a
+					// sendConfirmation override, so it falls through to the
+					// package-level sender, which no-ops against the test's nil
+					// defaultMailer instead of reaching a real email sender.
 					script.add(used, tqSQLStep{kind: "commit", after: func() { closed.Store(true) }})
 				}
 			}
