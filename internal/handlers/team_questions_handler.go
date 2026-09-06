@@ -486,9 +486,11 @@ func (h *TeamQuestionsHandler) AdminSendBulk(c *gin.Context) {
 	} else {
 		sent, failed, err = h.SendPendingInvites()
 	}
-	if h.rejectClosed(c) {
-		return
-	}
+	// Report whatever was actually sent even if the window closed partway
+	// through — an admin relies on these counts, and discarding them here
+	// just because the deadline passed mid-send loses that information for
+	// no benefit (the pre-send h.rejectClosed(c) above already refuses to
+	// start a send that's already closed).
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to send team questions invites"})
 		return
@@ -599,7 +601,7 @@ func (h *TeamQuestionsHandler) issueAndSendReminder(application models.GeneralAp
 // to pending. Exclude every existing submission, including soft-deleted ones.
 func (h *TeamQuestionsHandler) pendingApplicationsNeedingFinalCall() ([]models.GeneralApplication, error) {
 	var applications []models.GeneralApplication
-	err := h.db.Where("application_year = ? AND status = ? AND team_questions_final_call_sent_at IS NULL", 2026, models.GeneralApplicationStatusPending).
+	err := h.db.Where("application_year = ? AND status = ? AND team_questions_final_call_sent_at IS NULL", generalApplicationYear, models.GeneralApplicationStatusPending).
 		Where("NOT EXISTS (SELECT 1 FROM team_questions_submissions WHERE application_id::text = general_applications.id)").
 		Find(&applications).Error
 	return applications, err
@@ -651,7 +653,7 @@ func (h *TeamQuestionsHandler) issueAndSendFinalCall(applicationID uuid.UUID) (b
 		if err != nil {
 			return err
 		}
-		if !teamQuestionsFinalCallWindow(h.now()) || application.ApplicationYear != 2026 ||
+		if !teamQuestionsFinalCallWindow(h.now()) || application.ApplicationYear != generalApplicationYear ||
 			application.Status != models.GeneralApplicationStatusPending || application.TeamQuestionsFinalCallSentAt != nil {
 			return nil
 		}
