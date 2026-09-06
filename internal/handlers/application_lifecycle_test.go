@@ -89,15 +89,18 @@ func TestApplicationAndInterviewLifecycle(t *testing.T) {
 	engine := gin.New()
 	api := engine.Group("/api/v1")
 	NewGeneralApplicationHandler(db, cfg, nil).Register(api)
-	NewTeamQuestionsHandler(db, cfg).Register(api)
+	teamQuestionsNow := time.Date(2026, time.September, 6, 12, 0, 0, 0, teamQuestionsInviteTZ)
+	teamQuestionsHandler := NewTeamQuestionsHandler(db, cfg)
+	teamQuestionsHandler.now = func() time.Time { return teamQuestionsNow }
+	teamQuestionsHandler.Register(api)
 
 	// --- test fixtures: two distinct admins ---
 	// No team_questions_settings row is needed — getSettings() falls back to
 	// a built-in default template when none is saved, so sending works either way.
 
-	adminA := mustCreateAdmin(t, db, cfg, "lifecycle-admin-a@seed.local")
-	adminB := mustCreateAdmin(t, db, cfg, "lifecycle-admin-b@seed.local")
-	adminIT := mustCreateTeamAdmin(t, db, cfg, "lifecycle-admin-it@seed.local", "IT")
+	adminA := mustCreateAdmin(t, db, cfg, "lifecycle-admin-a@example.com")
+	adminB := mustCreateAdmin(t, db, cfg, "lifecycle-admin-b@example.com")
+	adminIT := mustCreateTeamAdmin(t, db, cfg, "lifecycle-admin-it@example.com", "IT")
 
 	// Team questions are admin-configured data now (no hardcoded fallback),
 	// so this test seeds exactly the questions it needs directly.
@@ -117,7 +120,7 @@ func TestApplicationAndInterviewLifecycle(t *testing.T) {
 	})
 
 	suffix := uuid.New().String()[:8]
-	applicantEmail := fmt.Sprintf("lifecycle-%s@seed.local", suffix)
+	applicantEmail := fmt.Sprintf("lifecycle-%s@example.com", suffix)
 
 	t.Cleanup(func() {
 		var app models.GeneralApplication
@@ -242,7 +245,7 @@ func TestApplicationAndInterviewLifecycle(t *testing.T) {
 		require.NoError(t, db.Create(&models.TeamQuestionsToken{
 			ApplicationID: uuid.MustParse(applicationID),
 			TokenHash:     hashA,
-			ExpiresAt:     time.Now().Add(30 * 24 * time.Hour),
+			ExpiresAt:     teamQuestionsNow.Add(30 * 24 * time.Hour),
 		}).Error)
 
 		// Token A works on its own.
@@ -255,7 +258,7 @@ func TestApplicationAndInterviewLifecycle(t *testing.T) {
 		require.NoError(t, db.Create(&models.TeamQuestionsToken{
 			ApplicationID: uuid.MustParse(applicationID),
 			TokenHash:     hashB,
-			ExpiresAt:     time.Now().Add(30 * 24 * time.Hour),
+			ExpiresAt:     teamQuestionsNow.Add(30 * 24 * time.Hour),
 		}).Error)
 
 		rec = doJSONRequest(t, engine, "GET", "/api/v1/applications/team-questions/"+rawA, nil, nil)
@@ -279,7 +282,7 @@ func TestApplicationAndInterviewLifecycle(t *testing.T) {
 		require.NoError(t, db.Create(&models.TeamQuestionsToken{
 			ApplicationID: uuid.MustParse(applicationID),
 			TokenHash:     hash,
-			ExpiresAt:     time.Now().Add(30 * 24 * time.Hour),
+			ExpiresAt:     teamQuestionsNow.Add(30 * 24 * time.Hour),
 		}).Error)
 
 		rec := doJSONRequest(t, engine, "GET", "/api/v1/applications/team-questions/"+rawToken, nil, nil)
@@ -403,8 +406,8 @@ func TestApplicationAndInterviewLifecycle(t *testing.T) {
 			ApplicationYear:       generalApplicationYear,
 			FirstName:             "Withdraw",
 			LastName:              "Everything",
-			Email:                 fmt.Sprintf("withdraw-all-%s@seed.local", suffix),
-			EmailNormalized:       fmt.Sprintf("withdraw-all-%s@seed.local", suffix),
+			Email:                 fmt.Sprintf("withdraw-all-%s@example.com", suffix),
+			EmailNormalized:       fmt.Sprintf("withdraw-all-%s@example.com", suffix),
 			Gender:                "Prefer not to say",
 			University:            "KTH Royal Institute of Technology",
 			Programme:             "Computer Science",
@@ -431,7 +434,7 @@ func TestApplicationAndInterviewLifecycle(t *testing.T) {
 		require.NoError(t, db.Create(&models.TeamQuestionsToken{
 			ApplicationID: withdrawAllID,
 			TokenHash:     hash,
-			ExpiresAt:     time.Now().Add(30 * 24 * time.Hour),
+			ExpiresAt:     teamQuestionsNow.Add(30 * 24 * time.Hour),
 		}).Error)
 
 		resetRateLimit()
@@ -515,7 +518,7 @@ func TestApplicationAndInterviewLifecycle(t *testing.T) {
 		rec = doMultipartRequest(t, engine, "POST", "/api/v1/applications/general", map[string]string{
 			"firstName":            "Late",
 			"lastName":             "Applicant",
-			"email":                fmt.Sprintf("lifecycle-late-%s@seed.local", suffix),
+			"email":                fmt.Sprintf("lifecycle-late-%s@example.com", suffix),
 			"gender":               "Prefer not to say",
 			"university":           "KTH Royal Institute of Technology",
 			"programme":            "Computer Science",

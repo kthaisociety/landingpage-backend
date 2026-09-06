@@ -33,6 +33,7 @@ func TestSendPendingInvites(t *testing.T) {
 
 	cfg, err := config.LoadConfig()
 	require.NoError(t, err)
+	cfg.DevelopmentMode = true // Integration fixtures must never send real email.
 
 	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=%s",
 		cfg.Database.Host, cfg.Database.User, cfg.Database.Password, cfg.Database.DBName, cfg.Database.Port, cfg.Database.SSLMode)
@@ -47,7 +48,7 @@ func TestSendPendingInvites(t *testing.T) {
 	))
 
 	suffix := uuid.New().String()[:8]
-	applicantEmail := fmt.Sprintf("send-pending-%s@seed.local", suffix)
+	applicantEmail := fmt.Sprintf("send-pending-%s@example.com", suffix)
 	applicationID := uuid.New()
 
 	require.NoError(t, db.Create(&models.GeneralApplication{
@@ -76,6 +77,7 @@ func TestSendPendingInvites(t *testing.T) {
 	})
 
 	h := NewTeamQuestionsHandler(db, cfg)
+	h.now = func() time.Time { return time.Date(2026, time.September, 6, 12, 0, 0, 0, teamQuestionsInviteTZ) }
 
 	t.Run("first run invites the pending applicant", func(t *testing.T) {
 		sent, failed, err := h.SendPendingInvites()
@@ -120,6 +122,7 @@ func TestSendPendingReminders(t *testing.T) {
 
 	cfg, err := config.LoadConfig()
 	require.NoError(t, err)
+	cfg.DevelopmentMode = true // Integration fixtures must never send real email.
 
 	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=%s",
 		cfg.Database.Host, cfg.Database.User, cfg.Database.Password, cfg.Database.DBName, cfg.Database.Port, cfg.Database.SSLMode)
@@ -138,7 +141,7 @@ func TestSendPendingReminders(t *testing.T) {
 	mustCreateApplication := func(t *testing.T, label string, invitedAt time.Time) uuid.UUID {
 		t.Helper()
 		id := uuid.New()
-		email := fmt.Sprintf("reminder-%s-%s@seed.local", label, suffix)
+		email := fmt.Sprintf("reminder-%s-%s@example.com", label, suffix)
 		require.NoError(t, db.Create(&models.GeneralApplication{
 			Id:                        id,
 			ApplicationYear:           generalApplicationYear,
@@ -167,10 +170,12 @@ func TestSendPendingReminders(t *testing.T) {
 		return id
 	}
 
-	overdueID := mustCreateApplication(t, "overdue", time.Now().Add(-15*24*time.Hour))
-	recentID := mustCreateApplication(t, "recent", time.Now().Add(-5*24*time.Hour))
+	testNow := time.Date(2026, time.September, 6, 12, 0, 0, 0, teamQuestionsInviteTZ)
+	overdueID := mustCreateApplication(t, "overdue", testNow.Add(-7*24*time.Hour))
+	recentID := mustCreateApplication(t, "recent", testNow.Add(-7*24*time.Hour+time.Second))
 
 	h := NewTeamQuestionsHandler(db, cfg)
+	h.now = func() time.Time { return testNow }
 
 	t.Run("only the 7+ day overdue applicant is reminded", func(t *testing.T) {
 		sent, failed, err := h.SendPendingReminders()
@@ -188,7 +193,7 @@ func TestSendPendingReminders(t *testing.T) {
 
 		var recent models.GeneralApplication
 		require.NoError(t, db.First(&recent, "id = ?", recentID).Error)
-		require.Nil(t, recent.TeamQuestionsReminderSentAt, "invited only 5 days ago — not due yet")
+		require.Nil(t, recent.TeamQuestionsReminderSentAt, "one second short of 7 days — not due yet")
 
 		var recentTokenCount int64
 		require.NoError(t, db.Model(&models.TeamQuestionsToken{}).Where("application_id = ?", recentID).Count(&recentTokenCount).Error)

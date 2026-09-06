@@ -8,10 +8,6 @@ import (
 	"net/http"
 	"os"
 	"time"
-	_ "time/tzdata" // embeds the IANA timezone database in the binary — the
-	// production image (alpine:latest with no tzdata package) has no
-	// /usr/share/zoneinfo, so time.LoadLocation("Europe/Stockholm") would
-	// otherwise silently fall back to UTC (see team_questions_scheduler.go).
 
 	"backend/internal/config"
 	"backend/internal/database"
@@ -213,9 +209,8 @@ func main() {
 	setupRoutes(r, db, mailchimpApi, lumaApi, cfg)
 
 	// Daily 10:00 and 16:00 (Europe/Stockholm) send of Team Questions invites
-	// (to any pending applicant who hasn't been sent one yet) and 14-day
-	// reminders (to anyone invited but still pending) — see
-	// team_questions_scheduler.go for why there are two windows.
+	// and 7-day reminders, switching to final calls September 7 at 10:00
+	// and stopping at September 9 at 00:00. See team_questions_scheduler.go.
 	handlers.NewTeamQuestionsHandler(db, cfg).StartDailyTeamQuestionsScheduler()
 
 	log.Printf("listening on %s:%s", cfg.Server.Host, cfg.Server.Port)

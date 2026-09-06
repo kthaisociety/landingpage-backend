@@ -328,7 +328,7 @@ func SendTeamQuestionsInvite(application models.GeneralApplication, templateText
 	return sendEmail(application.Email, subject, html)
 }
 
-// RenderTeamQuestionsReminder renders the 14-day reminder email. It reuses the invite's
+// RenderTeamQuestionsReminder renders the 7-day reminder email. It reuses the invite's
 // template file — same body-text-plus-button structure — with reminder-specific body copy and
 // subject template, so it reads as a nudge rather than a duplicate of the original invite.
 // formURL points at a freshly issued token: the original invite's raw token was never stored
@@ -369,7 +369,7 @@ func RenderTeamQuestionsReminder(firstName, lastName string, teams []string, tem
 	return subject, htmlBody.String(), nil
 }
 
-// SendTeamQuestionsReminder sends the 14-day Team Questions reminder to an applicant who hasn't
+// SendTeamQuestionsReminder sends the 7-day Team Questions reminder to an applicant who hasn't
 // submitted yet, containing a freshly issued form link.
 func SendTeamQuestionsReminder(application models.GeneralApplication, templateText, subjectTemplate, formURL string) error {
 	subject, html, err := RenderTeamQuestionsReminder(application.FirstName, application.LastName, application.Teams, templateText, subjectTemplate, formURL)

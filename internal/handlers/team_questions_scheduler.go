@@ -3,6 +3,7 @@ package handlers
 import (
 	"log"
 	"time"
+	_ "time/tzdata" // Keep Stockholm deadlines correct even without system zoneinfo.
 )
 
 // teamQuestionsInviteTZ anchors the daily send to Swedish local time, so the
@@ -10,44 +11,72 @@ import (
 // correctly shift across Sweden's DST transitions.
 var teamQuestionsInviteTZ = mustLoadLocation("Europe/Stockholm")
 
+var teamQuestionsFinalCallStart = time.Date(2026, time.September, 7, 10, 0, 0, 0, teamQuestionsInviteTZ)
+var teamQuestionsSubmissionCutoff = time.Date(2026, time.September, 9, 0, 0, 0, 0, teamQuestionsInviteTZ)
+
+func teamQuestionsClosed(now time.Time) bool {
+	return !now.Before(teamQuestionsSubmissionCutoff)
+}
+
+func teamQuestionsFinalCallWindow(now time.Time) bool {
+	return !now.Before(teamQuestionsFinalCallStart) && !teamQuestionsClosed(now)
+}
+
 // teamQuestionsRunHours are the local hours the scheduler fires at, every
 // day. Two, both within normal working hours, rather than one: an in-process
 // scheduler has no memory of what it missed across a restart, so if a deploy
 // happens to kill the old process just before a run and the new one doesn't
 // finish booting until just after, that day's run slips to the next window
-// instead of being lost for a full 24h. Deliberately not "run once
-// immediately on boot" instead — that would fire at whatever odd hour a
-// deploy happens to land on (2am included), rather than a time someone
-// picked. Both SendPendingInvites and SendPendingReminders only ever act on
-// applications that have never been sent that particular email, so a
-// same-day double-run near one of these windows is always a no-op, never a
-// duplicate send.
+// instead of being lost for a full 24h. Ordinary emails wait for these hours
+// rather than sending immediately on boot. During the short final-call
+// window, startup also catches up, including a restart after the last run
+// on September 8. Existing tokens and sent markers prevent later scheduled
+// runs from selecting applications that have already received that email.
 var teamQuestionsRunHours = []int{10, 16}
 
 func mustLoadLocation(name string) *time.Location {
 	loc, err := time.LoadLocation(name)
 	if err != nil {
-		log.Printf("failed to load timezone %s, falling back to UTC: %v", name, err)
-		return time.UTC
+		panic("failed to load required timezone " + name + ": " + err.Error())
 	}
 	return loc
 }
 
-// StartDailyTeamQuestionsScheduler sends pending Team Questions invites and
-// 7-day reminders at each hour in teamQuestionsRunHours, Europe/Stockholm,
-// for as long as the process is running. It recomputes the next run time on
-// every iteration rather than sleeping a fixed interval, so DST transitions
-// don't drift the send time.
+// StartDailyTeamQuestionsScheduler sends ordinary invites and 7-day reminders
+// before the final-call window, then only final calls until submissions close.
+// Runs stay at teamQuestionsRunHours in Europe/Stockholm. Recomputing the next
+// local run time on every iteration keeps DST transitions from moving it.
 func (h *TeamQuestionsHandler) StartDailyTeamQuestionsScheduler() {
 	go func() {
+		if teamQuestionsFinalCallWindow(h.now()) {
+			h.runTeamQuestionsScheduledSend()
+		}
 		for {
-			time.Sleep(time.Until(nextTeamQuestionsRun(time.Now().In(teamQuestionsInviteTZ))))
+			next := nextTeamQuestionsRun(h.now().In(teamQuestionsInviteTZ))
+			if teamQuestionsClosed(next) {
+				return
+			}
+			time.Sleep(time.Until(next))
 			h.runTeamQuestionsScheduledSend()
 		}
 	}()
 }
 
 func (h *TeamQuestionsHandler) runTeamQuestionsScheduledSend() {
+	now := h.now()
+	if teamQuestionsClosed(now) {
+		return
+	}
+	if teamQuestionsFinalCallWindow(now) {
+		sent, failed, err := h.SendPendingFinalCalls()
+		if err != nil {
+			log.Printf("team questions final call send failed: %v", err)
+		} else if sent > 0 || len(failed) > 0 {
+			log.Printf("team questions final call send: sent %d, failed %d", sent, len(failed))
+		}
+		return
+	}
+
 	sent, failed, err := h.SendPendingInvites()
 	if err != nil {
 		log.Printf("team questions invite send failed: %v", err)
