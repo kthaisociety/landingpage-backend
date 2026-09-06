@@ -1355,11 +1355,11 @@ func (h *TeamQuestionsHandler) AdminUpdateTemplate(c *gin.Context) {
 	})
 }
 
-// AdminPreviewTemplate renders the team questions invite or reminder email
-// exactly as issueAndSend/issueAndSendReminder do, using a dummy name and an
-// example link, so the preview can never drift from what actually sends.
-// Kind selects which one: "reminder", or anything else (including omitted)
-// for the invite.
+// AdminPreviewTemplate renders the team questions invite, reminder, or final
+// call email exactly as issueAndSendOrdinary/issueAndSendFinalCall do, using
+// a dummy name and an example link, so the preview can never drift from what
+// actually sends. Kind selects which one: "reminder", "final_call", or
+// anything else (including omitted) for the invite.
 func (h *TeamQuestionsHandler) AdminPreviewTemplate(c *gin.Context) {
 	var body struct {
 		EmailTemplate string `json:"email_template"`
@@ -1372,18 +1372,27 @@ func (h *TeamQuestionsHandler) AdminPreviewTemplate(c *gin.Context) {
 	}
 
 	render := email.RenderTeamQuestionsInvite
+	templateText := body.EmailTemplate
 	subjectTemplate := body.EmailSubject
-	if strings.TrimSpace(subjectTemplate) == "" {
-		subjectTemplate = defaultTeamQuestionsEmailSubject
-	}
-	if body.Kind == "reminder" {
+	switch body.Kind {
+	case "reminder":
 		render = email.RenderTeamQuestionsReminder
 		if strings.TrimSpace(body.EmailSubject) == "" {
 			subjectTemplate = defaultTeamQuestionsReminderSubject
 		}
+	case "final_call":
+		// Final call content isn't admin-editable yet (issueAndSendFinalCall
+		// always uses these two constants) — always preview the fixed copy
+		// rather than whatever, if anything, the client sent.
+		templateText = defaultTeamQuestionsFinalCallTemplate
+		subjectTemplate = defaultTeamQuestionsFinalCallSubject
+	default:
+		if strings.TrimSpace(subjectTemplate) == "" {
+			subjectTemplate = defaultTeamQuestionsEmailSubject
+		}
 	}
 
-	subject, html, err := render("Alex", "Jones", []string{"Development", "Research"}, body.EmailTemplate, subjectTemplate, h.formURL("example-token"))
+	subject, html, err := render("Alex", "Jones", []string{"Development", "Research"}, templateText, subjectTemplate, h.formURL("example-token"))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to render preview"})
 		return
