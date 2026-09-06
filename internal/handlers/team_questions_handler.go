@@ -1210,6 +1210,55 @@ func (h *TeamQuestionsHandler) AdminUpdateTemplate(c *gin.Context) {
 		return
 	}
 
+	// Column name -> new value, built only from keys this request actually
+	// supplied. Persisting via this map with a targeted SQL UPDATE (below),
+	// rather than the usual load-mutate-Save() round trip, matters here:
+	// even code that only ever *mutates* the fields a request named would
+	// still have Save() write every other column from its in-memory
+	// snapshot, so two admins saving different fields at close to the same
+	// time could still have the second Save() silently revert the first's
+	// change to a column neither request's snapshot had caught up on yet.
+	// A column-scoped UPDATE can't do that: it only ever touches the
+	// columns present in this map, no matter what else changed in between.
+	updates := map[string]interface{}{}
+	for _, field := range []struct {
+		key    string
+		column string
+		kind   string // "string" or "time"
+	}{
+		{"email_template", "email_template", "string"},
+		{"email_subject", "email_subject", "string"},
+		{"reminder_email_template", "reminder_email_template", "string"},
+		{"reminder_email_subject", "reminder_email_subject", "string"},
+		{"final_call_start_override", "final_call_start", "time"},
+		{"submission_cutoff_override", "submission_cutoff", "time"},
+	} {
+		v, present := raw[field.key]
+		if !present {
+			continue
+		}
+		switch field.kind {
+		case "string":
+			var s string
+			if err := json.Unmarshal(v, &s); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": field.key + " must be a string"})
+				return
+			}
+			updates[field.column] = strings.TrimSpace(s)
+		case "time":
+			var t *time.Time
+			if err := json.Unmarshal(v, &t); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": field.key + " must be a timestamp or null"})
+				return
+			}
+			updates[field.column] = t
+		}
+	}
+	if len(updates) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "request did not include any recognized team questions settings"})
+		return
+	}
+
 	var settings models.TeamQuestionsSettings
 	err = h.db.First(&settings).Error
 	if err != nil && err != gorm.ErrRecordNotFound {
@@ -1218,57 +1267,61 @@ func (h *TeamQuestionsHandler) AdminUpdateTemplate(c *gin.Context) {
 	}
 	isNew := errors.Is(err, gorm.ErrRecordNotFound)
 
-	setString := func(key string, dst *string) bool {
-		v, present := raw[key]
-		if !present {
-			return true
-		}
-		var s string
-		if err := json.Unmarshal(v, &s); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": key + " must be a string"})
-			return false
-		}
-		*dst = strings.TrimSpace(s)
-		return true
+	// Validate the *effective* result of this request layered onto whatever
+	// is currently saved — using only the two deadline fields, since that's
+	// all effectiveTeamQuestionsFinalCallStart/SubmissionCutoff look at.
+	effective := models.TeamQuestionsSettings{FinalCallStart: settings.FinalCallStart, SubmissionCutoff: settings.SubmissionCutoff}
+	if v, ok := updates["final_call_start"]; ok {
+		effective.FinalCallStart = v.(*time.Time)
 	}
-	setTimePtr := func(key string, dst **time.Time) bool {
-		v, present := raw[key]
-		if !present {
-			return true
-		}
-		var t *time.Time
-		if err := json.Unmarshal(v, &t); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": key + " must be a timestamp or null"})
-			return false
-		}
-		*dst = t
-		return true
+	if v, ok := updates["submission_cutoff"]; ok {
+		effective.SubmissionCutoff = v.(*time.Time)
 	}
-
-	if !setString("email_template", &settings.EmailTemplate) ||
-		!setString("email_subject", &settings.EmailSubject) ||
-		!setString("reminder_email_template", &settings.ReminderEmailTemplate) ||
-		!setString("reminder_email_subject", &settings.ReminderEmailSubject) ||
-		!setTimePtr("final_call_start_override", &settings.FinalCallStart) ||
-		!setTimePtr("submission_cutoff_override", &settings.SubmissionCutoff) {
-		return
-	}
-
-	if !effectiveTeamQuestionsFinalCallStart(settings).Before(effectiveTeamQuestionsSubmissionCutoff(settings)) {
+	if !effectiveTeamQuestionsFinalCallStart(effective).Before(effectiveTeamQuestionsSubmissionCutoff(effective)) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "final call start must be before the submission cutoff"})
 		return
 	}
 
-	settings.UpdatedByEmail = adminEmail
+	updates["updated_by_email"] = adminEmail
 
 	if isNew {
-		err = h.db.Create(&settings).Error
+		// No concurrent-clobber risk on first creation — there's nothing
+		// else to clobber yet — so applying the map onto the zero-valued
+		// settings and Create()-ing it directly is fine.
+		for column, value := range updates {
+			switch column {
+			case "email_template":
+				settings.EmailTemplate = value.(string)
+			case "email_subject":
+				settings.EmailSubject = value.(string)
+			case "reminder_email_template":
+				settings.ReminderEmailTemplate = value.(string)
+			case "reminder_email_subject":
+				settings.ReminderEmailSubject = value.(string)
+			case "final_call_start":
+				settings.FinalCallStart = value.(*time.Time)
+			case "submission_cutoff":
+				settings.SubmissionCutoff = value.(*time.Time)
+			case "updated_by_email":
+				settings.UpdatedByEmail = value.(string)
+			}
+		}
+		if err := h.db.Create(&settings).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save email template"})
+			return
+		}
 	} else {
-		err = h.db.Save(&settings).Error
-	}
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save email template"})
-		return
+		if err := h.db.Model(&models.TeamQuestionsSettings{}).Where("id = ?", settings.ID).Updates(updates).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save email template"})
+			return
+		}
+		// Re-read: `settings` above is this request's now-stale snapshot,
+		// and the response/cache must reflect what's actually persisted,
+		// including any column another request changed concurrently.
+		if err := h.db.First(&settings, settings.ID).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "saved, but failed to reload email template"})
+			return
+		}
 	}
 	h.applyDeadlineCache(settings)
 
