@@ -86,8 +86,9 @@ func TestIssueAndSendOrdinaryReleasesLockBeforeSendAndRetriesOnFailure(t *testin
 	// First attempt: the token is committed, the send fails, and the unused
 	// token is deleted afterward — no lock is held during either step.
 	script.add(tqSQLStep{kind: "begin"}, tqFinalLockedApplication(t, id, row),
-		tqOrdinaryTokenInsert(t, id, &insertedHash), tqSQLStep{kind: "commit"},
-		tqOrdinaryTokenDelete())
+		tqOrdinaryTokenInsert(t, id, &insertedHash), tqSQLStep{kind: "commit"})
+	script.add(tqNotStaleSteps(t, id)...)
+	script.add(tqOrdinaryTokenDelete())
 	err := h.issueAndSendOrdinary(application, "body", "subject", false, false)
 	require.ErrorIs(t, err, sendFailure)
 	require.Equal(t, 1, calls)
@@ -96,10 +97,82 @@ func TestIssueAndSendOrdinaryReleasesLockBeforeSendAndRetriesOnFailure(t *testin
 	// the (successful) send happen, followed by the stamp update.
 	firstHash := insertedHash
 	script.add(tqSQLStep{kind: "begin"}, tqFinalLockedApplication(t, id, row),
-		tqOrdinaryTokenInsert(t, id, &insertedHash), tqSQLStep{kind: "commit"},
-		tqOrdinaryStamp("team_questions_invite_sent_at"))
+		tqOrdinaryTokenInsert(t, id, &insertedHash), tqSQLStep{kind: "commit"})
+	script.add(tqNotStaleSteps(t, id)...)
+	script.add(tqOrdinaryStamp("team_questions_invite_sent_at"))
 	err = h.issueAndSendOrdinary(application, "body", "subject", false, false)
 	require.NoError(t, err)
 	require.Equal(t, 2, calls)
 	require.NotEqual(t, firstHash, insertedHash, "a retry must issue a fresh token")
+}
+
+// TestIssueAndSendOrdinarySkipsWhenSuperseded covers the pre-dispatch
+// staleness check: once the token's transaction commits and releases the
+// row lock, a concurrent resend/reminder/final-call (or the application
+// leaving pending some other way) can make that token's link dead on
+// arrival. The stale token must be discarded and the send skipped, never
+// dispatched.
+func TestIssueAndSendOrdinarySkipsWhenSuperseded(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		newerCount int64
+		status     models.GeneralApplicationStatus
+	}{
+		{name: "a newer token now exists", newerCount: 1, status: models.GeneralApplicationStatusPending},
+		{name: "the application left pending", newerCount: 0, status: models.GeneralApplicationStatusAvailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, script := newTeamQuestionsSQL(t)
+			h := NewTeamQuestionsHandler(db, &config.Config{FrontendURL: "https://example.com"})
+			h.now = func() time.Time { return teamQuestionsFinalCallStart.Add(-time.Hour) }
+			h.sendInvite = func(models.GeneralApplication, string, string, string) error {
+				t.Fatal("unexpected send: a superseded/stale token must never be dispatched")
+				return nil
+			}
+
+			id := uuid.New()
+			application := models.GeneralApplication{Id: id, Status: models.GeneralApplicationStatusPending}
+			row := tqFinalRow(id, generalApplicationYear, models.GeneralApplicationStatusPending, nil)
+
+			script.add(tqSQLStep{kind: "begin"}, tqFinalLockedApplication(t, id, row),
+				tqOrdinaryTokenInsert(t, id, nil), tqSQLStep{kind: "commit"})
+			script.add(tqSQLStep{kind: "query", contains: []string{`FROM "team_questions_tokens"`, "count(*)"}, columns: []string{"count"}, rows: [][]driver.Value{{tc.newerCount}}})
+			if tc.newerCount == 0 {
+				script.add(tqSQLStep{kind: "query", contains: []string{`SELECT "status" FROM "general_applications"`}, columns: []string{"status"}, rows: [][]driver.Value{{string(tc.status)}}})
+			}
+			script.add(tqOrdinaryTokenDelete())
+
+			err := h.issueAndSendOrdinary(application, "body", "subject", false, false)
+			require.ErrorIs(t, err, errTeamQuestionsTokenSuperseded)
+		})
+	}
+}
+
+// TestIssueAndSendOrdinaryDeliveryNotRecorded covers the case where SES
+// accepts the email but the follow-up stamp write fails: this must never be
+// reported as an ordinary send failure, since the applicant already
+// received the email and treating it as failed risks a duplicate resend.
+func TestIssueAndSendOrdinaryDeliveryNotRecorded(t *testing.T) {
+	db, script := newTeamQuestionsSQL(t)
+	h := NewTeamQuestionsHandler(db, &config.Config{FrontendURL: "https://example.com"})
+	h.now = func() time.Time { return teamQuestionsFinalCallStart.Add(-time.Hour) }
+	calls := 0
+	h.sendInvite = func(models.GeneralApplication, string, string, string) error { calls++; return nil }
+
+	id := uuid.New()
+	application := models.GeneralApplication{Id: id, Status: models.GeneralApplicationStatusPending}
+	row := tqFinalRow(id, generalApplicationYear, models.GeneralApplicationStatusPending, nil)
+	stampFailure := errors.New("scripted stamp failure")
+
+	script.add(tqSQLStep{kind: "begin"}, tqFinalLockedApplication(t, id, row),
+		tqOrdinaryTokenInsert(t, id, nil), tqSQLStep{kind: "commit"})
+	script.add(tqNotStaleSteps(t, id)...)
+	stamp := tqOrdinaryStamp("team_questions_invite_sent_at")
+	stamp.err = stampFailure
+	script.add(stamp)
+
+	err := h.issueAndSendOrdinary(application, "body", "subject", false, false)
+	require.ErrorIs(t, err, errTeamQuestionsDeliveryNotRecorded)
+	require.ErrorIs(t, err, stampFailure)
+	require.Equal(t, 1, calls, "the email must have actually been sent")
 }

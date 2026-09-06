@@ -39,6 +39,22 @@ var invalidLinkError = gin.H{"error": "this link is invalid or has expired"}
 var errTeamQuestionsClosed = errors.New("team questions submissions closed after September 8, 2026 (Europe/Stockholm)")
 var errTeamQuestionsOrdinarySendEnded = errors.New("ordinary automatic team questions emails have ended")
 
+// errTeamQuestionsTokenSuperseded means a token committed by this call was
+// no longer safe to deliver by the time its lock-free pre-dispatch check
+// ran: a concurrent resend/reminder/final-call minted a newer token for the
+// same application (this one's link would already be dead on arrival — see
+// lookupTokenInDB), or the application left pending by some other path.
+// Whatever superseded it is expected to cover the applicant instead.
+var errTeamQuestionsTokenSuperseded = errors.New("a concurrent update superseded this send")
+
+// errTeamQuestionsDeliveryNotRecorded wraps a failure to persist
+// team_questions_{invite,reminder,final_call}_sent_at after the provider
+// already accepted the message. Callers must never treat this the same as
+// an ordinary send failure: the email is out, so counting it as failed (and
+// inviting a resend) risks double-emailing the applicant. It's surfaced
+// loudly instead, for manual reconciliation.
+var errTeamQuestionsDeliveryNotRecorded = errors.New("team questions email was delivered but its delivery could not be recorded")
+
 type TeamQuestionsHandler struct {
 	db               *gorm.DB
 	cfg              *config.Config
@@ -121,6 +137,37 @@ func (h *TeamQuestionsHandler) lookupTokenInDB(db *gorm.DB, raw string) (*models
 	}
 
 	return &token, nil
+}
+
+// sendCandidateStale reports whether a token committed by issueAndSendOrdinary
+// or issueAndSendFinalCall is no longer safe to actually deliver. It's called
+// after that token's transaction commits and its row lock is released — a
+// concurrent resend, reminder, or final call may have minted a newer token
+// for the same application in the meantime (this one's link would already
+// be dead on arrival: lookupTokenInDB only accepts the newest unused token),
+// or the application may have left pending by some other path entirely
+// (e.g. a direct status change) while nothing held the row lock. Either way,
+// this token's send should not go out.
+//
+// This narrows the race rather than closing it — there's still a small gap
+// between this check and the sender call actually being invoked — the same
+// order of remaining risk this file already accepts elsewhere (see the
+// final-call stamp's "not atomic" comment below).
+func (h *TeamQuestionsHandler) sendCandidateStale(applicationID uuid.UUID, tokenID uint) (bool, error) {
+	var newerCount int64
+	if err := h.db.Model(&models.TeamQuestionsToken{}).
+		Where("application_id = ? AND id > ?", applicationID, tokenID).
+		Count(&newerCount).Error; err != nil {
+		return false, err
+	}
+	if newerCount > 0 {
+		return true, nil
+	}
+	var current models.GeneralApplication
+	if err := h.db.Select("status").Where("id = ?", applicationID).First(&current).Error; err != nil {
+		return false, err
+	}
+	return current.Status != models.GeneralApplicationStatusPending, nil
 }
 
 // scopedTeamQuestions loads the configured questions for exactly the given
@@ -538,6 +585,14 @@ func (h *TeamQuestionsHandler) SendPendingInvites() (sent int, failed []string, 
 			if errors.Is(err, errTeamQuestionsClosed) || errors.Is(err, errTeamQuestionsOrdinarySendEnded) {
 				break
 			}
+			if errors.Is(err, errTeamQuestionsTokenSuperseded) {
+				continue // Something else already covers this application.
+			}
+			if errors.Is(err, errTeamQuestionsDeliveryNotRecorded) {
+				log.Printf("ATTENTION: team questions invite for application %s was delivered but not recorded — verify manually before resending: %v", application.Id, err)
+				sent++
+				continue
+			}
 			log.Printf("failed to send team questions invite for application %s: %v", application.Id, err)
 			failed = append(failed, application.Id.String())
 			continue
@@ -588,6 +643,14 @@ func (h *TeamQuestionsHandler) SendPendingReminders() (sent int, failed []string
 		if err := h.issueAndSendReminder(application, settings.ReminderEmailTemplate, settings.ReminderEmailSubject); err != nil {
 			if errors.Is(err, errTeamQuestionsClosed) || errors.Is(err, errTeamQuestionsOrdinarySendEnded) {
 				break
+			}
+			if errors.Is(err, errTeamQuestionsTokenSuperseded) {
+				continue // Something else already covers this application.
+			}
+			if errors.Is(err, errTeamQuestionsDeliveryNotRecorded) {
+				log.Printf("ATTENTION: team questions reminder for application %s was delivered but not recorded — verify manually before resending: %v", application.Id, err)
+				sent++
+				continue
 			}
 			log.Printf("failed to send team questions reminder for application %s: %v", application.Id, err)
 			failed = append(failed, application.Id.String())
@@ -640,6 +703,11 @@ func (h *TeamQuestionsHandler) SendPendingFinalCalls() (sent int, failed []strin
 		}
 		delivered, err := h.issueAndSendFinalCall(application.Id)
 		if err != nil {
+			if errors.Is(err, errTeamQuestionsDeliveryNotRecorded) {
+				log.Printf("ATTENTION: team questions final call for application %s was delivered but not recorded — verify manually before resending: %v", application.Id, err)
+				sent++
+				continue
+			}
 			log.Printf("failed to send team questions final call for application %s: %v", application.Id, err)
 			failed = append(failed, application.Id.String())
 			continue
@@ -667,6 +735,7 @@ func (h *TeamQuestionsHandler) issueAndSendFinalCall(applicationID uuid.UUID) (b
 
 	var application models.GeneralApplication
 	var raw string
+	var tokenID uint
 	ready := false
 	err := h.db.Transaction(func(tx *gorm.DB) error {
 		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&application, "id = ?", applicationID).Error
@@ -696,6 +765,7 @@ func (h *TeamQuestionsHandler) issueAndSendFinalCall(applicationID uuid.UUID) (b
 		if err := tx.Create(&token).Error; err != nil {
 			return err
 		}
+		tokenID = token.ID
 		// One more check before committing and releasing the lock — a window
 		// closing here still rolls back the unsent token along with it.
 		if !teamQuestionsFinalCallWindow(h.now()) {
@@ -708,6 +778,17 @@ func (h *TeamQuestionsHandler) issueAndSendFinalCall(applicationID uuid.UUID) (b
 		return false, err
 	}
 
+	// The lock is released; before spending a network round-trip, make sure
+	// nothing superseded this token in the meantime — see sendCandidateStale.
+	if stale, staleErr := h.sendCandidateStale(applicationID, tokenID); staleErr != nil {
+		return false, staleErr
+	} else if stale {
+		if delErr := h.db.Exec("DELETE FROM team_questions_tokens WHERE id = ?", tokenID).Error; delErr != nil {
+			log.Printf("failed to remove superseded team questions token for application %s: %v", applicationID, delErr)
+		}
+		return false, nil
+	}
+
 	if err := h.sendFinalCall(application, defaultTeamQuestionsFinalCallTemplate, defaultTeamQuestionsFinalCallSubject, h.formURL(raw)); err != nil {
 		return false, err
 	}
@@ -715,12 +796,17 @@ func (h *TeamQuestionsHandler) issueAndSendFinalCall(applicationID uuid.UUID) (b
 	// marker. Record accepted delivery even if the send finished after cutoff.
 	// SES acceptance and this commit are not atomic; a crash between them
 	// can still cause a duplicate on retry.
+	//
+	// Any failure from here on is wrapped in errTeamQuestionsDeliveryNotRecorded:
+	// the email is already sent, so callers must never treat this as an
+	// ordinary send failure (which would invite a duplicate resend) — it
+	// needs a human to reconcile instead.
 	result := h.db.Exec("UPDATE general_applications SET team_questions_final_call_sent_at = ? WHERE id = ? AND team_questions_final_call_sent_at IS NULL", h.now(), applicationID)
 	if result.Error != nil {
-		return false, result.Error
+		return false, fmt.Errorf("%w: %w", errTeamQuestionsDeliveryNotRecorded, result.Error)
 	}
 	if result.RowsAffected != 1 {
-		return false, fmt.Errorf("final call delivered but its timestamp was not recorded")
+		return false, fmt.Errorf("%w: final call delivered but its timestamp was not recorded", errTeamQuestionsDeliveryNotRecorded)
 	}
 	return true, nil
 }
@@ -758,6 +844,15 @@ func (h *TeamQuestionsHandler) AdminResend(c *gin.Context) {
 	if err := h.issueAndSend(application, settings.EmailTemplate, settings.EmailSubject); err != nil {
 		if errors.Is(err, errTeamQuestionsClosed) {
 			c.JSON(http.StatusGone, gin.H{"error": err.Error()})
+			return
+		}
+		if errors.Is(err, errTeamQuestionsTokenSuperseded) {
+			c.JSON(http.StatusConflict, gin.H{"error": "a concurrent update issued a newer link for this application; refresh and try again"})
+			return
+		}
+		if errors.Is(err, errTeamQuestionsDeliveryNotRecorded) {
+			log.Printf("ATTENTION: team questions resend for application %s was delivered but not recorded — verify manually before resending: %v", application.Id, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "the email was sent but could not be recorded — check this application manually before resending"})
 			return
 		}
 		log.Printf("failed to resend team questions invite for application %s: %v", application.Id, err)
@@ -841,6 +936,17 @@ func (h *TeamQuestionsHandler) issueAndSendOrdinary(application models.GeneralAp
 		return err
 	}
 
+	// The lock is released; before spending a network round-trip, make sure
+	// nothing superseded this token in the meantime — see sendCandidateStale.
+	if stale, staleErr := h.sendCandidateStale(current.Id, tokenID); staleErr != nil {
+		return staleErr
+	} else if stale {
+		if delErr := h.db.Exec("DELETE FROM team_questions_tokens WHERE id = ?", tokenID).Error; delErr != nil {
+			log.Printf("failed to remove superseded team questions token for application %s: %v", current.Id, delErr)
+		}
+		return errTeamQuestionsTokenSuperseded
+	}
+
 	sender := h.sendInvite
 	stampSQL := "UPDATE general_applications SET team_questions_invite_sent_at = ? WHERE id = ?"
 	if reminder {
@@ -860,7 +966,16 @@ func (h *TeamQuestionsHandler) issueAndSendOrdinary(application models.GeneralAp
 	} else {
 		log.Printf("[dev] skipping SES — would have sent team questions email for application %s", current.Id)
 	}
-	return h.db.Exec(stampSQL, h.now(), current.Id).Error
+	// The email is already out at this point (or dev-mode skipped it): a
+	// failure here must never be reported as an ordinary send failure — the
+	// token stays in place so the automatic queries don't pick this
+	// application up again, but errTeamQuestionsDeliveryNotRecorded tells
+	// callers delivery happened and only the bookkeeping failed, so a human
+	// reconciles it instead of resending.
+	if err := h.db.Exec(stampSQL, h.now(), current.Id).Error; err != nil {
+		return fmt.Errorf("%w: %w", errTeamQuestionsDeliveryNotRecorded, err)
+	}
+	return nil
 }
 
 func (h *TeamQuestionsHandler) AdminGetSubmission(c *gin.Context) {
