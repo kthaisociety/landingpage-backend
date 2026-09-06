@@ -141,6 +141,7 @@ func main() {
 		&models.TeamQuestion{},
 		&models.GeneralApplicationSettings{},
 		&models.FinalizeRecruitmentPhase{},
+		&models.TeamQuestionsDeliveryEvent{},
 	)
 	if err != nil {
 		log.Fatal("Failed to migrate database:", err)

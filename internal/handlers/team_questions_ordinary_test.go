@@ -89,6 +89,7 @@ func TestIssueAndSendOrdinaryReleasesLockBeforeSendAndRetriesOnFailure(t *testin
 		tqOrdinaryTokenInsert(t, id, &insertedHash), tqSQLStep{kind: "commit"})
 	script.add(tqNotStaleSteps(t, id)...)
 	script.add(tqOrdinaryTokenDelete())
+	script.add(tqDeliveryEvent(t, id, models.TeamQuestionsDeliveryOutcomeFailed))
 	err := h.issueAndSendOrdinary(application, "body", "subject", false, false)
 	require.ErrorIs(t, err, sendFailure)
 	require.Equal(t, 1, calls)
@@ -100,6 +101,7 @@ func TestIssueAndSendOrdinaryReleasesLockBeforeSendAndRetriesOnFailure(t *testin
 		tqOrdinaryTokenInsert(t, id, &insertedHash), tqSQLStep{kind: "commit"})
 	script.add(tqNotStaleSteps(t, id)...)
 	script.add(tqOrdinaryStamp("team_questions_invite_sent_at"))
+	script.add(tqDeliveryEvent(t, id, models.TeamQuestionsDeliveryOutcomeSent))
 	err = h.issueAndSendOrdinary(application, "body", "subject", false, false)
 	require.NoError(t, err)
 	require.Equal(t, 2, calls)
@@ -141,6 +143,7 @@ func TestIssueAndSendOrdinarySkipsWhenSuperseded(t *testing.T) {
 				script.add(tqSQLStep{kind: "query", contains: []string{`SELECT "status" FROM "general_applications"`}, columns: []string{"status"}, rows: [][]driver.Value{{string(tc.status)}}})
 			}
 			script.add(tqOrdinaryTokenDelete())
+			script.add(tqDeliveryEvent(t, id, models.TeamQuestionsDeliveryOutcomeSuperseded))
 
 			err := h.issueAndSendOrdinary(application, "body", "subject", false, false)
 			require.ErrorIs(t, err, errTeamQuestionsTokenSuperseded)
@@ -170,6 +173,7 @@ func TestIssueAndSendOrdinaryDeliveryNotRecorded(t *testing.T) {
 	stamp := tqOrdinaryStamp("team_questions_invite_sent_at")
 	stamp.err = stampFailure
 	script.add(stamp)
+	script.add(tqDeliveryEvent(t, id, models.TeamQuestionsDeliveryOutcomeNotRecorded))
 
 	err := h.issueAndSendOrdinary(application, "body", "subject", false, false)
 	require.ErrorIs(t, err, errTeamQuestionsDeliveryNotRecorded)

@@ -155,6 +155,7 @@ func (h *TeamQuestionsHandler) Register(r *gin.RouterGroup) {
 	admin.Use(middleware.RoleRequired(h.cfg, "admin"))
 	admin.GET("/team-questions/send-bulk/preview", h.AdminSendBulkPreview)
 	admin.POST("/team-questions/send-bulk", h.AdminSendBulk)
+	admin.GET("/team-questions/delivery-events", h.AdminListDeliveryEvents)
 	admin.POST("/:id/team-questions/resend", h.AdminResend)
 	admin.GET("/:id/team-questions", h.AdminGetSubmission)
 	admin.GET("/team-questions/template", h.AdminGetTemplate)
@@ -228,6 +229,29 @@ func (h *TeamQuestionsHandler) sendCandidateStale(applicationID uuid.UUID, token
 		return false, err
 	}
 	return current.Status != models.GeneralApplicationStatusPending, nil
+}
+
+// recordDeliveryEvent is the only place Team Questions send outcomes become
+// visible to admins — before this, sent/failed/superseded/not-recorded
+// outcomes only ever existed as log.Printf lines. Best-effort and
+// synchronous: a logging failure here must never change a send's outcome or
+// bubble up as an error (hence swallowed, just logged), and it must not run
+// in a goroutine, since the scripted-SQL test harness in
+// team_questions_db_test.go requires strict single-threaded query ordering
+// and closes its connection pool in t.Cleanup.
+//
+// Raw SQL, deliberately: a plain db.Create here would open its own implicit
+// transaction for a single insert, for no benefit — same reasoning as the
+// other post-lock raw-SQL writes in this file.
+func (h *TeamQuestionsHandler) recordDeliveryEvent(applicationID uuid.UUID, kind models.TeamQuestionsDeliveryEventKind, outcome models.TeamQuestionsDeliveryOutcome, automatic bool, detail string) {
+	now := h.now()
+	err := h.db.Exec(
+		"INSERT INTO team_questions_delivery_events (created_at, updated_at, application_id, kind, outcome, automatic, detail) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		now, now, applicationID, kind, outcome, automatic, detail,
+	).Error
+	if err != nil {
+		log.Printf("failed to record team questions delivery event (application %s, kind %s, outcome %s): %v", applicationID, kind, outcome, err)
+	}
 }
 
 // scopedTeamQuestions loads the configured questions for exactly the given
@@ -628,6 +652,19 @@ func (h *TeamQuestionsHandler) AdminSendBulk(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"sent": sent, "failed": failed})
 }
 
+// AdminListDeliveryEvents returns the most recent Team Questions send
+// outcomes for the admin-facing delivery activity view — open to any admin
+// (matching AdminGetSubmission/AdminGetTemplate's read-openness), unlike
+// AdminSendBulk/AdminUpdateTemplate, which are IT-only to act on.
+func (h *TeamQuestionsHandler) AdminListDeliveryEvents(c *gin.Context) {
+	var events []models.TeamQuestionsDeliveryEvent
+	if err := h.db.Order("created_at DESC").Limit(200).Find(&events).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load delivery events"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"events": events})
+}
+
 // SendPendingInvites emails the Team Questions invite to every pending,
 // never-invited application (see pendingUninvitedApplications). Shared by the
 // admin bulk-send endpoint and the daily scheduler so both go through the
@@ -846,22 +883,29 @@ func (h *TeamQuestionsHandler) issueAndSendFinalCall(applicationID uuid.UUID) (b
 		ready = true
 		return nil
 	})
-	if err != nil || !ready {
+	if err != nil {
+		h.recordDeliveryEvent(applicationID, models.TeamQuestionsDeliveryEventKindFinalCall, models.TeamQuestionsDeliveryOutcomeFailed, true, err.Error())
 		return false, err
+	}
+	if !ready {
+		return false, nil
 	}
 
 	// The lock is released; before spending a network round-trip, make sure
 	// nothing superseded this token in the meantime — see sendCandidateStale.
 	if stale, staleErr := h.sendCandidateStale(applicationID, tokenID); staleErr != nil {
+		h.recordDeliveryEvent(applicationID, models.TeamQuestionsDeliveryEventKindFinalCall, models.TeamQuestionsDeliveryOutcomeFailed, true, staleErr.Error())
 		return false, staleErr
 	} else if stale {
 		if delErr := h.db.Exec("DELETE FROM team_questions_tokens WHERE id = ?", tokenID).Error; delErr != nil {
 			log.Printf("failed to remove superseded team questions token for application %s: %v", applicationID, delErr)
 		}
+		h.recordDeliveryEvent(applicationID, models.TeamQuestionsDeliveryEventKindFinalCall, models.TeamQuestionsDeliveryOutcomeSuperseded, true, "")
 		return false, nil
 	}
 
 	if err := h.sendFinalCall(application, defaultTeamQuestionsFinalCallTemplate, defaultTeamQuestionsFinalCallSubject, h.formURL(raw)); err != nil {
+		h.recordDeliveryEvent(applicationID, models.TeamQuestionsDeliveryEventKindFinalCall, models.TeamQuestionsDeliveryOutcomeFailed, true, err.Error())
 		return false, err
 	}
 	// Explicit SQL is intentional: ordinary GORM saves cannot update this
@@ -875,11 +919,14 @@ func (h *TeamQuestionsHandler) issueAndSendFinalCall(applicationID uuid.UUID) (b
 	// needs a human to reconcile instead.
 	result := h.db.Exec("UPDATE general_applications SET team_questions_final_call_sent_at = ? WHERE id = ? AND team_questions_final_call_sent_at IS NULL", h.now(), applicationID)
 	if result.Error != nil {
+		h.recordDeliveryEvent(applicationID, models.TeamQuestionsDeliveryEventKindFinalCall, models.TeamQuestionsDeliveryOutcomeNotRecorded, true, result.Error.Error())
 		return false, fmt.Errorf("%w: %w", errTeamQuestionsDeliveryNotRecorded, result.Error)
 	}
 	if result.RowsAffected != 1 {
+		h.recordDeliveryEvent(applicationID, models.TeamQuestionsDeliveryEventKindFinalCall, models.TeamQuestionsDeliveryOutcomeNotRecorded, true, "timestamp update affected no rows")
 		return false, fmt.Errorf("%w: final call delivered but its timestamp was not recorded", errTeamQuestionsDeliveryNotRecorded)
 	}
+	h.recordDeliveryEvent(applicationID, models.TeamQuestionsDeliveryEventKindFinalCall, models.TeamQuestionsDeliveryOutcomeSent, true, "")
 	return true, nil
 }
 
@@ -1008,18 +1055,25 @@ func (h *TeamQuestionsHandler) issueAndSendOrdinary(application models.GeneralAp
 		// closing here still rolls back the unsent token along with it.
 		return h.ordinarySendWindowError(automatic)
 	})
+	kind := models.TeamQuestionsDeliveryEventKindInvite
+	if reminder {
+		kind = models.TeamQuestionsDeliveryEventKindReminder
+	}
 	if err != nil {
+		h.recordDeliveryEvent(application.Id, kind, models.TeamQuestionsDeliveryOutcomeFailed, automatic, err.Error())
 		return err
 	}
 
 	// The lock is released; before spending a network round-trip, make sure
 	// nothing superseded this token in the meantime — see sendCandidateStale.
 	if stale, staleErr := h.sendCandidateStale(current.Id, tokenID); staleErr != nil {
+		h.recordDeliveryEvent(current.Id, kind, models.TeamQuestionsDeliveryOutcomeFailed, automatic, staleErr.Error())
 		return staleErr
 	} else if stale {
 		if delErr := h.db.Exec("DELETE FROM team_questions_tokens WHERE id = ?", tokenID).Error; delErr != nil {
 			log.Printf("failed to remove superseded team questions token for application %s: %v", current.Id, delErr)
 		}
+		h.recordDeliveryEvent(current.Id, kind, models.TeamQuestionsDeliveryOutcomeSuperseded, automatic, "")
 		return errTeamQuestionsTokenSuperseded
 	}
 
@@ -1037,6 +1091,7 @@ func (h *TeamQuestionsHandler) issueAndSendOrdinary(application models.GeneralAp
 			if delErr := h.db.Exec("DELETE FROM team_questions_tokens WHERE id = ?", tokenID).Error; delErr != nil {
 				log.Printf("failed to remove unsent team questions token for application %s: %v", current.Id, delErr)
 			}
+			h.recordDeliveryEvent(current.Id, kind, models.TeamQuestionsDeliveryOutcomeFailed, automatic, err.Error())
 			return err
 		}
 	} else {
@@ -1049,8 +1104,10 @@ func (h *TeamQuestionsHandler) issueAndSendOrdinary(application models.GeneralAp
 	// callers delivery happened and only the bookkeeping failed, so a human
 	// reconciles it instead of resending.
 	if err := h.db.Exec(stampSQL, h.now(), current.Id).Error; err != nil {
+		h.recordDeliveryEvent(current.Id, kind, models.TeamQuestionsDeliveryOutcomeNotRecorded, automatic, err.Error())
 		return fmt.Errorf("%w: %w", errTeamQuestionsDeliveryNotRecorded, err)
 	}
+	h.recordDeliveryEvent(current.Id, kind, models.TeamQuestionsDeliveryOutcomeSent, automatic, "")
 	return nil
 }
 

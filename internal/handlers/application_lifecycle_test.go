@@ -62,6 +62,7 @@ func TestApplicationAndInterviewLifecycle(t *testing.T) {
 		&models.TeamQuestionsSettings{},
 		&models.TeamQuestion{},
 		&models.GeneralApplicationSettings{},
+		&models.TeamQuestionsDeliveryEvent{},
 	))
 
 	// The public "/applications/general" and "/applications/team-questions/:token"
@@ -127,6 +128,7 @@ func TestApplicationAndInterviewLifecycle(t *testing.T) {
 		if err := db.Where("email_normalized = ?", applicantEmail).First(&app).Error; err == nil {
 			db.Where("application_id = ?", app.Id).Delete(&models.TeamQuestionsSubmission{})
 			db.Where("application_id = ?", app.Id).Delete(&models.TeamQuestionsToken{})
+			db.Where("application_id = ?", app.Id).Unscoped().Delete(&models.TeamQuestionsDeliveryEvent{})
 			db.Unscoped().Delete(&app)
 		}
 		db.Where("email = ?", adminA.email).Unscoped().Delete(&models.Profile{})
@@ -718,6 +720,34 @@ func TestApplicationAndInterviewLifecycle(t *testing.T) {
 		require.Equal(t, http.StatusOK, rec.Code)
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &readBody))
 		require.True(t, overrideStart.Equal(readBody.FinalCallStart), "the read endpoint must reflect the saved override, not the default")
+	})
+
+	t.Run("delivery events are readable by any admin and reflect earlier sends", func(t *testing.T) {
+		// Earlier subtests (the resend above) already triggered at least one
+		// recorded send outcome; this just confirms it surfaced.
+		rec := doJSONRequest(t, engine, "GET", "/api/v1/applications/admin/team-questions/delivery-events", nil, adminA.cookie)
+		require.Equal(t, http.StatusOK, rec.Code, "any admin, not just IT, may read delivery events")
+		var body struct {
+			Events []struct {
+				ApplicationID string `json:"application_id"`
+				Kind          string `json:"kind"`
+				Outcome       string `json:"outcome"`
+				Automatic     bool   `json:"automatic"`
+			} `json:"events"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+		require.NotEmpty(t, body.Events, "the earlier resend should have recorded a delivery event")
+
+		var sawInviteSent bool
+		for _, event := range body.Events {
+			if event.ApplicationID == applicationID && event.Kind == "invite" && event.Outcome == "sent" {
+				sawInviteSent = true
+			}
+		}
+		require.True(t, sawInviteSent, "the earlier admin resend should show up as a sent invite event")
+
+		rec = doJSONRequest(t, engine, "GET", "/api/v1/applications/admin/team-questions/delivery-events", nil, nil)
+		require.Equal(t, http.StatusUnauthorized, rec.Code, "an unauthenticated caller must not see delivery events")
 	})
 }
 
