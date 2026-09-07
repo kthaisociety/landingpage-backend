@@ -144,3 +144,74 @@ func TestIsValidEmail(t *testing.T) {
 		require.False(t, isValidEmail(email), "expected %q to be invalid", email)
 	}
 }
+
+func TestManualOnboardingListRecords(t *testing.T) {
+	envFile := "../../.env"
+	if _, err := os.Stat(envFile); err != nil {
+		t.Skip("skipping: no .env file present (needs real JWT signing keys)")
+	}
+	require.NoError(t, godotenv.Load(envFile))
+
+	cfg, err := config.LoadConfig()
+	require.NoError(t, err)
+	cfg.OnboardingServiceSecret = "test-onboarding-service-secret"
+
+	adminCookie := func(t *testing.T) *http.Cookie {
+		t.Helper()
+		token, err := utils.WriteJWT("admin@kthais.com", []string{"user", "member", "admin"}, uuid.New(), cfg.JwtSigningKey, 60)
+		require.NoError(t, err)
+		return &http.Cookie{Name: "jwt", Value: token}
+	}
+
+	listRecords := func(t *testing.T, engine *gin.Engine, cookie *http.Cookie) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest("GET", "/api/v1/admin/onboarding/records", nil)
+		if cookie != nil {
+			req.AddCookie(cookie)
+		}
+		rec := httptest.NewRecorder()
+		engine.ServeHTTP(rec, req)
+		return rec
+	}
+
+	t.Run("proxies onboarding-service's response through unchanged", func(t *testing.T) {
+		fakeOnboardingService := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			require.Equal(t, "/internal/onboarding/records", r.URL.Path)
+			require.Equal(t, "test-onboarding-service-secret", r.Header.Get("X-Service-Secret"))
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[{"id":1,"first_name":"Ada","state":"notified"}]`))
+		}))
+		t.Cleanup(fakeOnboardingService.Close)
+		cfg.OnboardingServiceURL = fakeOnboardingService.URL
+
+		gin.SetMode(gin.TestMode)
+		engine := gin.New()
+		NewManualOnboardingHandler(cfg).Register(engine.Group("/api/v1"))
+
+		rec := listRecords(t, engine, adminCookie(t))
+		require.Equal(t, http.StatusOK, rec.Code)
+		require.JSONEq(t, `[{"id":1,"first_name":"Ada","state":"notified"}]`, rec.Body.String())
+	})
+
+	t.Run("returns an empty array when onboarding-service isn't configured", func(t *testing.T) {
+		cfg.OnboardingServiceURL = ""
+
+		gin.SetMode(gin.TestMode)
+		engine := gin.New()
+		NewManualOnboardingHandler(cfg).Register(engine.Group("/api/v1"))
+
+		rec := listRecords(t, engine, adminCookie(t))
+		require.Equal(t, http.StatusOK, rec.Code)
+		require.JSONEq(t, `[]`, rec.Body.String())
+	})
+
+	t.Run("non-admin is rejected", func(t *testing.T) {
+		gin.SetMode(gin.TestMode)
+		engine := gin.New()
+		NewManualOnboardingHandler(cfg).Register(engine.Group("/api/v1"))
+
+		rec := listRecords(t, engine, nil)
+		require.Equal(t, http.StatusUnauthorized, rec.Code)
+	})
+}
