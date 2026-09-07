@@ -3,6 +3,7 @@ package handlers
 import (
 	"log"
 	"net/http"
+	"strings"
 
 	"backend/internal/config"
 	"backend/internal/middleware"
@@ -56,6 +57,26 @@ func (h *ManualOnboardingHandler) Create(c *gin.Context) {
 	var req manualOnboardingRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "first_name, last_name, email, and assigned_team are required"})
+		return
+	}
+
+	// Same normalization/bounds as validateGeneralApplicationInput
+	// (general_application_handler.go) — this is the same "a name and an
+	// email address" shape, just arriving from an admin form instead of the
+	// public application form.
+	req.FirstName = strings.TrimSpace(req.FirstName)
+	req.LastName = strings.TrimSpace(req.LastName)
+	req.Email = strings.TrimSpace(req.Email)
+	if len(req.FirstName) == 0 || len(req.FirstName) > 80 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "first name is required and must be at most 80 characters"})
+		return
+	}
+	if len(req.LastName) == 0 || len(req.LastName) > 80 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "last name is required and must be at most 80 characters"})
+		return
+	}
+	if !isValidEmail(req.Email) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "valid email is required"})
 		return
 	}
 	if _, ok := allowedApplicationTeams[req.AssignedTeam]; !ok {

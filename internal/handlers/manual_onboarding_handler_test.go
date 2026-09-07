@@ -98,6 +98,33 @@ func TestManualOnboardingHandler(t *testing.T) {
 		require.Equal(t, http.StatusBadRequest, rec.Code)
 	})
 
+	t.Run("whitespace-only name is rejected", func(t *testing.T) {
+		body := map[string]string{
+			"first_name": "   ", "last_name": "Member",
+			"email": "board.member@example.com", "assigned_team": "IT",
+		}
+		rec := create(t, body, adminCookie(t))
+		require.Equal(t, http.StatusBadRequest, rec.Code)
+	})
+
+	t.Run("over-80-character name is rejected", func(t *testing.T) {
+		body := map[string]string{
+			"first_name": strings.Repeat("a", 81), "last_name": "Member",
+			"email": "board.member@example.com", "assigned_team": "IT",
+		}
+		rec := create(t, body, adminCookie(t))
+		require.Equal(t, http.StatusBadRequest, rec.Code)
+	})
+
+	t.Run("invalid email is rejected", func(t *testing.T) {
+		body := map[string]string{
+			"first_name": "Board", "last_name": "Member",
+			"email": "not-an-email", "assigned_team": "IT",
+		}
+		rec := create(t, body, adminCookie(t))
+		require.Equal(t, http.StatusBadRequest, rec.Code)
+	})
+
 	t.Run("valid request from an admin succeeds", func(t *testing.T) {
 		rec := create(t, validBody, adminCookie(t))
 		require.Equal(t, http.StatusOK, rec.Code)
