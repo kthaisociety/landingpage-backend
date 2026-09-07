@@ -1,8 +1,6 @@
 package handlers
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
@@ -300,68 +298,10 @@ func (h *GeneralApplicationHandler) AdminFinalizeDecision(c *gin.Context) {
 	}(application)
 
 	if application.Status == models.GeneralApplicationStatusAccepted {
-		go h.notifyOnboardingService(application)
+		go notifyOnboardingService(h.cfg, application.Id.String(), application.FirstName, application.LastName, application.Email, application.AssignedTeam)
 	}
 
 	c.JSON(http.StatusOK, application)
-}
-
-// onboardingNotifyRequest is the body sent to onboarding-service's own
-// POST /notify endpoint (not a route this backend hosts) — see
-// onboarding-service-plan.md. personal_email is the applicant's own address
-// from the application, named "personal" only relative to their future
-// kthais.com address, not KTH's.
-type onboardingNotifyRequest struct {
-	ApplicationID string `json:"application_id"`
-	FirstName     string `json:"first_name"`
-	LastName      string `json:"last_name"`
-	PersonalEmail string `json:"personal_email"`
-	AssignedTeam  string `json:"assigned_team"`
-}
-
-// notifyOnboardingService hands off a newly accepted applicant to
-// onboarding-service so it can run account provisioning. Best-effort and
-// non-fatal by design, same as the decision emails above: this call happens
-// after the finalize decision is already durably saved, so a delivery
-// failure here must never roll back or block the admin's accept action.
-// Skipped entirely (not an error) when OnboardingServiceURL isn't
-// configured — expected in any environment where onboarding-service isn't
-// deployed yet.
-func (h *GeneralApplicationHandler) notifyOnboardingService(application models.GeneralApplication) {
-	if h.cfg.OnboardingServiceURL == "" {
-		return
-	}
-
-	body, err := json.Marshal(onboardingNotifyRequest{
-		ApplicationID: application.Id.String(),
-		FirstName:     application.FirstName,
-		LastName:      application.LastName,
-		PersonalEmail: application.Email,
-		AssignedTeam:  application.AssignedTeam,
-	})
-	if err != nil {
-		log.Printf("onboarding notify: failed to marshal request for %s: %v", application.Id, err)
-		return
-	}
-
-	req, err := http.NewRequest(http.MethodPost, h.cfg.OnboardingServiceURL+"/notify", bytes.NewReader(body))
-	if err != nil {
-		log.Printf("onboarding notify: failed to build request for %s: %v", application.Id, err)
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Service-Secret", h.cfg.OnboardingServiceSecret)
-
-	client := http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Printf("onboarding notify: request failed for %s: %v", application.Id, err)
-		return
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		log.Printf("onboarding notify: onboarding-service returned %d for %s", resp.StatusCode, application.Id)
-	}
 }
 
 // errApplicationNotFinalizable is a sentinel returned from inside the
