@@ -666,16 +666,26 @@ func TestApplicationAndInterviewLifecycle(t *testing.T) {
 		rec := doJSONRequest(t, engine, "GET", "/api/v1/applications/admin/team-questions/template", nil, adminA.cookie)
 		require.Equal(t, http.StatusOK, rec.Code, "any admin may read the template and deadline settings")
 		var readBody struct {
+			FinalCallTemplate        string     `json:"final_call_template"`
+			FinalCallSubject         string     `json:"final_call_subject"`
 			FinalCallStart           time.Time  `json:"final_call_start"`
 			SubmissionCutoff         time.Time  `json:"submission_cutoff"`
 			FinalCallStartOverride   *time.Time `json:"final_call_start_override"`
 			SubmissionCutoffOverride *time.Time `json:"submission_cutoff_override"`
 		}
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &readBody))
+		require.Equal(t, defaultTeamQuestionsFinalCallTemplate, readBody.FinalCallTemplate, "unconfigured must resolve to the hardcoded default final call template")
+		require.Equal(t, defaultTeamQuestionsFinalCallSubject, readBody.FinalCallSubject, "unconfigured must resolve to the hardcoded default final call subject")
 		require.True(t, defaultTeamQuestionsFinalCallStart.Equal(readBody.FinalCallStart), "unconfigured must resolve to the hardcoded default final call start")
 		require.True(t, defaultTeamQuestionsSubmissionCutoff.Equal(readBody.SubmissionCutoff), "unconfigured must resolve to the hardcoded default submission cutoff")
 		require.Nil(t, readBody.FinalCallStartOverride)
 		require.Nil(t, readBody.SubmissionCutoffOverride)
+
+		rec = doJSONRequest(t, engine, "PUT", "/api/v1/applications/admin/team-questions/template", map[string]any{
+			"final_call_template": "Custom final call body.",
+			"final_call_subject":  "Custom final call subject",
+		}, adminA.cookie)
+		require.Equal(t, http.StatusForbidden, rec.Code, "only IT may edit the final call template")
 
 		rec = doJSONRequest(t, engine, "PUT", "/api/v1/applications/admin/team-questions/template", map[string]any{
 			"final_call_start_override":  defaultTeamQuestionsSubmissionCutoff,
@@ -749,12 +759,37 @@ func TestApplicationAndInterviewLifecycle(t *testing.T) {
 		require.Equal(t, http.StatusOK, rec.Code, "a request touching only one deadline field must be accepted")
 		var afterDeadlineOnlySave struct {
 			EmailTemplate            string     `json:"email_template"`
+			FinalCallTemplate        string     `json:"final_call_template"`
 			FinalCallStart           time.Time  `json:"final_call_start"`
 			SubmissionCutoffOverride *time.Time `json:"submission_cutoff_override"`
 		}
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &afterDeadlineOnlySave))
 		require.True(t, newOverrideStart.Equal(afterDeadlineOnlySave.FinalCallStart))
 		require.Equal(t, "Custom invite body saved from the templates panel.", afterDeadlineOnlySave.EmailTemplate, "saving only one deadline field must not revert the email template saved moments ago")
+		require.Equal(t, defaultTeamQuestionsFinalCallTemplate, afterDeadlineOnlySave.FinalCallTemplate, "saving only one deadline field must not touch the final call template")
+
+		// The final call template is edited from the same panel as the
+		// invite/reminder templates but must still be independently
+		// partial-updatable: saving it must not revert the invite template
+		// or the deadline overrides saved above, and vice versa.
+		rec = doJSONRequest(t, engine, "PUT", "/api/v1/applications/admin/team-questions/template", map[string]any{
+			"final_call_template": "Custom final call body.",
+			"final_call_subject":  "Custom final call subject",
+		}, adminIT.cookie)
+		require.Equal(t, http.StatusOK, rec.Code, "a request touching only the final call fields must be accepted")
+		var afterFinalCallOnlySave struct {
+			EmailTemplate          string     `json:"email_template"`
+			FinalCallTemplate      string     `json:"final_call_template"`
+			FinalCallSubject       string     `json:"final_call_subject"`
+			FinalCallStart         time.Time  `json:"final_call_start"`
+			FinalCallStartOverride *time.Time `json:"final_call_start_override"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &afterFinalCallOnlySave))
+		require.Equal(t, "Custom final call body.", afterFinalCallOnlySave.FinalCallTemplate)
+		require.Equal(t, "Custom final call subject", afterFinalCallOnlySave.FinalCallSubject)
+		require.Equal(t, "Custom invite body saved from the templates panel.", afterFinalCallOnlySave.EmailTemplate, "saving only the final call fields must not revert the invite template")
+		require.NotNil(t, afterFinalCallOnlySave.FinalCallStartOverride, "saving only the final call fields must not clear the deadline override")
+		require.True(t, newOverrideStart.Equal(*afterFinalCallOnlySave.FinalCallStartOverride))
 		require.NotNil(t, afterDeadlineOnlySave.SubmissionCutoffOverride, "saving only final_call_start_override must not clear the other deadline override")
 		require.True(t, overrideCutoff.Equal(*afterDeadlineOnlySave.SubmissionCutoffOverride))
 	})

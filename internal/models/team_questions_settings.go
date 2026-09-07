@@ -22,6 +22,12 @@ type TeamQuestionsSettings struct {
 	ReminderEmailTemplate string `gorm:"type:text;not null;default:''" json:"reminder_email_template"`
 	// ReminderEmailSubject may contain {{first_name}} and {{teams}} placeholders.
 	ReminderEmailSubject string `gorm:"type:text;not null;default:''" json:"reminder_email_subject"`
+	// FinalCallTemplate is sent once, automatically, when the final call
+	// window opens (see teamQuestionsFinalCallWindow) to anyone who still
+	// hasn't submitted.
+	FinalCallTemplate string `gorm:"type:text;not null;default:''" json:"final_call_template"`
+	// FinalCallSubject may contain {{first_name}} and {{teams}} placeholders.
+	FinalCallSubject string `gorm:"type:text;not null;default:''" json:"final_call_subject"`
 	// FinalCallStart and SubmissionCutoff override the hardcoded
 	// defaultTeamQuestionsFinalCallStart / defaultTeamQuestionsSubmissionCutoff
 	// (see team_questions_scheduler.go) when non-nil. nil means "not

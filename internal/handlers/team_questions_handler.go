@@ -550,6 +550,12 @@ func (h *TeamQuestionsHandler) getSettings() (models.TeamQuestionsSettings, erro
 	if strings.TrimSpace(settings.ReminderEmailSubject) == "" {
 		settings.ReminderEmailSubject = defaultTeamQuestionsReminderSubject
 	}
+	if strings.TrimSpace(settings.FinalCallTemplate) == "" {
+		settings.FinalCallTemplate = defaultTeamQuestionsFinalCallTemplate
+	}
+	if strings.TrimSpace(settings.FinalCallSubject) == "" {
+		settings.FinalCallSubject = defaultTeamQuestionsFinalCallSubject
+	}
 	h.applyDeadlineCache(settings)
 	return settings, nil
 }
@@ -811,12 +817,21 @@ func (h *TeamQuestionsHandler) SendPendingFinalCalls() (sent int, failed []strin
 	if err != nil {
 		return 0, nil, err
 	}
+	if len(applications) == 0 {
+		return 0, nil, nil
+	}
+
+	settings, err := h.getSettings()
+	if err != nil {
+		return 0, nil, err
+	}
+
 	failed = []string{}
 	for _, application := range applications {
 		if !teamQuestionsFinalCallWindow(h.now(), finalCallStart, submissionCutoff) {
 			break
 		}
-		delivered, err := h.issueAndSendFinalCall(application.Id)
+		delivered, err := h.issueAndSendFinalCall(application.Id, settings.FinalCallTemplate, settings.FinalCallSubject)
 		if err != nil {
 			if errors.Is(err, errTeamQuestionsDeliveryNotRecorded) {
 				log.Printf("ATTENTION: team questions final call for application %s was delivered but not recorded — verify manually before resending: %v", application.Id, err)
@@ -843,7 +858,7 @@ func (h *TeamQuestionsHandler) SendPendingFinalCalls() (sent int, failed []strin
 // deleting it: pendingApplicationsNeedingFinalCall doesn't consult the
 // tokens table, so the application is retried regardless, and a stray token
 // is harmless — it simply expires unused.
-func (h *TeamQuestionsHandler) issueAndSendFinalCall(applicationID uuid.UUID) (bool, error) {
+func (h *TeamQuestionsHandler) issueAndSendFinalCall(applicationID uuid.UUID, templateText, subjectTemplate string) (bool, error) {
 	finalCallStart, submissionCutoff := h.effectiveFinalCallStart(), h.effectiveSubmissionCutoff()
 	if h.cfg.DevelopmentMode || !teamQuestionsFinalCallWindow(h.now(), finalCallStart, submissionCutoff) {
 		return false, nil
@@ -911,7 +926,7 @@ func (h *TeamQuestionsHandler) issueAndSendFinalCall(applicationID uuid.UUID) (b
 		return false, nil
 	}
 
-	if err := h.sendFinalCall(application, defaultTeamQuestionsFinalCallTemplate, defaultTeamQuestionsFinalCallSubject, h.formURL(raw)); err != nil {
+	if err := h.sendFinalCall(application, templateText, subjectTemplate, h.formURL(raw)); err != nil {
 		h.recordDeliveryEvent(applicationID, models.TeamQuestionsDeliveryEventKindFinalCall, models.TeamQuestionsDeliveryOutcomeFailed, true, err.Error())
 		return false, err
 	}
@@ -1172,6 +1187,8 @@ func (h *TeamQuestionsHandler) AdminGetTemplate(c *gin.Context) {
 		"email_subject":              settings.EmailSubject,
 		"reminder_email_template":    settings.ReminderEmailTemplate,
 		"reminder_email_subject":     settings.ReminderEmailSubject,
+		"final_call_template":        settings.FinalCallTemplate,
+		"final_call_subject":         settings.FinalCallSubject,
 		"final_call_start":           effectiveTeamQuestionsFinalCallStart(settings),
 		"submission_cutoff":          effectiveTeamQuestionsSubmissionCutoff(settings),
 		"final_call_start_override":  settings.FinalCallStart,
@@ -1230,6 +1247,8 @@ func (h *TeamQuestionsHandler) AdminUpdateTemplate(c *gin.Context) {
 		{"email_subject", "email_subject", "string"},
 		{"reminder_email_template", "reminder_email_template", "string"},
 		{"reminder_email_subject", "reminder_email_subject", "string"},
+		{"final_call_template", "final_call_template", "string"},
+		{"final_call_subject", "final_call_subject", "string"},
 		{"final_call_start_override", "final_call_start", "time"},
 		{"submission_cutoff_override", "submission_cutoff", "time"},
 	} {
@@ -1298,6 +1317,10 @@ func (h *TeamQuestionsHandler) AdminUpdateTemplate(c *gin.Context) {
 				settings.ReminderEmailTemplate = value.(string)
 			case "reminder_email_subject":
 				settings.ReminderEmailSubject = value.(string)
+			case "final_call_template":
+				settings.FinalCallTemplate = value.(string)
+			case "final_call_subject":
+				settings.FinalCallSubject = value.(string)
 			case "final_call_start":
 				settings.FinalCallStart = value.(*time.Time)
 			case "submission_cutoff":
@@ -1341,11 +1364,21 @@ func (h *TeamQuestionsHandler) AdminUpdateTemplate(c *gin.Context) {
 	if strings.TrimSpace(responseReminderSubject) == "" {
 		responseReminderSubject = defaultTeamQuestionsReminderSubject
 	}
+	responseFinalCallTemplate := settings.FinalCallTemplate
+	if strings.TrimSpace(responseFinalCallTemplate) == "" {
+		responseFinalCallTemplate = defaultTeamQuestionsFinalCallTemplate
+	}
+	responseFinalCallSubject := settings.FinalCallSubject
+	if strings.TrimSpace(responseFinalCallSubject) == "" {
+		responseFinalCallSubject = defaultTeamQuestionsFinalCallSubject
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"email_template":             responseTemplate,
 		"email_subject":              responseSubject,
 		"reminder_email_template":    responseReminderTemplate,
 		"reminder_email_subject":     responseReminderSubject,
+		"final_call_template":        responseFinalCallTemplate,
+		"final_call_subject":         responseFinalCallSubject,
 		"final_call_start":           effectiveTeamQuestionsFinalCallStart(settings),
 		"submission_cutoff":          effectiveTeamQuestionsSubmissionCutoff(settings),
 		"final_call_start_override":  settings.FinalCallStart,
@@ -1355,11 +1388,11 @@ func (h *TeamQuestionsHandler) AdminUpdateTemplate(c *gin.Context) {
 	})
 }
 
-// AdminPreviewTemplate renders the team questions invite or reminder email
-// exactly as issueAndSend/issueAndSendReminder do, using a dummy name and an
-// example link, so the preview can never drift from what actually sends.
-// Kind selects which one: "reminder", or anything else (including omitted)
-// for the invite.
+// AdminPreviewTemplate renders the team questions invite, reminder, or final
+// call email exactly as issueAndSendOrdinary/issueAndSendFinalCall do, using
+// a dummy name and an example link, so the preview can never drift from what
+// actually sends. Kind selects which one: "reminder", "final_call", or
+// anything else (including omitted) for the invite.
 func (h *TeamQuestionsHandler) AdminPreviewTemplate(c *gin.Context) {
 	var body struct {
 		EmailTemplate string `json:"email_template"`
@@ -1372,18 +1405,25 @@ func (h *TeamQuestionsHandler) AdminPreviewTemplate(c *gin.Context) {
 	}
 
 	render := email.RenderTeamQuestionsInvite
+	templateText := body.EmailTemplate
 	subjectTemplate := body.EmailSubject
-	if strings.TrimSpace(subjectTemplate) == "" {
-		subjectTemplate = defaultTeamQuestionsEmailSubject
-	}
-	if body.Kind == "reminder" {
+	switch body.Kind {
+	case "reminder":
 		render = email.RenderTeamQuestionsReminder
 		if strings.TrimSpace(body.EmailSubject) == "" {
 			subjectTemplate = defaultTeamQuestionsReminderSubject
 		}
+	case "final_call":
+		if strings.TrimSpace(body.EmailSubject) == "" {
+			subjectTemplate = defaultTeamQuestionsFinalCallSubject
+		}
+	default:
+		if strings.TrimSpace(subjectTemplate) == "" {
+			subjectTemplate = defaultTeamQuestionsEmailSubject
+		}
 	}
 
-	subject, html, err := render("Alex", "Jones", []string{"Development", "Research"}, body.EmailTemplate, subjectTemplate, h.formURL("example-token"))
+	subject, html, err := render("Alex", "Jones", []string{"Development", "Research"}, templateText, subjectTemplate, h.formURL("example-token"))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to render preview"})
 		return
