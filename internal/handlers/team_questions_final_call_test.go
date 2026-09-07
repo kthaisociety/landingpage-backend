@@ -181,7 +181,7 @@ func TestTeamQuestionsFinalCallFailureRetryAndSuccessfulSkip(t *testing.T) {
 		tqFinalTokenInsert(t, id, &insertedHash), tqSQLStep{kind: "commit"})
 	script.add(tqNotStaleSteps(t, id)...)
 	script.add(tqDeliveryEvent(t, id, models.TeamQuestionsDeliveryOutcomeFailed))
-	delivered, err := h.issueAndSendFinalCall(id)
+	delivered, err := h.issueAndSendFinalCall(id, defaultTeamQuestionsFinalCallTemplate, defaultTeamQuestionsFinalCallSubject)
 	require.ErrorIs(t, err, sendFailure)
 	require.False(t, delivered)
 
@@ -190,7 +190,7 @@ func TestTeamQuestionsFinalCallFailureRetryAndSuccessfulSkip(t *testing.T) {
 	script.add(tqNotStaleSteps(t, id)...)
 	script.add(tqFinalStamp(t, id, h.now()))
 	script.add(tqDeliveryEvent(t, id, models.TeamQuestionsDeliveryOutcomeSent))
-	delivered, err = h.issueAndSendFinalCall(id)
+	delivered, err = h.issueAndSendFinalCall(id, defaultTeamQuestionsFinalCallTemplate, defaultTeamQuestionsFinalCallSubject)
 	require.NoError(t, err)
 	require.True(t, delivered)
 	require.Len(t, rawTokens, 2)
@@ -200,7 +200,7 @@ func TestTeamQuestionsFinalCallFailureRetryAndSuccessfulSkip(t *testing.T) {
 	// successful worker committed: its previously selected candidate is stale.
 	stamped := tqFinalRow(id, 2026, models.GeneralApplicationStatusPending, h.now())
 	script.add(tqSQLStep{kind: "begin"}, tqFinalLockedApplication(t, id, stamped), tqSQLStep{kind: "commit"})
-	delivered, err = h.issueAndSendFinalCall(id)
+	delivered, err = h.issueAndSendFinalCall(id, defaultTeamQuestionsFinalCallTemplate, defaultTeamQuestionsFinalCallSubject)
 	require.NoError(t, err)
 	require.False(t, delivered)
 	require.Len(t, rawTokens, 2, "successful final calls must not be sent again")
@@ -231,7 +231,7 @@ func TestTeamQuestionsFinalCallRechecksEligibilityUnderLock(t *testing.T) {
 				script.add(tqFinalSubmissionCount(t, id, 1))
 			}
 			script.add(tqSQLStep{kind: "commit"})
-			delivered, err := h.issueAndSendFinalCall(id)
+			delivered, err := h.issueAndSendFinalCall(id, defaultTeamQuestionsFinalCallTemplate, defaultTeamQuestionsFinalCallSubject)
 			require.NoError(t, err)
 			require.False(t, delivered)
 		})
@@ -272,7 +272,7 @@ func TestTeamQuestionsFinalCallDatabaseFailuresRemainUnsuccessful(t *testing.T) 
 				script.add(stamp)
 				script.add(tqDeliveryEvent(t, id, models.TeamQuestionsDeliveryOutcomeNotRecorded))
 			}
-			delivered, err := h.issueAndSendFinalCall(id)
+			delivered, err := h.issueAndSendFinalCall(id, defaultTeamQuestionsFinalCallTemplate, defaultTeamQuestionsFinalCallSubject)
 			require.Error(t, err)
 			if stage != "stamp affected no row" {
 				require.ErrorIs(t, err, failure)
@@ -317,7 +317,7 @@ func TestTeamQuestionsFinalCallSkipsWhenSuperseded(t *testing.T) {
 			script.add(tqSQLStep{kind: "exec", affected: 1, contains: []string{`DELETE FROM team_questions_tokens`}})
 			script.add(tqDeliveryEvent(t, id, models.TeamQuestionsDeliveryOutcomeSuperseded))
 
-			delivered, err := h.issueAndSendFinalCall(id)
+			delivered, err := h.issueAndSendFinalCall(id, defaultTeamQuestionsFinalCallTemplate, defaultTeamQuestionsFinalCallSubject)
 			require.NoError(t, err)
 			require.False(t, delivered)
 		})
@@ -360,7 +360,7 @@ func TestTeamQuestionsFinalCallCrossingCutoff(t *testing.T) {
 					script.add(tqDeliveryEvent(t, id, models.TeamQuestionsDeliveryOutcomeSent))
 				}
 			}
-			delivered, err := h.issueAndSendFinalCall(id)
+			delivered, err := h.issueAndSendFinalCall(id, defaultTeamQuestionsFinalCallTemplate, defaultTeamQuestionsFinalCallSubject)
 			if stage == "after token insert" {
 				require.ErrorIs(t, err, errTeamQuestionsClosed)
 			} else {
@@ -396,6 +396,7 @@ func TestTeamQuestionsFinalCallBatchContinuesAfterFailedDelivery(t *testing.T) {
 	first := tqFinalRow(firstID, 2026, models.GeneralApplicationStatusPending, nil)
 	second := tqFinalRow(secondID, 2026, models.GeneralApplicationStatusPending, nil)
 	script.add(tqFinalCandidates(t, first, second),
+		tqSQLStep{kind: "query", contains: []string{`FROM "team_questions_settings"`}, columns: []string{"id"}, rows: nil},
 		tqSQLStep{kind: "begin"}, tqFinalLockedApplication(t, firstID, first), tqFinalSubmissionCount(t, firstID, 0), tqFinalTokenInsert(t, firstID, nil), tqSQLStep{kind: "commit"})
 	script.add(tqNotStaleSteps(t, firstID)...)
 	script.add(tqDeliveryEvent(t, firstID, models.TeamQuestionsDeliveryOutcomeFailed))
@@ -436,7 +437,7 @@ func TestTeamQuestionsFinalCallSkipsOutsideWindowAndInDevelopment(t *testing.T) 
 			require.NoError(t, err)
 			require.Zero(t, sent)
 			require.Empty(t, failed)
-			delivered, err := h.issueAndSendFinalCall(uuid.New())
+			delivered, err := h.issueAndSendFinalCall(uuid.New(), defaultTeamQuestionsFinalCallTemplate, defaultTeamQuestionsFinalCallSubject)
 			require.NoError(t, err)
 			require.False(t, delivered)
 		})

@@ -99,7 +99,7 @@ func TestTeamQuestionsFinalCallsOnlyRunInsideWindow(t *testing.T) {
 			require.NoError(t, err)
 			require.Zero(t, sent)
 			require.Empty(t, failed)
-			delivered, err := h.issueAndSendFinalCall(uuid.New())
+			delivered, err := h.issueAndSendFinalCall(uuid.New(), defaultTeamQuestionsFinalCallTemplate, defaultTeamQuestionsFinalCallSubject)
 			require.NoError(t, err)
 			require.False(t, delivered)
 		})
@@ -113,7 +113,7 @@ func TestTeamQuestionsDevelopmentFinalCallSkipDoesNotSend(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, sent)
 	require.Empty(t, failed)
-	delivered, err := h.issueAndSendFinalCall(uuid.New())
+	delivered, err := h.issueAndSendFinalCall(uuid.New(), defaultTeamQuestionsFinalCallTemplate, defaultTeamQuestionsFinalCallSubject)
 	require.NoError(t, err)
 	require.False(t, delivered)
 }
