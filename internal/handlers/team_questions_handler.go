@@ -868,6 +868,8 @@ func (h *TeamQuestionsHandler) issueAndSendFinalCall(applicationID uuid.UUID, te
 	var raw string
 	var tokenID uint
 	ready := false
+	alreadyClaimed := false
+	claimedAt := h.now()
 	err := h.db.Transaction(func(tx *gorm.DB) error {
 		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&application, "id = ?", applicationID).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -877,7 +879,18 @@ func (h *TeamQuestionsHandler) issueAndSendFinalCall(applicationID uuid.UUID, te
 			return err
 		}
 		if !teamQuestionsFinalCallWindow(h.now(), finalCallStart, submissionCutoff) || application.ApplicationYear != generalApplicationYear ||
-			application.Status != models.GeneralApplicationStatusPending || application.TeamQuestionsFinalCallSentAt != nil {
+			application.Status != models.GeneralApplicationStatusPending {
+			return nil
+		}
+		if application.TeamQuestionsFinalCallSentAt != nil {
+			// Someone else — a concurrent scheduler tick, an overlapping
+			// deploy running two processes briefly, or an admin action —
+			// already claimed this exact send while we were waiting for the
+			// row lock. The row lock plus this check make that mutually
+			// exclusive: whichever caller commits first wins, and every
+			// other one stops here, before ever creating a token or
+			// touching SES.
+			alreadyClaimed = true
 			return nil
 		}
 		var submitted int64
@@ -897,10 +910,17 @@ func (h *TeamQuestionsHandler) issueAndSendFinalCall(applicationID uuid.UUID, te
 			return err
 		}
 		tokenID = token.ID
-		// One more check before committing and releasing the lock — a window
-		// closing here still rolls back the unsent token along with it.
+		// One more check before claiming and committing — a window closing
+		// here still rolls back the unsent token (and the claim) along with it.
 		if !teamQuestionsFinalCallWindow(h.now(), finalCallStart, submissionCutoff) {
 			return errTeamQuestionsClosed
+		}
+		// Claim the send right here, inside the same row-locked transaction
+		// that just confirmed no one else has: this is what makes two
+		// concurrent callers for the same applicant mutually exclusive,
+		// without holding the lock across the network send below.
+		if err := tx.Exec("UPDATE general_applications SET team_questions_final_call_sent_at = ? WHERE id = ?", claimedAt, applicationID).Error; err != nil {
+			return err
 		}
 		ready = true
 		return nil
@@ -909,45 +929,49 @@ func (h *TeamQuestionsHandler) issueAndSendFinalCall(applicationID uuid.UUID, te
 		h.recordDeliveryEvent(applicationID, models.TeamQuestionsDeliveryEventKindFinalCall, models.TeamQuestionsDeliveryOutcomeFailed, true, err.Error())
 		return false, err
 	}
+	if alreadyClaimed {
+		h.recordDeliveryEvent(applicationID, models.TeamQuestionsDeliveryEventKindFinalCall, models.TeamQuestionsDeliveryOutcomeSuperseded, true, "")
+		return false, nil
+	}
 	if !ready {
 		return false, nil
 	}
 
+	// revertClaim undoes the stamp above — only ever our own claim, matched
+	// by timestamp, so it can never clobber a later legitimate claim — so a
+	// real failure from here on leaves the applicant eligible for a future
+	// retry instead of permanently marked as sent with nothing delivered.
+	revertClaim := func() {
+		if err := h.db.Exec("UPDATE general_applications SET team_questions_final_call_sent_at = NULL WHERE id = ? AND team_questions_final_call_sent_at = ?", applicationID, claimedAt).Error; err != nil {
+			log.Printf("failed to revert unclaimed team questions final call for application %s: %v", applicationID, err)
+		}
+	}
+
 	// The lock is released; before spending a network round-trip, make sure
-	// nothing superseded this token in the meantime — see sendCandidateStale.
+	// nothing else invalidated our token in the meantime — see sendCandidateStale.
 	if stale, staleErr := h.sendCandidateStale(applicationID, tokenID); staleErr != nil {
+		revertClaim()
 		h.recordDeliveryEvent(applicationID, models.TeamQuestionsDeliveryEventKindFinalCall, models.TeamQuestionsDeliveryOutcomeFailed, true, staleErr.Error())
 		return false, staleErr
 	} else if stale {
 		if delErr := h.db.Exec("DELETE FROM team_questions_tokens WHERE id = ?", tokenID).Error; delErr != nil {
 			log.Printf("failed to remove superseded team questions token for application %s: %v", applicationID, delErr)
 		}
+		revertClaim()
 		h.recordDeliveryEvent(applicationID, models.TeamQuestionsDeliveryEventKindFinalCall, models.TeamQuestionsDeliveryOutcomeSuperseded, true, "")
 		return false, nil
 	}
 
 	if err := h.sendFinalCall(application, templateText, subjectTemplate, h.formURL(raw)); err != nil {
+		revertClaim()
 		h.recordDeliveryEvent(applicationID, models.TeamQuestionsDeliveryEventKindFinalCall, models.TeamQuestionsDeliveryOutcomeFailed, true, err.Error())
 		return false, err
 	}
-	// Explicit SQL is intentional: ordinary GORM saves cannot update this
-	// marker. Record accepted delivery even if the send finished after cutoff.
-	// SES acceptance and this commit are not atomic; a crash between them
-	// can still cause a duplicate on retry.
-	//
-	// Any failure from here on is wrapped in errTeamQuestionsDeliveryNotRecorded:
-	// the email is already sent, so callers must never treat this as an
-	// ordinary send failure (which would invite a duplicate resend) — it
-	// needs a human to reconcile instead.
-	result := h.db.Exec("UPDATE general_applications SET team_questions_final_call_sent_at = ? WHERE id = ? AND team_questions_final_call_sent_at IS NULL", h.now(), applicationID)
-	if result.Error != nil {
-		h.recordDeliveryEvent(applicationID, models.TeamQuestionsDeliveryEventKindFinalCall, models.TeamQuestionsDeliveryOutcomeNotRecorded, true, result.Error.Error())
-		return false, fmt.Errorf("%w: %w", errTeamQuestionsDeliveryNotRecorded, result.Error)
-	}
-	if result.RowsAffected != 1 {
-		h.recordDeliveryEvent(applicationID, models.TeamQuestionsDeliveryEventKindFinalCall, models.TeamQuestionsDeliveryOutcomeNotRecorded, true, "timestamp update affected no rows")
-		return false, fmt.Errorf("%w: final call delivered but its timestamp was not recorded", errTeamQuestionsDeliveryNotRecorded)
-	}
+	// The claim was already persisted before the send above, so there's
+	// nothing left to write here — a crash between the two would leave the
+	// applicant stuck marked-sent with nothing delivered, but that's a far
+	// narrower window than the send call itself, and an admin can always
+	// notice and use Resend.
 	h.recordDeliveryEvent(applicationID, models.TeamQuestionsDeliveryEventKindFinalCall, models.TeamQuestionsDeliveryOutcomeSent, true, "")
 	return true, nil
 }
@@ -1045,9 +1069,18 @@ func (h *TeamQuestionsHandler) issueAndSendOrdinary(application models.GeneralAp
 		return err
 	}
 
+	kind := models.TeamQuestionsDeliveryEventKindInvite
+	stampColumn := "team_questions_invite_sent_at"
+	if reminder {
+		kind = models.TeamQuestionsDeliveryEventKindReminder
+		stampColumn = "team_questions_reminder_sent_at"
+	}
+
 	var current models.GeneralApplication
 	var raw string
 	var tokenID uint
+	var previousStamp *time.Time
+	claimedAt := h.now()
 	err := h.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&current, "id = ?", application.Id).Error; err != nil {
 			return err
@@ -1057,6 +1090,21 @@ func (h *TeamQuestionsHandler) issueAndSendOrdinary(application models.GeneralAp
 		}
 		if current.Status != models.GeneralApplicationStatusPending {
 			return gorm.ErrRecordNotFound
+		}
+		previousStamp = current.TeamQuestionsInviteSentAt
+		if reminder {
+			previousStamp = current.TeamQuestionsReminderSentAt
+		}
+		// Only the automatic path (the scheduler, or AdminSendBulk) treats an
+		// existing stamp as disqualifying — a manual AdminResend is *supposed*
+		// to run against an applicant who already has one, to reissue a fresh
+		// link. Two automatic callers racing on the same never-yet-sent
+		// applicant is exactly the bug this guard closes: the row lock plus
+		// this check make them mutually exclusive, since whichever commits
+		// first sets the stamp, and every other one sees it already set and
+		// stops here, before ever creating a token or touching SES.
+		if automatic && previousStamp != nil {
+			return errTeamQuestionsTokenSuperseded
 		}
 		var hash string
 		var tokenErr error
@@ -1073,37 +1121,57 @@ func (h *TeamQuestionsHandler) issueAndSendOrdinary(application models.GeneralAp
 			return err
 		}
 		tokenID = token.ID
-		// One more check before committing and releasing the lock — a window
-		// closing here still rolls back the unsent token along with it.
-		return h.ordinarySendWindowError(automatic)
+		// One more check before claiming and committing — a window closing
+		// here still rolls back the unsent token (and the claim) along with it.
+		if err := h.ordinarySendWindowError(automatic); err != nil {
+			return err
+		}
+		// Claim the send right here, inside the same row-locked transaction
+		// that just confirmed no one else has: this is what makes two
+		// concurrent callers for the same applicant mutually exclusive,
+		// without holding the lock across the network send below.
+		return tx.Exec("UPDATE general_applications SET "+stampColumn+" = ? WHERE id = ?", claimedAt, current.Id).Error
 	})
-	kind := models.TeamQuestionsDeliveryEventKindInvite
-	if reminder {
-		kind = models.TeamQuestionsDeliveryEventKindReminder
+	if errors.Is(err, errTeamQuestionsTokenSuperseded) {
+		h.recordDeliveryEvent(application.Id, kind, models.TeamQuestionsDeliveryOutcomeSuperseded, automatic, "")
+		return err
 	}
 	if err != nil {
 		h.recordDeliveryEvent(application.Id, kind, models.TeamQuestionsDeliveryOutcomeFailed, automatic, err.Error())
 		return err
 	}
 
+	// revertClaim undoes the stamp above by restoring whatever it held
+	// before this call — nil for a first-time automatic send, or the prior
+	// timestamp for a resend — matched by our own claimedAt so this can
+	// never clobber a later legitimate claim. So a real failure from here on
+	// leaves the applicant exactly as eligible as before this call, instead
+	// of permanently marked as sent with nothing delivered (or, for a failed
+	// resend, with its real prior send time erased).
+	revertClaim := func() {
+		if err := h.db.Exec("UPDATE general_applications SET "+stampColumn+" = ? WHERE id = ? AND "+stampColumn+" = ?", previousStamp, current.Id, claimedAt).Error; err != nil {
+			log.Printf("failed to revert unclaimed team questions %s for application %s: %v", kind, current.Id, err)
+		}
+	}
+
 	// The lock is released; before spending a network round-trip, make sure
-	// nothing superseded this token in the meantime — see sendCandidateStale.
+	// nothing else invalidated our token in the meantime — see sendCandidateStale.
 	if stale, staleErr := h.sendCandidateStale(current.Id, tokenID); staleErr != nil {
+		revertClaim()
 		h.recordDeliveryEvent(current.Id, kind, models.TeamQuestionsDeliveryOutcomeFailed, automatic, staleErr.Error())
 		return staleErr
 	} else if stale {
 		if delErr := h.db.Exec("DELETE FROM team_questions_tokens WHERE id = ?", tokenID).Error; delErr != nil {
 			log.Printf("failed to remove superseded team questions token for application %s: %v", current.Id, delErr)
 		}
+		revertClaim()
 		h.recordDeliveryEvent(current.Id, kind, models.TeamQuestionsDeliveryOutcomeSuperseded, automatic, "")
 		return errTeamQuestionsTokenSuperseded
 	}
 
 	sender := h.sendInvite
-	stampSQL := "UPDATE general_applications SET team_questions_invite_sent_at = ? WHERE id = ?"
 	if reminder {
 		sender = h.sendReminder
-		stampSQL = "UPDATE general_applications SET team_questions_reminder_sent_at = ? WHERE id = ?"
 	}
 	if !h.cfg.DevelopmentMode {
 		if err := sender(current, templateText, subjectTemplate, h.formURL(raw)); err != nil {
@@ -1113,22 +1181,18 @@ func (h *TeamQuestionsHandler) issueAndSendOrdinary(application models.GeneralAp
 			if delErr := h.db.Exec("DELETE FROM team_questions_tokens WHERE id = ?", tokenID).Error; delErr != nil {
 				log.Printf("failed to remove unsent team questions token for application %s: %v", current.Id, delErr)
 			}
+			revertClaim()
 			h.recordDeliveryEvent(current.Id, kind, models.TeamQuestionsDeliveryOutcomeFailed, automatic, err.Error())
 			return err
 		}
 	} else {
 		log.Printf("[dev] skipping SES — would have sent team questions email for application %s", current.Id)
 	}
-	// The email is already out at this point (or dev-mode skipped it): a
-	// failure here must never be reported as an ordinary send failure — the
-	// token stays in place so the automatic queries don't pick this
-	// application up again, but errTeamQuestionsDeliveryNotRecorded tells
-	// callers delivery happened and only the bookkeeping failed, so a human
-	// reconciles it instead of resending.
-	if err := h.db.Exec(stampSQL, h.now(), current.Id).Error; err != nil {
-		h.recordDeliveryEvent(current.Id, kind, models.TeamQuestionsDeliveryOutcomeNotRecorded, automatic, err.Error())
-		return fmt.Errorf("%w: %w", errTeamQuestionsDeliveryNotRecorded, err)
-	}
+	// The claim was already persisted before the send above, so there's
+	// nothing left to write here — a crash between the two would leave the
+	// applicant stuck marked-sent with nothing delivered, but that's a far
+	// narrower window than the send call itself, and an admin can always
+	// notice and use Resend.
 	h.recordDeliveryEvent(current.Id, kind, models.TeamQuestionsDeliveryOutcomeSent, automatic, "")
 	return nil
 }
