@@ -117,16 +117,30 @@ func TestManualOnboardingHandler(t *testing.T) {
 	})
 
 	t.Run("invalid email is rejected", func(t *testing.T) {
-		body := map[string]string{
-			"first_name": "Board", "last_name": "Member",
-			"email": "not-an-email", "assigned_team": "IT",
+		for _, email := range []string{"not-an-email", "a@.", "a@b.", "a@.b"} {
+			body := map[string]string{
+				"first_name": "Board", "last_name": "Member",
+				"email": email, "assigned_team": "IT",
+			}
+			rec := create(t, body, adminCookie(t))
+			require.Equal(t, http.StatusBadRequest, rec.Code, "email %q should be rejected", email)
 		}
-		rec := create(t, body, adminCookie(t))
-		require.Equal(t, http.StatusBadRequest, rec.Code)
 	})
 
 	t.Run("valid request from an admin succeeds", func(t *testing.T) {
 		rec := create(t, validBody, adminCookie(t))
 		require.Equal(t, http.StatusOK, rec.Code)
 	})
+}
+
+func TestIsValidEmail(t *testing.T) {
+	valid := []string{"a@b.c", "board.member@example.com", "a@sub.example.com"}
+	invalid := []string{"", "not-an-email", "a@", "@b.c", "a@.", "a@b.", "a@.b", "a b@c.d"}
+
+	for _, email := range valid {
+		require.True(t, isValidEmail(email), "expected %q to be valid", email)
+	}
+	for _, email := range invalid {
+		require.False(t, isValidEmail(email), "expected %q to be invalid", email)
+	}
 }
