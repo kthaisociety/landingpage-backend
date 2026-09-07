@@ -824,7 +824,22 @@ func isValidEmail(email string) bool {
 		return false
 	}
 	parts := strings.Split(email, "@")
-	return len(parts) == 2 && parts[0] != "" && strings.Contains(parts[1], ".")
+	if len(parts) != 2 || parts[0] == "" {
+		return false
+	}
+	// Require at least two non-empty domain labels (e.g. "b", "c" in
+	// "b.c") rather than merely checking for a "." anywhere in the domain —
+	// that alone let "a@b." and "a@." through.
+	domainLabels := strings.Split(parts[1], ".")
+	if len(domainLabels) < 2 {
+		return false
+	}
+	for _, label := range domainLabels {
+		if label == "" {
+			return false
+		}
+	}
+	return true
 }
 
 func isValidLinkedInURL(raw string) bool {
