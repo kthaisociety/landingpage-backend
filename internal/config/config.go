@@ -66,11 +66,24 @@ type Config struct {
 	// POST /api/v1/auth/mcp-exchange to trade a verified Google email for a
 	// backend JWT. Must match the value configured on that service.
 	MCPServiceSecret string
-	R2_bucket_name   string
-	R2_access_key    string
-	R2_access_key_id string
-	R2_endpoint      string
-	R2_Account_Id    string // might not be needed
+	// OnboardingServiceSecret authenticates calls in both directions between
+	// this backend and onboarding-service: it's checked on the backend's own
+	// /internal/onboarding/* endpoints (onboarding-service calling in), and
+	// sent as X-Service-Secret on this backend's outbound call to
+	// onboarding-service's /notify endpoint (this backend calling out).
+	// Deliberately separate from MCPServiceSecret so the two services can be
+	// rotated/revoked independently.
+	OnboardingServiceSecret string
+	// OnboardingServiceURL is onboarding-service's base URL, used only for
+	// this backend's outbound POST to /notify when an application is
+	// accepted. Empty by default — the notify call is skipped (logged, not
+	// fatal) until onboarding-service is actually deployed.
+	OnboardingServiceURL string
+	R2_bucket_name       string
+	R2_access_key        string
+	R2_access_key_id     string
+	R2_endpoint          string
+	R2_Account_Id        string // might not be needed
 
 	SES struct {
 		Region  string
@@ -139,6 +152,8 @@ func LoadConfig() (*Config, error) {
 	cfg.JwtValidatingKey = getEnv("JWTValidatingKey", "test123456")
 
 	cfg.MCPServiceSecret = getEnv("MCP_SERVICE_SECRET", "")
+	cfg.OnboardingServiceSecret = getEnv("ONBOARDING_SERVICE_SECRET", "")
+	cfg.OnboardingServiceURL = getEnv("ONBOARDING_SERVICE_URL", "")
 
 	//Cloudflare R2
 	cfg.R2_bucket_name = getEnv("R2_Bucket", "")
