@@ -3,6 +3,7 @@ package handlers
 import (
 	"database/sql/driver"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -143,6 +144,50 @@ func TestIssueAndSendOrdinaryReleasesLockBeforeSendAndRetriesOnFailure(t *testin
 	require.NoError(t, err)
 	require.Equal(t, 2, calls)
 	require.NotEqual(t, firstHash, insertedHash, "a retry must issue a fresh token")
+}
+
+// TestIssueAndSendOrdinaryRevertFailureIsVisible covers a Greptile finding on
+// the PR that introduced the claim/revert pattern above: if the revert
+// UPDATE itself fails, the claim stays set with nothing delivered, and
+// automatic selection — which only ever looks at applicants whose stamp is
+// nil — would silently skip this applicant forever with no trace beyond a
+// log line. The revert is retried once, and if both attempts fail, that
+// failure must show up in the recorded outcome's detail, not just a log.
+func TestIssueAndSendOrdinaryRevertFailureIsVisible(t *testing.T) {
+	db, script := newTeamQuestionsSQL(t)
+	h := NewTeamQuestionsHandler(db, &config.Config{FrontendURL: "https://example.com"})
+	h.now = func() time.Time { return defaultTeamQuestionsFinalCallStart.Add(-time.Hour) }
+
+	id := uuid.New()
+	application := models.GeneralApplication{Id: id, Status: models.GeneralApplicationStatusPending}
+	row := tqFinalRow(id, generalApplicationYear, models.GeneralApplicationStatusPending, nil)
+	sendFailure := errors.New("fake delivery failure")
+	revertFailure := errors.New("fake revert failure")
+	h.sendInvite = func(models.GeneralApplication, string, string, string) error { return sendFailure }
+
+	script.add(tqSQLStep{kind: "begin"}, tqFinalLockedApplication(t, id, row),
+		tqOrdinaryTokenInsert(t, id, nil), tqOrdinaryClaim("team_questions_invite_sent_at"), tqSQLStep{kind: "commit"})
+	script.add(tqNotStaleSteps(t, id)...)
+	script.add(tqOrdinaryTokenDelete())
+	// Both revert attempts fail.
+	firstAttempt := tqOrdinaryClaimRevert(t, "team_questions_invite_sent_at")
+	firstAttempt.err = revertFailure
+	secondAttempt := tqOrdinaryClaimRevert(t, "team_questions_invite_sent_at")
+	secondAttempt.err = revertFailure
+	script.add(firstAttempt, secondAttempt)
+
+	event := tqDeliveryEvent(t, id, models.TeamQuestionsDeliveryOutcomeFailed)
+	event.check = func(_ string, args []driver.NamedValue) {
+		require.Len(t, args, 7)
+		detail := fmt.Sprintf("%v", args[6].Value)
+		require.Contains(t, detail, sendFailure.Error())
+		require.Contains(t, detail, "needs manual attention")
+		require.Contains(t, detail, revertFailure.Error())
+	}
+	script.add(event)
+
+	err := h.issueAndSendOrdinary(application, "body", "subject", false, true)
+	require.ErrorIs(t, err, sendFailure)
 }
 
 // TestIssueAndSendOrdinarySkipsWhenAlreadyClaimed covers the new guard this

@@ -941,30 +941,53 @@ func (h *TeamQuestionsHandler) issueAndSendFinalCall(applicationID uuid.UUID, te
 	// by timestamp, so it can never clobber a later legitimate claim — so a
 	// real failure from here on leaves the applicant eligible for a future
 	// retry instead of permanently marked as sent with nothing delivered.
-	revertClaim := func() {
-		if err := h.db.Exec("UPDATE general_applications SET team_questions_final_call_sent_at = NULL WHERE id = ? AND team_questions_final_call_sent_at = ?", applicationID, claimedAt).Error; err != nil {
-			log.Printf("failed to revert unclaimed team questions final call for application %s: %v", applicationID, err)
+	// Retried once, since automatic final-call selection only ever looks at
+	// applicants whose marker is NULL: if this UPDATE itself fails, the
+	// marker stays set with nothing delivered, and — unlike an invite, which
+	// an admin can force through Resend regardless of its stamp — there is
+	// no manual "resend the final call" action, so a silently stuck claim
+	// here has no recovery path at all. A returned error means both
+	// attempts failed; the caller folds it into the recorded outcome so
+	// it's visible rather than only a log line.
+	revertClaim := func() error {
+		var revertErr error
+		for attempt := 0; attempt < 2; attempt++ {
+			revertErr = h.db.Exec("UPDATE general_applications SET team_questions_final_call_sent_at = NULL WHERE id = ? AND team_questions_final_call_sent_at = ?", applicationID, claimedAt).Error
+			if revertErr == nil {
+				return nil
+			}
 		}
+		log.Printf("ATTENTION: failed to revert unclaimed team questions final call for application %s after retrying — this applicant will be silently skipped by every future automatic run until the marker is cleared manually: %v", applicationID, revertErr)
+		return revertErr
 	}
 
 	// The lock is released; before spending a network round-trip, make sure
 	// nothing else invalidated our token in the meantime — see sendCandidateStale.
 	if stale, staleErr := h.sendCandidateStale(applicationID, tokenID); staleErr != nil {
-		revertClaim()
-		h.recordDeliveryEvent(applicationID, models.TeamQuestionsDeliveryEventKindFinalCall, models.TeamQuestionsDeliveryOutcomeFailed, true, staleErr.Error())
+		detail := staleErr.Error()
+		if revertErr := revertClaim(); revertErr != nil {
+			detail += "; additionally failed to release the claim, so this applicant needs manual attention: " + revertErr.Error()
+		}
+		h.recordDeliveryEvent(applicationID, models.TeamQuestionsDeliveryEventKindFinalCall, models.TeamQuestionsDeliveryOutcomeFailed, true, detail)
 		return false, staleErr
 	} else if stale {
 		if delErr := h.db.Exec("DELETE FROM team_questions_tokens WHERE id = ?", tokenID).Error; delErr != nil {
 			log.Printf("failed to remove superseded team questions token for application %s: %v", applicationID, delErr)
 		}
-		revertClaim()
-		h.recordDeliveryEvent(applicationID, models.TeamQuestionsDeliveryEventKindFinalCall, models.TeamQuestionsDeliveryOutcomeSuperseded, true, "")
+		detail := ""
+		if revertErr := revertClaim(); revertErr != nil {
+			detail = "failed to release the claim after a superseded token, so this applicant needs manual attention: " + revertErr.Error()
+		}
+		h.recordDeliveryEvent(applicationID, models.TeamQuestionsDeliveryEventKindFinalCall, models.TeamQuestionsDeliveryOutcomeSuperseded, true, detail)
 		return false, nil
 	}
 
 	if err := h.sendFinalCall(application, templateText, subjectTemplate, h.formURL(raw)); err != nil {
-		revertClaim()
-		h.recordDeliveryEvent(applicationID, models.TeamQuestionsDeliveryEventKindFinalCall, models.TeamQuestionsDeliveryOutcomeFailed, true, err.Error())
+		detail := err.Error()
+		if revertErr := revertClaim(); revertErr != nil {
+			detail += "; additionally failed to release the claim, so this applicant needs manual attention: " + revertErr.Error()
+		}
+		h.recordDeliveryEvent(applicationID, models.TeamQuestionsDeliveryEventKindFinalCall, models.TeamQuestionsDeliveryOutcomeFailed, true, detail)
 		return false, err
 	}
 	// The claim was already persisted before the send above, so there's
@@ -1148,24 +1171,45 @@ func (h *TeamQuestionsHandler) issueAndSendOrdinary(application models.GeneralAp
 	// leaves the applicant exactly as eligible as before this call, instead
 	// of permanently marked as sent with nothing delivered (or, for a failed
 	// resend, with its real prior send time erased).
-	revertClaim := func() {
-		if err := h.db.Exec("UPDATE general_applications SET "+stampColumn+" = ? WHERE id = ? AND "+stampColumn+" = ?", previousStamp, current.Id, claimedAt).Error; err != nil {
-			log.Printf("failed to revert unclaimed team questions %s for application %s: %v", kind, current.Id, err)
+	// Retried once: automatic selection only ever looks at applicants whose
+	// stamp is nil (or, for a resend, whatever it was before this call), so
+	// if this UPDATE itself fails, the applicant is silently skipped by
+	// every future automatic run — permanently, for a first-time send,
+	// since nothing else will ever revisit it. A manual AdminResend can
+	// still force it through regardless (automatic=false skips the
+	// already-claimed check entirely), but that requires someone to notice.
+	// A returned error means both attempts failed; callers fold it into the
+	// recorded outcome so it's visible rather than only a log line.
+	revertClaim := func() error {
+		var revertErr error
+		for attempt := 0; attempt < 2; attempt++ {
+			revertErr = h.db.Exec("UPDATE general_applications SET "+stampColumn+" = ? WHERE id = ? AND "+stampColumn+" = ?", previousStamp, current.Id, claimedAt).Error
+			if revertErr == nil {
+				return nil
+			}
 		}
+		log.Printf("ATTENTION: failed to revert unclaimed team questions %s for application %s after retrying — this applicant will be silently skipped by every future automatic run until the marker is cleared manually: %v", kind, current.Id, revertErr)
+		return revertErr
 	}
 
 	// The lock is released; before spending a network round-trip, make sure
 	// nothing else invalidated our token in the meantime — see sendCandidateStale.
 	if stale, staleErr := h.sendCandidateStale(current.Id, tokenID); staleErr != nil {
-		revertClaim()
-		h.recordDeliveryEvent(current.Id, kind, models.TeamQuestionsDeliveryOutcomeFailed, automatic, staleErr.Error())
+		detail := staleErr.Error()
+		if revertErr := revertClaim(); revertErr != nil {
+			detail += "; additionally failed to release the claim, so this applicant needs manual attention: " + revertErr.Error()
+		}
+		h.recordDeliveryEvent(current.Id, kind, models.TeamQuestionsDeliveryOutcomeFailed, automatic, detail)
 		return staleErr
 	} else if stale {
 		if delErr := h.db.Exec("DELETE FROM team_questions_tokens WHERE id = ?", tokenID).Error; delErr != nil {
 			log.Printf("failed to remove superseded team questions token for application %s: %v", current.Id, delErr)
 		}
-		revertClaim()
-		h.recordDeliveryEvent(current.Id, kind, models.TeamQuestionsDeliveryOutcomeSuperseded, automatic, "")
+		detail := ""
+		if revertErr := revertClaim(); revertErr != nil {
+			detail = "failed to release the claim after a superseded token, so this applicant needs manual attention: " + revertErr.Error()
+		}
+		h.recordDeliveryEvent(current.Id, kind, models.TeamQuestionsDeliveryOutcomeSuperseded, automatic, detail)
 		return errTeamQuestionsTokenSuperseded
 	}
 
@@ -1181,8 +1225,11 @@ func (h *TeamQuestionsHandler) issueAndSendOrdinary(application models.GeneralAp
 			if delErr := h.db.Exec("DELETE FROM team_questions_tokens WHERE id = ?", tokenID).Error; delErr != nil {
 				log.Printf("failed to remove unsent team questions token for application %s: %v", current.Id, delErr)
 			}
-			revertClaim()
-			h.recordDeliveryEvent(current.Id, kind, models.TeamQuestionsDeliveryOutcomeFailed, automatic, err.Error())
+			detail := err.Error()
+			if revertErr := revertClaim(); revertErr != nil {
+				detail += "; additionally failed to release the claim, so this applicant needs manual attention: " + revertErr.Error()
+			}
+			h.recordDeliveryEvent(current.Id, kind, models.TeamQuestionsDeliveryOutcomeFailed, automatic, detail)
 			return err
 		}
 	} else {
