@@ -69,6 +69,14 @@ type GeneralApplication struct {
 	AssignedTeam                 string     `gorm:"default:''" json:"assigned_team"`
 	FinalizedByEmail             string     `gorm:"default:''" json:"finalized_by_email"`
 	FinalizedAt                  *time.Time `json:"finalized_at"`
-	CreatedAt                    time.Time  `json:"created_at"`
-	UpdatedAt                    time.Time  `json:"updated_at"`
+	// KthaisEmail records the @kthais.com address onboarding-service created
+	// for this applicant once account provisioning finished — pure
+	// bookkeeping so admins can see, from the application itself, that
+	// onboarding is complete and what the resulting account is. It does not
+	// create or link to a User/Profile row: the member gets those the normal
+	// way, by logging in with this address (see AuthHandler.GoogleCallback).
+	KthaisEmail string     `gorm:"default:''" json:"kthais_email"`
+	OnboardedAt *time.Time `json:"onboarded_at"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
 }

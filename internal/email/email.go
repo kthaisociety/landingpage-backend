@@ -463,6 +463,44 @@ func SendGeneralApplicationRejection(application models.GeneralApplication) erro
 	return sendEmail(application.Email, "Your KTH AI Society application", htmlBody.String())
 }
 
+// SendOnboardingEmail sends a single onboarding-flow email (start portal link,
+// kth.se confirmation, account credentials, Mattermost invite, etc.) on
+// behalf of onboarding-service, which has no SES setup of its own — see
+// POST /api/v1/internal/onboarding/send-email. body may contain plain text
+// with newlines; it is HTML-escaped and wrapped in <p>/<br> here, never
+// executed as a Go template, since it originates from another service's
+// request body. buttonURL/buttonText may both be empty, in which case the
+// email falls back to the base template's default "Contact us" mailto link.
+func SendOnboardingEmail(to, subject, body, buttonURL, buttonText string) error {
+	tmpl, err := parseEmailTemplate("onboarding", "generic.html")
+	if err != nil {
+		return fmt.Errorf("failed to parse onboarding template: %w", err)
+	}
+
+	rendered := strings.ReplaceAll(template.HTMLEscapeString(body), "\n", "<br>")
+
+	type onboardingEmailData struct {
+		EmailData
+		RenderedBody template.HTML
+		ButtonURL    string
+		ButtonText   string
+	}
+
+	data := onboardingEmailData{
+		EmailData:    newEmailData(),
+		RenderedBody: template.HTML(rendered), // #nosec G203 — escaped above, not executed as a template
+		ButtonURL:    buttonURL,
+		ButtonText:   buttonText,
+	}
+
+	var htmlBody bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&htmlBody, "base", data); err != nil {
+		return fmt.Errorf("failed to execute onboarding template: %w", err)
+	}
+
+	return sendEmail(to, subject, htmlBody.String())
+}
+
 // TeamQuestionsAnswer pairs a single team question with the applicant's answer, in
 // display order, for rendering in the submission confirmation email.
 type TeamQuestionsAnswer struct {
