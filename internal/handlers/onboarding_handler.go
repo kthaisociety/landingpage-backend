@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"bytes"
 	"crypto/subtle"
+	"encoding/json"
 	"log"
 	"net/http"
 	"time"
@@ -130,4 +132,66 @@ func (h *OnboardingHandler) RecordAccount(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, application)
+}
+
+// onboardingNotifyRequest is the body sent to onboarding-service's own
+// POST /notify endpoint (not a route this backend hosts) — see
+// onboarding-service-plan.md. applicationID is empty (omitted from the
+// JSON entirely via omitempty, decoding to nil on onboarding-service's
+// side) for an admin's manual onboarding action — there's no backend
+// GeneralApplication to reference in that case.
+type onboardingNotifyRequest struct {
+	ApplicationID string `json:"application_id,omitempty"`
+	FirstName     string `json:"first_name"`
+	LastName      string `json:"last_name"`
+	PersonalEmail string `json:"personal_email"`
+	AssignedTeam  string `json:"assigned_team"`
+}
+
+// notifyOnboardingService hands off a person to onboarding-service so it
+// can run account provisioning — either a newly accepted applicant
+// (applicationID set, called from AdminFinalizeDecision) or an admin's
+// manual onboarding action (applicationID "", called from
+// ManualOnboardingHandler). Best-effort and non-fatal by design: for the
+// applicant path this runs after the finalize decision is already durably
+// saved, so a delivery failure here must never roll back or block the
+// admin's accept action; for the manual path there's nothing to roll back
+// in the first place. Skipped entirely (not an error) when
+// OnboardingServiceURL isn't configured — expected in any environment
+// where onboarding-service isn't deployed yet.
+func notifyOnboardingService(cfg *config.Config, applicationID, firstName, lastName, personalEmail, assignedTeam string) {
+	if cfg.OnboardingServiceURL == "" {
+		return
+	}
+
+	body, err := json.Marshal(onboardingNotifyRequest{
+		ApplicationID: applicationID,
+		FirstName:     firstName,
+		LastName:      lastName,
+		PersonalEmail: personalEmail,
+		AssignedTeam:  assignedTeam,
+	})
+	if err != nil {
+		log.Printf("onboarding notify: failed to marshal request for %s %s: %v", firstName, lastName, err)
+		return
+	}
+
+	req, err := http.NewRequest(http.MethodPost, cfg.OnboardingServiceURL+"/notify", bytes.NewReader(body))
+	if err != nil {
+		log.Printf("onboarding notify: failed to build request for %s %s: %v", firstName, lastName, err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Service-Secret", cfg.OnboardingServiceSecret)
+
+	client := http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("onboarding notify: request failed for %s %s: %v", firstName, lastName, err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		log.Printf("onboarding notify: onboarding-service returned %d for %s %s", resp.StatusCode, firstName, lastName)
+	}
 }
