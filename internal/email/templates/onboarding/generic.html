@@ -1,4 +1,10 @@
-{{define "email_opening"}}{{end}}
+{{/* Deliberately non-empty: an empty {{define}} here is silently ignored by
+     Go's template engine (it doesn't override base.html's default greeting
+     the way a non-empty one does, regardless of parse order — confirmed via
+     isolated repro), which was rendering base.html's own "Hello!"/"Hello,
+     {{.Profile.FirstName}}!" ahead of the greeting already baked into this
+     email's own body text by onboarding-service, producing a duplicate. */}}
+{{define "email_opening"}}<!-- greeting is part of the message body below -->{{end}}
 
 {{define "email_message_pre"}}
 <p>{{.RenderedBody}}</p>
