@@ -1,10 +1,13 @@
 package handlers
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 
@@ -13,26 +16,31 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/joho/godotenv"
 	"github.com/stretchr/testify/require"
 )
 
-// TestManualOnboardingHandler covers admin-auth gating, validation, and the
-// happy path — same skip-if-no-.env convention as TestOnboardingHandler
-// (needs real RSA keys to sign/verify a JWT), but no Postgres is needed at
-// all: this handler never touches the database. OnboardingServiceURL is
-// left unset so the fire-and-forget notify call is a logged no-op, not a
-// real network call.
-func TestManualOnboardingHandler(t *testing.T) {
-	envFile := "../../.env"
-	if _, err := os.Stat(envFile); err != nil {
-		t.Skip("skipping: no .env file present (needs real JWT signing keys)")
-	}
-	require.NoError(t, godotenv.Load(envFile))
-
-	cfg, err := config.LoadConfig()
+// generateTestJWTKey returns a freshly generated RSA private key, PEM
+// encoded. Used as both JwtSigningKey and JwtValidatingKey in tests —
+// ParseAndVerify (internal/utils/jwt.go) accepts a private key PEM and
+// derives the public key from it, so one generated key covers both. This
+// keeps these tests independent of a real .env file (and its real signing
+// keys), which CI never provides — previously these tests silently skipped
+// in CI entirely.
+func generateTestJWTKey(t *testing.T) string {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
-	cfg.OnboardingServiceURL = ""
+	block := &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}
+	return string(pem.EncodeToMemory(block))
+}
+
+// TestManualOnboardingHandler covers admin-auth gating, validation, and the
+// happy path. No Postgres needed — this handler never touches the
+// database. OnboardingServiceURL is left unset so the fire-and-forget
+// notify call is a logged no-op, not a real network call.
+func TestManualOnboardingHandler(t *testing.T) {
+	jwtKey := generateTestJWTKey(t)
+	cfg := &config.Config{JwtSigningKey: jwtKey, JwtValidatingKey: jwtKey}
 
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
@@ -146,15 +154,12 @@ func TestIsValidEmail(t *testing.T) {
 }
 
 func TestManualOnboardingListRecords(t *testing.T) {
-	envFile := "../../.env"
-	if _, err := os.Stat(envFile); err != nil {
-		t.Skip("skipping: no .env file present (needs real JWT signing keys)")
+	jwtKey := generateTestJWTKey(t)
+	cfg := &config.Config{
+		JwtSigningKey:           jwtKey,
+		JwtValidatingKey:        jwtKey,
+		OnboardingServiceSecret: "test-onboarding-service-secret",
 	}
-	require.NoError(t, godotenv.Load(envFile))
-
-	cfg, err := config.LoadConfig()
-	require.NoError(t, err)
-	cfg.OnboardingServiceSecret = "test-onboarding-service-secret"
 
 	adminCookie := func(t *testing.T) *http.Cookie {
 		t.Helper()
