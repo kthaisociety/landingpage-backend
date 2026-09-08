@@ -308,3 +308,134 @@ func TestOnboardingRecordActions(t *testing.T) {
 		})
 	}
 }
+
+func TestOnboardingEmailSettings(t *testing.T) {
+	jwtKey := generateTestJWTKey(t)
+	cfg := &config.Config{
+		JwtSigningKey:           jwtKey,
+		JwtValidatingKey:        jwtKey,
+		OnboardingServiceSecret: "test-onboarding-service-secret",
+	}
+
+	adminCookie := func(t *testing.T) *http.Cookie {
+		t.Helper()
+		token, err := utils.WriteJWT("admin@kthais.com", []string{"user", "member", "admin"}, uuid.New(), cfg.JwtSigningKey, 60)
+		require.NoError(t, err)
+		return &http.Cookie{Name: "jwt", Value: token}
+	}
+
+	do := func(t *testing.T, engine *gin.Engine, method, path string, body map[string]any, cookie *http.Cookie) *httptest.ResponseRecorder {
+		t.Helper()
+		var reader *strings.Reader
+		if body != nil {
+			payload, err := json.Marshal(body)
+			require.NoError(t, err)
+			reader = strings.NewReader(string(payload))
+		} else {
+			reader = strings.NewReader("")
+		}
+		req := httptest.NewRequest(method, path, reader)
+		req.Header.Set("Content-Type", "application/json")
+		if cookie != nil {
+			req.AddCookie(cookie)
+		}
+		rec := httptest.NewRecorder()
+		engine.ServeHTTP(rec, req)
+		return rec
+	}
+
+	t.Run("GET proxies straight through to onboarding-service", func(t *testing.T) {
+		var gotPath, gotSecret string
+		fakeOnboardingService := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotPath = r.URL.Path
+			gotSecret = r.Header.Get("X-Service-Secret")
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"intro_text":"Welcome!"}`))
+		}))
+		t.Cleanup(fakeOnboardingService.Close)
+		cfg.OnboardingServiceURL = fakeOnboardingService.URL
+
+		gin.SetMode(gin.TestMode)
+		engine := gin.New()
+		NewManualOnboardingHandler(cfg).Register(engine.Group("/api/v1"))
+
+		rec := do(t, engine, "GET", "/api/v1/admin/onboarding/email-settings", nil, adminCookie(t))
+		require.Equal(t, http.StatusOK, rec.Code)
+		require.Equal(t, "/internal/onboarding/email-settings", gotPath)
+		require.Equal(t, "test-onboarding-service-secret", gotSecret)
+		require.Contains(t, rec.Body.String(), "Welcome!")
+	})
+
+	t.Run("GET fails loudly when unconfigured", func(t *testing.T) {
+		cfg.OnboardingServiceURL = ""
+		gin.SetMode(gin.TestMode)
+		engine := gin.New()
+		NewManualOnboardingHandler(cfg).Register(engine.Group("/api/v1"))
+
+		rec := do(t, engine, "GET", "/api/v1/admin/onboarding/email-settings", nil, adminCookie(t))
+		require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	})
+
+	t.Run("GET requires admin auth", func(t *testing.T) {
+		gin.SetMode(gin.TestMode)
+		engine := gin.New()
+		NewManualOnboardingHandler(cfg).Register(engine.Group("/api/v1"))
+
+		rec := do(t, engine, "GET", "/api/v1/admin/onboarding/email-settings", nil, nil)
+		require.Equal(t, http.StatusUnauthorized, rec.Code)
+	})
+
+	t.Run("PUT attaches the admin's own identity, not anything client-supplied", func(t *testing.T) {
+		var gotBody map[string]string
+		fakeOnboardingService := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&gotBody))
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"intro_text":"` + gotBody["intro_text"] + `"}`))
+		}))
+		t.Cleanup(fakeOnboardingService.Close)
+		cfg.OnboardingServiceURL = fakeOnboardingService.URL
+
+		gin.SetMode(gin.TestMode)
+		engine := gin.New()
+		NewManualOnboardingHandler(cfg).Register(engine.Group("/api/v1"))
+
+		rec := do(t, engine, "PUT", "/api/v1/admin/onboarding/email-settings",
+			map[string]any{"intro_text": "So excited to have you!"}, adminCookie(t))
+		require.Equal(t, http.StatusOK, rec.Code)
+		require.Equal(t, "So excited to have you!", gotBody["intro_text"])
+		require.Equal(t, "admin@kthais.com", gotBody["updated_by_email"])
+	})
+
+	t.Run("preview renders through the real HTML template without saving anything", func(t *testing.T) {
+		var previewRequested bool
+		fakeOnboardingService := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			require.Equal(t, "/internal/onboarding/email-settings/preview", r.URL.Path)
+			previewRequested = true
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"subject":"Welcome to KTH AI Society","body":"Hi Alex,\n\nSo glad you're here!\n\nTo get started:\n1. ..."}`))
+		}))
+		t.Cleanup(fakeOnboardingService.Close)
+		cfg.OnboardingServiceURL = fakeOnboardingService.URL
+
+		gin.SetMode(gin.TestMode)
+		engine := gin.New()
+		NewManualOnboardingHandler(cfg).Register(engine.Group("/api/v1"))
+
+		rec := do(t, engine, "POST", "/api/v1/admin/onboarding/email-settings/preview",
+			map[string]any{"intro_text": "So glad you're here!"}, adminCookie(t))
+		require.Equal(t, http.StatusOK, rec.Code)
+		require.True(t, previewRequested)
+
+		var resp struct {
+			Subject string `json:"subject"`
+			HTML    string `json:"html"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+		require.Equal(t, "Welcome to KTH AI Society", resp.Subject)
+		require.Contains(t, resp.HTML, "So glad you&#39;re here!")
+		require.Contains(t, resp.HTML, "<!DOCTYPE html>")
+	})
+}
