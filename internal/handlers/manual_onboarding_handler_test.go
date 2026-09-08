@@ -424,6 +424,24 @@ func TestOnboardingEmailSettings(t *testing.T) {
 		require.Equal(t, http.StatusBadRequest, rec.Code)
 	})
 
+	t.Run("preview rejects a malformed-but-syntactically-valid upstream response", func(t *testing.T) {
+		fakeOnboardingService := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`null`))
+		}))
+		t.Cleanup(fakeOnboardingService.Close)
+		cfg.OnboardingServiceURL = fakeOnboardingService.URL
+
+		gin.SetMode(gin.TestMode)
+		engine := gin.New()
+		NewManualOnboardingHandler(cfg).Register(engine.Group("/api/v1"))
+
+		rec := do(t, engine, "POST", "/api/v1/admin/onboarding/email-settings/preview",
+			map[string]any{"kind": "start", "intro_text": "whatever"}, adminCookie(t))
+		require.Equal(t, http.StatusBadGateway, rec.Code, "a bare null body must never render as a blank-but-successful preview")
+	})
+
 	t.Run("preview of the start email includes a button, others don't", func(t *testing.T) {
 		var gotKind string
 		fakeOnboardingService := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

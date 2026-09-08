@@ -321,7 +321,11 @@ func (h *ManualOnboardingHandler) PreviewEmailSettings(c *gin.Context) {
 		Subject string `json:"subject"`
 		Body    string `json:"body"`
 	}
-	if err := json.Unmarshal(body, &rendered); err != nil {
+	// json.Unmarshal of a bare `null` body succeeds and leaves rendered
+	// zero-valued — checked for explicitly (rather than just handling the
+	// unmarshal error) so a malformed-but-syntactically-valid upstream
+	// response can never look like a real, blank preview to an admin.
+	if err := json.Unmarshal(body, &rendered); err != nil || rendered.Subject == "" || rendered.Body == "" {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "onboarding service returned an invalid response"})
 		return
 	}
