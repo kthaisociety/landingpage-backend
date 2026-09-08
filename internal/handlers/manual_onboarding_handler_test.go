@@ -220,3 +220,91 @@ func TestManualOnboardingListRecords(t *testing.T) {
 		require.Equal(t, http.StatusUnauthorized, rec.Code)
 	})
 }
+
+func TestOnboardingRecordActions(t *testing.T) {
+	jwtKey := generateTestJWTKey(t)
+	cfg := &config.Config{
+		JwtSigningKey:           jwtKey,
+		JwtValidatingKey:        jwtKey,
+		OnboardingServiceSecret: "test-onboarding-service-secret",
+	}
+
+	adminCookie := func(t *testing.T) *http.Cookie {
+		t.Helper()
+		token, err := utils.WriteJWT("admin@kthais.com", []string{"user", "member", "admin"}, uuid.New(), cfg.JwtSigningKey, 60)
+		require.NoError(t, err)
+		return &http.Cookie{Name: "jwt", Value: token}
+	}
+
+	postAction := func(t *testing.T, engine *gin.Engine, path string, body map[string]any, cookie *http.Cookie) *httptest.ResponseRecorder {
+		t.Helper()
+		payload, err := json.Marshal(body)
+		require.NoError(t, err)
+		req := httptest.NewRequest("POST", path, strings.NewReader(string(payload)))
+		req.Header.Set("Content-Type", "application/json")
+		if cookie != nil {
+			req.AddCookie(cookie)
+		}
+		rec := httptest.NewRecorder()
+		engine.ServeHTTP(rec, req)
+		return rec
+	}
+
+	for _, action := range []string{"cancel", "restart"} {
+		t.Run(action, func(t *testing.T) {
+			t.Run("proxies to onboarding-service with the shared secret", func(t *testing.T) {
+				var gotPath, gotSecret string
+				var gotBody map[string]uint
+				fakeOnboardingService := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					gotPath = r.URL.Path
+					gotSecret = r.Header.Get("X-Service-Secret")
+					require.NoError(t, json.NewDecoder(r.Body).Decode(&gotBody))
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(`{"id":5,"state":"` + action + `ed"}`))
+				}))
+				t.Cleanup(fakeOnboardingService.Close)
+				cfg.OnboardingServiceURL = fakeOnboardingService.URL
+
+				gin.SetMode(gin.TestMode)
+				engine := gin.New()
+				NewManualOnboardingHandler(cfg).Register(engine.Group("/api/v1"))
+
+				rec := postAction(t, engine, "/api/v1/admin/onboarding/"+action, map[string]any{"id": 5}, adminCookie(t))
+				require.Equal(t, http.StatusOK, rec.Code)
+				require.Equal(t, "/internal/onboarding/"+action, gotPath)
+				require.Equal(t, "test-onboarding-service-secret", gotSecret)
+				require.Equal(t, uint(5), gotBody["id"])
+			})
+
+			t.Run("missing id is rejected", func(t *testing.T) {
+				cfg.OnboardingServiceURL = "http://example.invalid"
+				gin.SetMode(gin.TestMode)
+				engine := gin.New()
+				NewManualOnboardingHandler(cfg).Register(engine.Group("/api/v1"))
+
+				rec := postAction(t, engine, "/api/v1/admin/onboarding/"+action, map[string]any{}, adminCookie(t))
+				require.Equal(t, http.StatusBadRequest, rec.Code)
+			})
+
+			t.Run("unconfigured onboarding service fails loudly, not silently", func(t *testing.T) {
+				cfg.OnboardingServiceURL = ""
+				gin.SetMode(gin.TestMode)
+				engine := gin.New()
+				NewManualOnboardingHandler(cfg).Register(engine.Group("/api/v1"))
+
+				rec := postAction(t, engine, "/api/v1/admin/onboarding/"+action, map[string]any{"id": 5}, adminCookie(t))
+				require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+			})
+
+			t.Run("non-admin is rejected", func(t *testing.T) {
+				gin.SetMode(gin.TestMode)
+				engine := gin.New()
+				NewManualOnboardingHandler(cfg).Register(engine.Group("/api/v1"))
+
+				rec := postAction(t, engine, "/api/v1/admin/onboarding/"+action, map[string]any{"id": 5}, nil)
+				require.Equal(t, http.StatusUnauthorized, rec.Code)
+			})
+		})
+	}
+}
