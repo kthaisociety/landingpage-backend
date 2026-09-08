@@ -1,9 +1,11 @@
 package handlers
 
 import (
+	"io"
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"backend/internal/config"
 	"backend/internal/middleware"
@@ -11,15 +13,15 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// ManualOnboardingHandler lets an admin onboard a new @kthais.com member
-// outside the recruitment pipeline entirely (board appointments, special
-// cases) — no GeneralApplication is created or required. There is
-// deliberately no persistence here: see notifyOnboardingService's doc
-// comment and onboarding-service-plan.md for why an empty applicationID
-// (no backend record to reference) is the honest representation of "this
-// person didn't come through the application pipeline," rather than
-// fabricating a placeholder id or a new table just to have something to
-// look up later.
+// ManualOnboardingHandler owns the admin-facing /admin/onboarding/* routes:
+// starting a manual onboarding (outside the recruitment pipeline entirely —
+// board appointments, special cases; no GeneralApplication is created or
+// required — see notifyOnboardingService's doc comment and
+// onboarding-service-plan.md for why an empty applicationID is the honest
+// representation of "this person didn't come through the application
+// pipeline," rather than fabricating a placeholder id or a new table), and
+// listing onboarding records for admin visibility (proxied straight through
+// to onboarding-service, never persisted here — see ListRecords).
 type ManualOnboardingHandler struct {
 	cfg *config.Config
 }
@@ -29,10 +31,11 @@ func NewManualOnboardingHandler(cfg *config.Config) *ManualOnboardingHandler {
 }
 
 func (h *ManualOnboardingHandler) Register(r *gin.RouterGroup) {
-	admin := r.Group("/admin/onboarding/manual")
+	admin := r.Group("/admin/onboarding")
 	admin.Use(middleware.AuthRequiredJWT(h.cfg))
 	admin.Use(middleware.RoleRequired(h.cfg, "admin"))
-	admin.POST("", h.Create)
+	admin.POST("/manual", h.Create)
+	admin.GET("/records", h.ListRecords)
 }
 
 type manualOnboardingRequest struct {
@@ -88,4 +91,43 @@ func (h *ManualOnboardingHandler) Create(c *gin.Context) {
 	go notifyOnboardingService(h.cfg, "", req.FirstName, req.LastName, req.Email, req.AssignedTeam)
 
 	c.JSON(http.StatusOK, gin.H{"status": "notified"})
+}
+
+// ListRecords proxies onboarding-service's own /internal/onboarding/records
+// straight through — this backend never persists a copy of onboarding
+// state (see the package doc comment above), onboarding-service stays the
+// source of truth. Returns an empty list rather than an error when
+// OnboardingServiceURL isn't configured, matching how notifyOnboardingService
+// treats that same case as a silent no-op rather than a failure.
+func (h *ManualOnboardingHandler) ListRecords(c *gin.Context) {
+	if h.cfg.OnboardingServiceURL == "" {
+		c.JSON(http.StatusOK, []any{})
+		return
+	}
+
+	req, err := http.NewRequest(http.MethodGet, h.cfg.OnboardingServiceURL+"/internal/onboarding/records", nil)
+	if err != nil {
+		log.Printf("onboarding records: failed to build request: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to reach onboarding service"})
+		return
+	}
+	req.Header.Set("X-Service-Secret", h.cfg.OnboardingServiceSecret)
+
+	client := http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("onboarding records: request failed: %v", err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "onboarding service is unreachable"})
+		return
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("onboarding records: failed to read response: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read onboarding service response"})
+		return
+	}
+
+	c.Data(resp.StatusCode, "application/json; charset=utf-8", body)
 }
