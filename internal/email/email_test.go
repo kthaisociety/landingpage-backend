@@ -196,3 +196,28 @@ func TestSendCustomEmailWithImage(t *testing.T) {
 	err := sendCustomEmail(mockProfile, "Custom email with image", "Custom email text :)", "Button text", "https://kthais.com", "https://kthais.com/files/__sized__/event/picture/Asort_Ventures_-_Website_Poster-crop-c0-5__0-5-1500x1000-70.jpg")
 	assert.Nil(t, err, "sendCustomEmail should not return an error")
 }
+
+// TestSendOnboardingEmailDoesNotDuplicateGreeting is a regression test for a
+// Go template gotcha: an empty {{define "email_opening"}}{{end}} in
+// templates/onboarding/generic.html was silently ignored (Go's template
+// engine only lets a later {{define}} override an earlier same-named one
+// when the later one is non-empty), so base.html's own default "Hello!"
+// greeting kept rendering ahead of the "Hi {name}," greeting
+// onboarding-service already bakes into the email body itself.
+func TestSendOnboardingEmailDoesNotDuplicateGreeting(t *testing.T) {
+	previousMailer := defaultMailer
+	mailer := &captureMailer{}
+	defaultMailer = mailer
+	t.Cleanup(func() {
+		defaultMailer = previousMailer
+	})
+
+	body := "Hi Test,\n\nCongratulations on being accepted to KTH AI Society!"
+	err := SendOnboardingEmail("test@example.com", "Welcome to KTH AI Society", body, "https://kthais.com/onboarding/start?token=abc", "Start onboarding")
+
+	assert.Nil(t, err, "SendOnboardingEmail should not return an error")
+	assert.Equal(t, "test@example.com", mailer.to)
+	assert.Contains(t, mailer.htmlBody, "Hi Test,")
+	assert.NotContains(t, mailer.htmlBody, "Hello!", "base.html's default greeting should be suppressed, not duplicated")
+	assert.NotContains(t, mailer.htmlBody, "Hello,", "base.html's default greeting should be suppressed, not duplicated")
+}
