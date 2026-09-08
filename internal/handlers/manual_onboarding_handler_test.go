@@ -392,7 +392,7 @@ func TestOnboardingEmailSettings(t *testing.T) {
 			require.NoError(t, json.NewDecoder(r.Body).Decode(&gotBody))
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"intro_text":"` + gotBody["intro_text"] + `"}`))
+			_, _ = w.Write([]byte(`{"start_intro_text":"` + gotBody["start_intro_text"] + `"}`))
 		}))
 		t.Cleanup(fakeOnboardingService.Close)
 		cfg.OnboardingServiceURL = fakeOnboardingService.URL
@@ -402,17 +402,35 @@ func TestOnboardingEmailSettings(t *testing.T) {
 		NewManualOnboardingHandler(cfg).Register(engine.Group("/api/v1"))
 
 		rec := do(t, engine, "PUT", "/api/v1/admin/onboarding/email-settings",
-			map[string]any{"intro_text": "So excited to have you!"}, adminCookie(t))
+			map[string]any{
+				"start_intro_text":      "So excited to have you!",
+				"account_intro_text":    "Welcome aboard!",
+				"mattermost_intro_text": "Say hi!",
+			}, adminCookie(t))
 		require.Equal(t, http.StatusOK, rec.Code)
-		require.Equal(t, "So excited to have you!", gotBody["intro_text"])
+		require.Equal(t, "So excited to have you!", gotBody["start_intro_text"])
+		require.Equal(t, "Welcome aboard!", gotBody["account_intro_text"])
+		require.Equal(t, "Say hi!", gotBody["mattermost_intro_text"])
 		require.Equal(t, "admin@kthais.com", gotBody["updated_by_email"])
 	})
 
-	t.Run("preview renders through the real HTML template without saving anything", func(t *testing.T) {
-		var previewRequested bool
+	t.Run("preview rejects an unknown kind", func(t *testing.T) {
+		gin.SetMode(gin.TestMode)
+		engine := gin.New()
+		NewManualOnboardingHandler(cfg).Register(engine.Group("/api/v1"))
+
+		rec := do(t, engine, "POST", "/api/v1/admin/onboarding/email-settings/preview",
+			map[string]any{"kind": "bogus", "intro_text": "whatever"}, adminCookie(t))
+		require.Equal(t, http.StatusBadRequest, rec.Code)
+	})
+
+	t.Run("preview of the start email includes a button, others don't", func(t *testing.T) {
+		var gotKind string
 		fakeOnboardingService := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			require.Equal(t, "/internal/onboarding/email-settings/preview", r.URL.Path)
-			previewRequested = true
+			var body map[string]string
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			gotKind = body["kind"]
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"subject":"Welcome to KTH AI Society","body":"Hi Alex,\n\nSo glad you're here!\n\nTo get started:\n1. ..."}`))
@@ -425,9 +443,9 @@ func TestOnboardingEmailSettings(t *testing.T) {
 		NewManualOnboardingHandler(cfg).Register(engine.Group("/api/v1"))
 
 		rec := do(t, engine, "POST", "/api/v1/admin/onboarding/email-settings/preview",
-			map[string]any{"intro_text": "So glad you're here!"}, adminCookie(t))
+			map[string]any{"kind": "start", "intro_text": "So glad you're here!"}, adminCookie(t))
 		require.Equal(t, http.StatusOK, rec.Code)
-		require.True(t, previewRequested)
+		require.Equal(t, "start", gotKind)
 
 		var resp struct {
 			Subject string `json:"subject"`
@@ -437,5 +455,13 @@ func TestOnboardingEmailSettings(t *testing.T) {
 		require.Equal(t, "Welcome to KTH AI Society", resp.Subject)
 		require.Contains(t, resp.HTML, "So glad you&#39;re here!")
 		require.Contains(t, resp.HTML, "<!DOCTYPE html>")
+		require.Contains(t, resp.HTML, "Start onboarding")
+
+		accountRec := do(t, engine, "POST", "/api/v1/admin/onboarding/email-settings/preview",
+			map[string]any{"kind": "account", "intro_text": "Welcome aboard!"}, adminCookie(t))
+		require.Equal(t, http.StatusOK, accountRec.Code)
+		var accountResp struct{ HTML string }
+		require.NoError(t, json.Unmarshal(accountRec.Body.Bytes(), &accountResp))
+		require.NotContains(t, accountResp.HTML, "Start onboarding")
 	})
 }

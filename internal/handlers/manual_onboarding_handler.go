@@ -221,8 +221,10 @@ func (h *ManualOnboardingHandler) GetEmailSettings(c *gin.Context) {
 	c.Data(status, "application/json; charset=utf-8", body)
 }
 
-type updateOnboardingEmailSettingsRequest struct {
-	IntroText string `json:"intro_text"`
+type onboardingEmailSettingsRequest struct {
+	StartIntroText      string `json:"start_intro_text"`
+	AccountIntroText    string `json:"account_intro_text"`
+	MattermostIntroText string `json:"mattermost_intro_text"`
 }
 
 // UpdateEmailSettings proxies to onboarding-service's own PUT
@@ -236,7 +238,7 @@ func (h *ManualOnboardingHandler) UpdateEmailSettings(c *gin.Context) {
 		return
 	}
 
-	var req updateOnboardingEmailSettingsRequest
+	var req onboardingEmailSettingsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
@@ -247,8 +249,10 @@ func (h *ManualOnboardingHandler) UpdateEmailSettings(c *gin.Context) {
 	}
 
 	payload, err := json.Marshal(map[string]string{
-		"intro_text":       req.IntroText,
-		"updated_by_email": adminEmail,
+		"start_intro_text":      req.StartIntroText,
+		"account_intro_text":    req.AccountIntroText,
+		"mattermost_intro_text": req.MattermostIntroText,
+		"updated_by_email":      adminEmail,
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to build request"})
@@ -267,18 +271,28 @@ func (h *ManualOnboardingHandler) UpdateEmailSettings(c *gin.Context) {
 // previewSampleButtonURL is a placeholder link, matching how the interview
 // invite preview substitutes a fake booking URL when none is set yet — this
 // is never a real link the admin panel would let anyone click through to.
+// Only the start-onboarding email has a button at all.
 const previewSampleButtonURL = "https://kthais.com/onboarding/start"
 
-// PreviewEmailSettings renders the start-onboarding email exactly as it
-// would be sent for the given (possibly unsaved) intro text: it asks
+type previewOnboardingEmailRequest struct {
+	Kind      string `json:"kind"`
+	IntroText string `json:"intro_text"`
+}
+
+// PreviewEmailSettings renders one of the three onboarding emails exactly
+// as it would be sent for the given (possibly unsaved) intro text: it asks
 // onboarding-service to build the same subject/body a real send would (see
 // that service's EmailSettingsHandler.Preview), then wraps it in this
 // backend's own HTML template via the same RenderOnboardingEmail used when
 // actually sending, so the preview can never drift from the real email.
 func (h *ManualOnboardingHandler) PreviewEmailSettings(c *gin.Context) {
-	var req updateOnboardingEmailSettingsRequest
+	var req previewOnboardingEmailRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	if req.Kind != "start" && req.Kind != "account" && req.Kind != "mattermost" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "kind must be one of: start, account, mattermost"})
 		return
 	}
 	if h.cfg.OnboardingServiceURL == "" {
@@ -286,7 +300,7 @@ func (h *ManualOnboardingHandler) PreviewEmailSettings(c *gin.Context) {
 		return
 	}
 
-	payload, err := json.Marshal(map[string]string{"intro_text": req.IntroText})
+	payload, err := json.Marshal(map[string]string{"kind": req.Kind, "intro_text": req.IntroText})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to build request"})
 		return
@@ -312,7 +326,12 @@ func (h *ManualOnboardingHandler) PreviewEmailSettings(c *gin.Context) {
 		return
 	}
 
-	html, err := email.RenderOnboardingEmail(rendered.Subject, rendered.Body, previewSampleButtonURL, "Start onboarding")
+	var buttonURL, buttonText string
+	if req.Kind == "start" {
+		buttonURL, buttonText = previewSampleButtonURL, "Start onboarding"
+	}
+
+	html, err := email.RenderOnboardingEmail(rendered.Subject, rendered.Body, buttonURL, buttonText)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to render preview"})
 		return
