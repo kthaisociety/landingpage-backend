@@ -8,6 +8,7 @@ import (
 	"backend/internal/models"
 	"backend/internal/utils"
 	"backend/internal/validation"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -531,11 +532,21 @@ func (h *GeneralApplicationHandler) AdminUpdateSettings(c *gin.Context) {
 		return
 	}
 
+	rawBody, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
 	var body struct {
-		// nil (omitted or explicit null) means "no lower bound" — recruitment
-		// CTAs show as soon as before SubmissionDeadline. Not required,
-		// unlike SubmissionDeadline: an admin clearing this field is a valid,
-		// meaningful choice, not an incomplete form.
+		// Explicit null means "no lower bound" — recruitment CTAs show as
+		// soon as before SubmissionDeadline. Not required, unlike
+		// SubmissionDeadline: an admin clearing this field is a valid,
+		// meaningful choice, not an incomplete form. Omitting the key
+		// entirely (an older or partial caller that doesn't know about this
+		// field) must leave whatever's already saved untouched instead —
+		// see the presence check below, since Go's JSON decoding can't tell
+		// "omitted" apart from "explicit null" on its own.
 		RecruitmentOpensAt *time.Time `json:"recruitment_opens_at"`
 		SubmissionDeadline time.Time  `json:"submission_deadline" binding:"required"`
 		// Empty means "reset to default" — same convention as the Team
@@ -543,19 +554,25 @@ func (h *GeneralApplicationHandler) AdminUpdateSettings(c *gin.Context) {
 		ClosedHeading string `json:"closed_heading"`
 		ClosedMessage string `json:"closed_message"`
 	}
-	if err := c.ShouldBindJSON(&body); err != nil {
+	if err := json.Unmarshal(rawBody, &body); err != nil || body.SubmissionDeadline.IsZero() {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
 	}
 
+	var presence map[string]json.RawMessage
+	_ = json.Unmarshal(rawBody, &presence)
+	_, recruitmentOpensAtProvided := presence["recruitment_opens_at"]
+
 	var settings models.GeneralApplicationSettings
-	err := h.db.First(&settings).Error
+	err = h.db.First(&settings).Error
 	if err != nil && err != gorm.ErrRecordNotFound {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load application settings"})
 		return
 	}
 
-	settings.RecruitmentOpensAt = body.RecruitmentOpensAt
+	if recruitmentOpensAtProvided {
+		settings.RecruitmentOpensAt = body.RecruitmentOpensAt
+	}
 	settings.SubmissionDeadline = body.SubmissionDeadline
 	settings.ClosedHeading = strings.TrimSpace(body.ClosedHeading)
 	settings.ClosedMessage = strings.TrimSpace(body.ClosedMessage)
