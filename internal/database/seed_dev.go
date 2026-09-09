@@ -442,11 +442,15 @@ func SeedDev(db *gorm.DB, cfg *config.Config) {
 		// IT so the seeded admin can exercise the IT-only Team Questions
 		// template editor locally without extra setup.
 		AdminTeam: "IT",
+		// Likewise, so offboarding (Head-of-IT-only) is exercisable locally
+		// without a manual DB update — see Profile.IsHeadOfIT's doc comment
+		// for why this can't be set via any self-service endpoint in prod.
+		IsHeadOfIT: true,
 	}
 
 	if err := db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "email"}},
-		DoUpdates: clause.AssignmentColumns([]string{"first_name", "last_name", "user_uuid", "user_id", "admin_team"}),
+		DoUpdates: clause.AssignmentColumns([]string{"first_name", "last_name", "user_uuid", "user_id", "admin_team", "is_head_of_it"}),
 	}).Create(&profile).Error; err != nil {
 		log.Printf("[dev seed] failed to upsert profile: %v", err)
 		return

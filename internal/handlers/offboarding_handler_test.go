@@ -13,7 +13,9 @@ import (
 	"backend/internal/models"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
+	"github.com/lib/pq"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -44,9 +46,10 @@ func TestOffboardingHandler(t *testing.T) {
 	require.NoError(t, db.AutoMigrate(&models.User{}, &models.Profile{}))
 
 	regularAdmin := mustCreateAdmin(t, db, cfg, "offboarding-regular-admin@example.com")
-	headOfIT := mustCreateTeamAdmin(t, db, cfg, "offboarding-head-of-it@example.com", "IT")
+	headOfIT := mustCreateHeadOfIT(t, db, cfg, "offboarding-head-of-it@example.com")
+	otherAdmin := mustCreateAdmin(t, db, cfg, "offboarding-other-admin@example.com")
 	t.Cleanup(func() {
-		for _, email := range []string{regularAdmin.email, headOfIT.email} {
+		for _, email := range []string{regularAdmin.email, headOfIT.email, otherAdmin.email} {
 			db.Where("email = ?", email).Unscoped().Delete(&models.Profile{})
 			db.Where("email = ?", email).Unscoped().Delete(&models.User{})
 		}
@@ -131,4 +134,62 @@ func TestOffboardingHandler(t *testing.T) {
 		unconfiguredEngine.ServeHTTP(rec, req)
 		require.Equal(t, http.StatusServiceUnavailable, rec.Code)
 	})
+
+	t.Run("transfer head of IT", func(t *testing.T) {
+		rec := post(t, "/api/v1/admin/head-of-it/transfer", map[string]any{"email": otherAdmin.email}, nil)
+		require.Equal(t, http.StatusUnauthorized, rec.Code, "no cookie at all")
+
+		rec = post(t, "/api/v1/admin/head-of-it/transfer", map[string]any{"email": otherAdmin.email}, regularAdmin.cookie)
+		require.Equal(t, http.StatusForbidden, rec.Code, "only the current head of IT can transfer it")
+
+		rec = post(t, "/api/v1/admin/head-of-it/transfer", map[string]any{"email": headOfIT.email}, headOfIT.cookie)
+		require.Equal(t, http.StatusBadRequest, rec.Code, "can't transfer to yourself")
+
+		rec = post(t, "/api/v1/admin/head-of-it/transfer", map[string]any{"email": "nobody@example.com"}, headOfIT.cookie)
+		require.Equal(t, http.StatusNotFound, rec.Code, "target must exist")
+
+		nonAdminEmail := "offboarding-non-admin@example.com"
+		nonAdminUserID := uuid.New()
+		require.NoError(t, db.Create(&models.User{
+			UserId:   nonAdminUserID,
+			Email:    nonAdminEmail,
+			Provider: "test",
+			Roles:    pq.StringArray{"user", "member"},
+		}).Error)
+		require.NoError(t, db.Create(&models.Profile{
+			UserUUID:  nonAdminUserID,
+			UserId:    mustFindUserPK(t, db, nonAdminEmail),
+			Email:     nonAdminEmail,
+			FirstName: "Non",
+			LastName:  "Admin",
+		}).Error)
+		t.Cleanup(func() {
+			db.Where("email = ?", nonAdminEmail).Unscoped().Delete(&models.Profile{})
+			db.Where("email = ?", nonAdminEmail).Unscoped().Delete(&models.User{})
+		})
+		rec = post(t, "/api/v1/admin/head-of-it/transfer", map[string]any{"email": nonAdminEmail}, headOfIT.cookie)
+		require.Equal(t, http.StatusBadRequest, rec.Code, "target must already be an admin")
+
+		rec = post(t, "/api/v1/admin/head-of-it/transfer", map[string]any{"email": otherAdmin.email}, headOfIT.cookie)
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		// The old head lost it...
+		rec = post(t, "/api/v1/admin/offboarding/deactivate", map[string]any{"email": "test.user@kthais.com"}, headOfIT.cookie)
+		require.Equal(t, http.StatusForbidden, rec.Code, "the old head of IT no longer has access")
+
+		// ...and the new head has it, atomically (never zero heads in between).
+		rec = post(t, "/api/v1/admin/offboarding/deactivate", map[string]any{"email": "test.user@kthais.com"}, otherAdmin.cookie)
+		require.Equal(t, http.StatusOK, rec.Code, "the new head of IT now has access")
+	})
+}
+
+// mustCreateHeadOfIT creates an admin and flips Profile.IsHeadOfIT directly
+// in the database — the only way to grant it outside of
+// OffboardingHandler.TransferHeadOfIT itself, matching how it'd actually be
+// bootstrapped in production.
+func mustCreateHeadOfIT(t *testing.T, db *gorm.DB, cfg *config.Config, email string) testAdmin {
+	t.Helper()
+	admin := mustCreateAdmin(t, db, cfg, email)
+	require.NoError(t, db.Model(&models.Profile{}).Where("email = ?", email).Update("is_head_of_it", true).Error)
+	return admin
 }

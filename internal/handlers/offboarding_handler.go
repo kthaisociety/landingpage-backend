@@ -4,12 +4,15 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"slices"
 	"strings"
 
 	"backend/internal/config"
 	"backend/internal/middleware"
+	"backend/internal/models"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
@@ -46,24 +49,40 @@ func (h *OffboardingHandler) Register(r *gin.RouterGroup) {
 	admin.Use(middleware.RoleRequired(h.cfg, "admin"))
 	admin.POST("/deactivate", h.Deactivate)
 	admin.POST("/delete", h.Delete)
+
+	headOfIT := r.Group("/admin/head-of-it")
+	headOfIT.Use(middleware.AuthRequiredJWT(h.cfg))
+	headOfIT.Use(middleware.RoleRequired(h.cfg, "admin"))
+	headOfIT.POST("/transfer", h.TransferHeadOfIT)
+}
+
+// requesterIsHeadOfIT checks Profile.IsHeadOfIT — deliberately not
+// requesterIsHeadOfTeam/AdminTeam, which any admin can set on themselves via
+// UpdateInterviewSettings. See the IsHeadOfIT field doc comment for why this
+// needs its own, non-self-editable flag.
+func requesterIsHeadOfIT(db *gorm.DB, userID uuid.UUID) (bool, error) {
+	var profile models.Profile
+	if err := db.Where("user_uuid = ?", userID).First(&profile).Error; err != nil {
+		return false, err
+	}
+	return profile.IsHeadOfIT, nil
 }
 
 // requireHeadOfIT is deliberately stricter than the rest of this admin
 // group: RoleRequired("admin") above only proves the caller is *an* admin.
-// Every handler in this file re-checks head-of-IT specifically, the same
-// way AdminCloseFinalizePhase and AdminSendBulk do.
-func (h *OffboardingHandler) requireHeadOfIT(c *gin.Context) (adminEmail string, ok bool) {
+// Every handler in this file re-checks head-of-IT specifically.
+func (h *OffboardingHandler) requireHeadOfIT(c *gin.Context) (requesterID uuid.UUID, adminEmail string, ok bool) {
 	userID, adminEmail, authOK := getAdminIdentity(c)
 	if !authOK {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-		return "", false
+		return uuid.UUID{}, "", false
 	}
-	isHeadOfIT, err := requesterIsHeadOfTeam(h.db, userID, "IT")
+	isHeadOfIT, err := requesterIsHeadOfIT(h.db, userID)
 	if err != nil || !isHeadOfIT {
 		c.JSON(http.StatusForbidden, gin.H{"error": "only the head of IT can offboard a member's account"})
-		return "", false
+		return uuid.UUID{}, "", false
 	}
-	return adminEmail, true
+	return userID, adminEmail, true
 }
 
 // isKthaisEmail guards against offboarding actions ever being pointed at
@@ -84,7 +103,7 @@ type offboardingDeactivateRequest struct {
 // system's own admin console — see onboarding-service's
 // offboarding.Service.Deactivate.
 func (h *OffboardingHandler) Deactivate(c *gin.Context) {
-	adminEmail, ok := h.requireHeadOfIT(c)
+	_, adminEmail, ok := h.requireHeadOfIT(c)
 	if !ok {
 		return
 	}
@@ -108,7 +127,7 @@ type offboardingDeleteRequest struct {
 // permanently delete the Mattermost account for email. Cannot be undone
 // from this system — requires typing deleteAccountConfirmPhrase exactly.
 func (h *OffboardingHandler) Delete(c *gin.Context) {
-	adminEmail, ok := h.requireHeadOfIT(c)
+	_, adminEmail, ok := h.requireHeadOfIT(c)
 	if !ok {
 		return
 	}
@@ -125,6 +144,74 @@ func (h *OffboardingHandler) Delete(c *gin.Context) {
 
 	log.Printf("offboarding: %s is PERMANENTLY DELETING the account for %s", adminEmail, req.Email)
 	h.proxy(c, "/internal/offboarding/delete", req.Email)
+}
+
+type transferHeadOfITRequest struct {
+	Email string `json:"email" binding:"required"`
+}
+
+// TransferHeadOfIT hands the Head-of-IT flag to a different admin. There is
+// deliberately no separate "revoke" action — the only way to stop being
+// Head of IT is to name a successor here, in the same transaction that
+// grants it to them, so the system can never end up with zero heads. The
+// very first Head of IT has to be set with a one-off manual database
+// update; every handover after that goes through this endpoint.
+func (h *OffboardingHandler) TransferHeadOfIT(c *gin.Context) {
+	requesterID, requesterEmail, ok := h.requireHeadOfIT(c)
+	if !ok {
+		return
+	}
+
+	var req transferHeadOfITRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "email is required"})
+		return
+	}
+	targetEmail := strings.ToLower(strings.TrimSpace(req.Email))
+	if targetEmail == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "email is required"})
+		return
+	}
+	if targetEmail == strings.ToLower(requesterEmail) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "you're already the head of IT"})
+		return
+	}
+
+	var target models.Profile
+	if err := h.db.Where("email = ?", targetEmail).First(&target).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "no profile found for that email"})
+		return
+	}
+
+	var targetUser models.User
+	if err := h.db.Where("id = ?", target.UserId).First(&targetUser).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "no user found for that email"})
+		return
+	}
+	if !slices.Contains([]string(targetUser.Roles), models.RoleAdmin) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "the new head of IT must already be an admin"})
+		return
+	}
+
+	err := h.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&models.Profile{}).Where("user_uuid = ?", requesterID).
+			Update("is_head_of_it", false).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&models.Profile{}).Where("user_uuid = ?", target.UserUUID).
+			Update("is_head_of_it", true).Error; err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		log.Printf("offboarding: transferring head of IT from %s to %s: %v", requesterEmail, targetEmail, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to transfer head of IT"})
+		return
+	}
+
+	log.Printf("offboarding: %s transferred head of IT to %s", requesterEmail, targetEmail)
+	c.JSON(http.StatusOK, gin.H{"new_head_of_it_email": targetEmail})
 }
 
 func (h *OffboardingHandler) proxy(c *gin.Context, path, email string) {
