@@ -497,9 +497,11 @@ func (h *GeneralApplicationHandler) Settings(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"submission_deadline": settings.SubmissionDeadline,
-		"closed_heading":      settings.ClosedHeading,
-		"closed_message":      settings.ClosedMessage,
+		"recruitment_opens_at": settings.RecruitmentOpensAt,
+		"submission_deadline":  settings.SubmissionDeadline,
+		"closed_heading":       settings.ClosedHeading,
+		"closed_message":       settings.ClosedMessage,
+		"is_recruitment_open":  settings.IsRecruitmentOpen(time.Now()),
 	})
 }
 
@@ -510,10 +512,12 @@ func (h *GeneralApplicationHandler) AdminGetSettings(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"submission_deadline": settings.SubmissionDeadline,
-		"closed_heading":      settings.ClosedHeading,
-		"closed_message":      settings.ClosedMessage,
-		"updated_by_email":    settings.UpdatedByEmail,
+		"recruitment_opens_at": settings.RecruitmentOpensAt,
+		"submission_deadline":  settings.SubmissionDeadline,
+		"closed_heading":       settings.ClosedHeading,
+		"closed_message":       settings.ClosedMessage,
+		"is_recruitment_open":  settings.IsRecruitmentOpen(time.Now()),
+		"updated_by_email":     settings.UpdatedByEmail,
 	})
 }
 
@@ -528,7 +532,12 @@ func (h *GeneralApplicationHandler) AdminUpdateSettings(c *gin.Context) {
 	}
 
 	var body struct {
-		SubmissionDeadline time.Time `json:"submission_deadline" binding:"required"`
+		// nil (omitted or explicit null) means "no lower bound" — recruitment
+		// CTAs show as soon as before SubmissionDeadline. Not required,
+		// unlike SubmissionDeadline: an admin clearing this field is a valid,
+		// meaningful choice, not an incomplete form.
+		RecruitmentOpensAt *time.Time `json:"recruitment_opens_at"`
+		SubmissionDeadline time.Time  `json:"submission_deadline" binding:"required"`
 		// Empty means "reset to default" — same convention as the Team
 		// Questions email template fields.
 		ClosedHeading string `json:"closed_heading"`
@@ -546,6 +555,7 @@ func (h *GeneralApplicationHandler) AdminUpdateSettings(c *gin.Context) {
 		return
 	}
 
+	settings.RecruitmentOpensAt = body.RecruitmentOpensAt
 	settings.SubmissionDeadline = body.SubmissionDeadline
 	settings.ClosedHeading = strings.TrimSpace(body.ClosedHeading)
 	settings.ClosedMessage = strings.TrimSpace(body.ClosedMessage)
@@ -571,10 +581,12 @@ func (h *GeneralApplicationHandler) AdminUpdateSettings(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"submission_deadline": settings.SubmissionDeadline,
-		"closed_heading":      responseHeading,
-		"closed_message":      responseMessage,
-		"updated_by_email":    settings.UpdatedByEmail,
+		"recruitment_opens_at": settings.RecruitmentOpensAt,
+		"submission_deadline":  settings.SubmissionDeadline,
+		"closed_heading":       responseHeading,
+		"closed_message":       responseMessage,
+		"is_recruitment_open":  settings.IsRecruitmentOpen(time.Now()),
+		"updated_by_email":     settings.UpdatedByEmail,
 	})
 }
 
