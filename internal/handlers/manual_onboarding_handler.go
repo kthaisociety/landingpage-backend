@@ -106,24 +106,24 @@ func (h *ManualOnboardingHandler) Create(c *gin.Context) {
 
 // callOnboardingService builds and executes a secret-authenticated request
 // to onboarding-service, returning the raw response status/body for
-// pass-through — shared by ListRecords, CancelOnboarding, and
-// RestartOnboarding. Callers are responsible for their own
-// OnboardingServiceURL-unset handling: a read (ListRecords) can reasonably
-// fall back to an empty result, but a mutating action failing loudly is
-// correct, not a silent no-op.
-func (h *ManualOnboardingHandler) callOnboardingService(method, path string, body []byte) (status int, respBody []byte, err error) {
+// pass-through. A free function (not a method) since more than one handler
+// now proxies to onboarding-service — see OffboardingHandler. Callers are
+// responsible for their own OnboardingServiceURL-unset handling: a read
+// (ListRecords) can reasonably fall back to an empty result, but a
+// mutating action failing loudly is correct, not a silent no-op.
+func callOnboardingService(cfg *config.Config, method, path string, body []byte) (status int, respBody []byte, err error) {
 	var reqBody io.Reader
 	if body != nil {
 		reqBody = bytes.NewReader(body)
 	}
-	req, err := http.NewRequest(method, h.cfg.OnboardingServiceURL+path, reqBody)
+	req, err := http.NewRequest(method, cfg.OnboardingServiceURL+path, reqBody)
 	if err != nil {
 		return 0, nil, err
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	req.Header.Set("X-Service-Secret", h.cfg.OnboardingServiceSecret)
+	req.Header.Set("X-Service-Secret", cfg.OnboardingServiceSecret)
 
 	client := http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
@@ -149,7 +149,7 @@ func (h *ManualOnboardingHandler) ListRecords(c *gin.Context) {
 		return
 	}
 
-	status, body, err := h.callOnboardingService(http.MethodGet, "/internal/onboarding/records", nil)
+	status, body, err := callOnboardingService(h.cfg, http.MethodGet, "/internal/onboarding/records", nil)
 	if err != nil {
 		log.Printf("onboarding records: %v", err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "onboarding service is unreachable"})
@@ -202,7 +202,7 @@ func (h *ManualOnboardingHandler) proxyRecordAction(c *gin.Context, path string)
 		return
 	}
 
-	status, body, err := h.callOnboardingService(http.MethodPost, path, payload)
+	status, body, err := callOnboardingService(h.cfg, http.MethodPost, path, payload)
 	if err != nil {
 		log.Printf("onboarding %s: %v", path, err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "onboarding service is unreachable"})
@@ -221,7 +221,7 @@ func (h *ManualOnboardingHandler) GetEmailSettings(c *gin.Context) {
 		return
 	}
 
-	status, body, err := h.callOnboardingService(http.MethodGet, "/internal/onboarding/email-settings", nil)
+	status, body, err := callOnboardingService(h.cfg, http.MethodGet, "/internal/onboarding/email-settings", nil)
 	if err != nil {
 		log.Printf("onboarding email-settings: %v", err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "onboarding service is unreachable"})
@@ -268,7 +268,7 @@ func (h *ManualOnboardingHandler) UpdateEmailSettings(c *gin.Context) {
 		return
 	}
 
-	status, body, err := h.callOnboardingService(http.MethodPut, "/internal/onboarding/email-settings", payload)
+	status, body, err := callOnboardingService(h.cfg, http.MethodPut, "/internal/onboarding/email-settings", payload)
 	if err != nil {
 		log.Printf("onboarding email-settings update: %v", err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "onboarding service is unreachable"})
@@ -315,7 +315,7 @@ func (h *ManualOnboardingHandler) PreviewEmailSettings(c *gin.Context) {
 		return
 	}
 
-	status, body, err := h.callOnboardingService(http.MethodPost, "/internal/onboarding/email-settings/preview", payload)
+	status, body, err := callOnboardingService(h.cfg, http.MethodPost, "/internal/onboarding/email-settings/preview", payload)
 	if err != nil {
 		log.Printf("onboarding email-settings preview: %v", err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "onboarding service is unreachable"})
