@@ -336,30 +336,7 @@ func (h *AdminHandler) DeleteUser(c *gin.Context) {
 		return
 	}
 
-	// Same lock-and-count invariant as OffboardingHandler.RevokeHeadOfIT:
-	// deleting the sole remaining Head of IT's profile would zero out
-	// is_head_of_it entirely, and since GrantHeadOfIT requires already
-	// being one, nobody could grant it back through the app afterward —
-	// only a manual database fix would recover. Locks every current head
-	// row for the duration of the check so this can't race a concurrent
-	// revoke/delete of the same last head.
-	err = h.db.Transaction(func(tx *gorm.DB) error {
-		var heads []models.Profile
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("is_head_of_it = ?", true).Find(&heads).Error; err != nil {
-			return err
-		}
-		isLastHead := len(heads) == 1 && heads[0].UserId == user.ID
-		if isLastHead {
-			return errCannotDeleteLastHeadOfIT
-		}
-
-		// Delete profile first (no FK cascade defined at DB level).
-		if err := tx.Unscoped().Where("user_id = ?", user.ID).Delete(&models.Profile{}).Error; err != nil {
-			return err
-		}
-		return tx.Unscoped().Delete(&user).Error
-	})
+	err = deleteUserAndProfile(h.db, user.ID)
 	if errors.Is(err, errCannotDeleteLastHeadOfIT) {
 		c.JSON(http.StatusConflict, gin.H{"error": "can't delete the only remaining head of IT — grant it to someone else first"})
 		return
@@ -371,11 +348,6 @@ func (h *AdminHandler) DeleteUser(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"message": "user deleted"})
 }
-
-// errCannotDeleteLastHeadOfIT signals DeleteUser's lock-and-count check
-// found the target is the only remaining Head of IT — a 409, not a 500,
-// mirroring RevokeHeadOfIT's own refusal for the same invariant.
-var errCannotDeleteLastHeadOfIT = errors.New("cannot delete the only remaining head of IT")
 
 func (h *AdminHandler) AddUser(c *gin.Context) {
 	var req struct {

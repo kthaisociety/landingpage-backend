@@ -119,6 +119,55 @@ func TestOffboardingHandler(t *testing.T) {
 		require.Equal(t, http.StatusForbidden, rec.Code)
 	})
 
+	// Regression for a real gap Sam found in the running app: Delete only
+	// removed the real Google Workspace + Mattermost accounts, never this
+	// app's own local User/Profile row, so the member kept showing up in
+	// the admin Users list afterward. It now removes both when a local
+	// record exists.
+	t.Run("delete also removes the local user record", func(t *testing.T) {
+		victim := mustCreateAdmin(t, db, cfg, "offboarding-delete-victim@kthais.com")
+		t.Cleanup(func() {
+			db.Where("email = ?", victim.email).Unscoped().Delete(&models.Profile{})
+			db.Where("email = ?", victim.email).Unscoped().Delete(&models.User{})
+		})
+
+		rec := post(t, "/api/v1/admin/offboarding/delete", map[string]any{
+			"email": victim.email, "confirm": "DELETE THIS ACCOUNT",
+		}, headOfIT.cookie)
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		var stillExists int64
+		db.Model(&models.User{}).Where("email = ?", victim.email).Count(&stillExists)
+		require.Zero(t, stillExists, "the local user record should be gone after a successful delete")
+
+		var profileStillExists int64
+		db.Model(&models.Profile{}).Where("email = ?", victim.email).Count(&profileStillExists)
+		require.Zero(t, profileStillExists, "the local profile record should be gone after a successful delete")
+	})
+
+	t.Run("delete refuses to remove the only remaining head of IT, before touching any real account", func(t *testing.T) {
+		soleHead := mustCreateHeadOfIT(t, db, cfg, "offboarding-delete-sole-head@kthais.com")
+		t.Cleanup(func() {
+			db.Where("email = ?", soleHead.email).Unscoped().Delete(&models.Profile{})
+			db.Where("email = ?", soleHead.email).Unscoped().Delete(&models.User{})
+		})
+		// Make headOfIT temporarily not a head, so soleHead really is the
+		// only one for the duration of this subtest.
+		require.NoError(t, db.Model(&models.Profile{}).Where("email = ?", headOfIT.email).Update("is_head_of_it", false).Error)
+		t.Cleanup(func() {
+			db.Model(&models.Profile{}).Where("email = ?", headOfIT.email).Update("is_head_of_it", true)
+		})
+
+		rec := post(t, "/api/v1/admin/offboarding/delete", map[string]any{
+			"email": soleHead.email, "confirm": "DELETE THIS ACCOUNT",
+		}, soleHead.cookie)
+		require.Equal(t, http.StatusConflict, rec.Code)
+
+		var stillExists int64
+		db.Model(&models.User{}).Where("email = ?", soleHead.email).Count(&stillExists)
+		require.EqualValues(t, 1, stillExists, "the refused delete must not have touched the local record")
+	})
+
 	t.Run("fails loudly, not silently, when onboarding service isn't configured", func(t *testing.T) {
 		unconfigured := *cfg
 		unconfigured.OnboardingServiceURL = ""
