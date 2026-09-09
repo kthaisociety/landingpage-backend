@@ -571,9 +571,11 @@ func (h *ProfileHandler) GetInterviewSettings(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
+		"email":                    profile.Email,
 		"booking_page_url":         profile.BookingPageURL,
 		"interview_email_template": profile.InterviewEmailTemplate,
 		"admin_team":               profile.AdminTeam,
+		"is_head_of_it":            profile.IsHeadOfIT,
 	})
 }
 
@@ -612,9 +614,11 @@ func (h *ProfileHandler) UpdateInterviewSettings(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
+		"email":                    profile.Email,
 		"booking_page_url":         profile.BookingPageURL,
 		"interview_email_template": profile.InterviewEmailTemplate,
 		"admin_team":               profile.AdminTeam,
+		"is_head_of_it":            profile.IsHeadOfIT,
 	})
 }
 

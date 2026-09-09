@@ -62,6 +62,17 @@ type Profile struct {
 	BookingPageURL         string         `gorm:"default:''" json:"booking_page_url,omitempty"`
 	InterviewEmailTemplate string         `gorm:"type:text;default:''" json:"interview_email_template,omitempty"`
 	AdminTeam              string         `gorm:"default:''" json:"admin_team,omitempty"`
+	// IsHeadOfIT gates the single most destructive class of admin action
+	// (permanently deleting a member's real Google Workspace + Mattermost
+	// account). Deliberately separate from the self-editable AdminTeam field
+	// above and NOT settable via UpdateInterviewSettings or any other
+	// self-service endpoint — the only way it changes hands is
+	// OffboardingHandler.GrantHeadOfIT/RevokeHeadOfIT. Any number of admins
+	// can hold this at once (granting is unrestricted); the only invariant
+	// is that revoking is refused if it would leave zero. The very first
+	// holder has to be set with a one-off manual database update; every
+	// grant/revoke after that goes through the app.
+	IsHeadOfIT bool `gorm:"default:false" json:"is_head_of_it,omitempty"`
 }
 
 // BeforeCreate assigns a URL-safe slug derived from the profile's name if

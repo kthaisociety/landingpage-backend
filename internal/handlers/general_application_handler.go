@@ -631,16 +631,27 @@ func requesterIsOnTeam(db *gorm.DB, userID uuid.UUID, team string) (bool, error)
 	return profile.AdminTeam == team, nil
 }
 
-// requesterIsHeadOfTeam checks only Profile.AdminTeam — the "which team do
-// you lead" field an admin self-declares via the frontend's "Declare your
-// role" setup — without requesterIsOnTeam's TeamMember fallback. A regular
+// requesterIsHeadOfTeam checks Profile.AdminTeam — the "which team do you
+// lead" field an admin self-declares via the frontend's "Declare your role"
+// setup — without requesterIsOnTeam's TeamMember fallback. A regular
 // TeamMember row means someone is on the team, not that they lead it, so use
 // this instead of requesterIsOnTeam for actions that must be restricted to
 // the team's head specifically (e.g. bulk-sending on the team's behalf).
+//
+// For team == "IT" specifically, a verified Profile.IsHeadOfIT also
+// satisfies this check, in addition to the self-declared field — an
+// administrator granted real Head-of-IT status (see OffboardingHandler)
+// shouldn't have to separately self-declare "IT" to use these lower-stakes,
+// IT-only actions too. This only ever adds access relative to the
+// self-declared check alone, never removes it, so it can't regress anyone
+// currently relying on self-declaring "IT".
 func requesterIsHeadOfTeam(db *gorm.DB, userID uuid.UUID, team string) (bool, error) {
 	var profile models.Profile
 	if err := db.Where("user_uuid = ?", userID).First(&profile).Error; err != nil {
 		return false, err
+	}
+	if team == "IT" && profile.IsHeadOfIT {
+		return true, nil
 	}
 	return profile.AdminTeam == team, nil
 }
