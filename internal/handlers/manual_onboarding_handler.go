@@ -242,6 +242,7 @@ func (h *ManualOnboardingHandler) GetEmailSettings(c *gin.Context) {
 
 type onboardingEmailSettingsRequest struct {
 	StartIntroText      string `json:"start_intro_text"`
+	ConfirmIntroText    string `json:"confirm_intro_text"`
 	AccountIntroText    string `json:"account_intro_text"`
 	MattermostIntroText string `json:"mattermost_intro_text"`
 }
@@ -269,6 +270,7 @@ func (h *ManualOnboardingHandler) UpdateEmailSettings(c *gin.Context) {
 
 	payload, err := json.Marshal(map[string]string{
 		"start_intro_text":      req.StartIntroText,
+		"confirm_intro_text":    req.ConfirmIntroText,
 		"account_intro_text":    req.AccountIntroText,
 		"mattermost_intro_text": req.MattermostIntroText,
 		"updated_by_email":      adminEmail,
@@ -287,11 +289,16 @@ func (h *ManualOnboardingHandler) UpdateEmailSettings(c *gin.Context) {
 	c.Data(status, "application/json; charset=utf-8", body)
 }
 
-// previewSampleButtonURL is a placeholder link, matching how the interview
-// invite preview substitutes a fake booking URL when none is set yet — this
-// is never a real link the admin panel would let anyone click through to.
-// Only the start-onboarding email has a button at all.
-const previewSampleButtonURL = "https://kthais.com/onboarding/start"
+// previewSampleStartButtonURL/previewSampleConfirmButtonURL are placeholder
+// links, matching how the interview invite preview substitutes a fake
+// booking URL when none is set yet — never a real link the admin panel
+// would let anyone click through to. Both the start and confirm emails'
+// real buttons are per-record portal token URLs that don't exist yet for a
+// preview; the account and Mattermost emails' buttons are fixed values, so
+// onboarding-service's preview response already carries the real thing —
+// see PreviewEmailSettings below.
+const previewSampleStartButtonURL = "https://kthais.com/onboarding/start"
+const previewSampleConfirmButtonURL = "https://kthais.com/onboarding/confirm"
 
 type previewOnboardingEmailRequest struct {
 	Kind      string `json:"kind"`
@@ -310,8 +317,8 @@ func (h *ManualOnboardingHandler) PreviewEmailSettings(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
 	}
-	if req.Kind != "start" && req.Kind != "account" && req.Kind != "mattermost" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "kind must be one of: start, account, mattermost"})
+	if req.Kind != "start" && req.Kind != "confirm" && req.Kind != "account" && req.Kind != "mattermost" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "kind must be one of: start, confirm, account, mattermost"})
 		return
 	}
 	if h.cfg.OnboardingServiceURL == "" {
@@ -337,8 +344,10 @@ func (h *ManualOnboardingHandler) PreviewEmailSettings(c *gin.Context) {
 	}
 
 	var rendered struct {
-		Subject string `json:"subject"`
-		Body    string `json:"body"`
+		Subject    string `json:"subject"`
+		Body       string `json:"body"`
+		ButtonURL  string `json:"button_url"`
+		ButtonText string `json:"button_text"`
 	}
 	// json.Unmarshal of a bare `null` body succeeds and leaves rendered
 	// zero-valued — checked for explicitly (rather than just handling the
@@ -349,9 +358,26 @@ func (h *ManualOnboardingHandler) PreviewEmailSettings(c *gin.Context) {
 		return
 	}
 
-	var buttonURL, buttonText string
-	if req.Kind == "start" {
-		buttonURL, buttonText = previewSampleButtonURL, "Start onboarding"
+	// account and mattermost have a fixed button — onboarding-service's
+	// response above already carries the real URL/text, used as-is. start
+	// and confirm both have a per-record portal token URL that doesn't
+	// exist for a preview, so only their button text is kept (falling back
+	// to a local default if talking to an older onboarding-service that
+	// predates it returning button_text at all — deploy ordering/rollback
+	// should never make the preview silently degrade to "Contact us") and
+	// the URL is swapped for a local placeholder.
+	buttonURL, buttonText := rendered.ButtonURL, rendered.ButtonText
+	switch req.Kind {
+	case "start":
+		buttonURL = previewSampleStartButtonURL
+		if buttonText == "" {
+			buttonText = "Start onboarding"
+		}
+	case "confirm":
+		buttonURL = previewSampleConfirmButtonURL
+		if buttonText == "" {
+			buttonText = "Continue to confirm"
+		}
 	}
 
 	html, err := email.RenderOnboardingEmail(rendered.Subject, rendered.Body, buttonURL, buttonText)

@@ -414,11 +414,13 @@ func TestOnboardingEmailSettings(t *testing.T) {
 		rec := do(t, engine, "PUT", "/api/v1/admin/onboarding/email-settings",
 			map[string]any{
 				"start_intro_text":      "So excited to have you!",
+				"confirm_intro_text":    "Almost there!",
 				"account_intro_text":    "Welcome aboard!",
 				"mattermost_intro_text": "Say hi!",
 			}, adminCookie(t))
 		require.Equal(t, http.StatusOK, rec.Code)
 		require.Equal(t, "So excited to have you!", gotBody["start_intro_text"])
+		require.Equal(t, "Almost there!", gotBody["confirm_intro_text"])
 		require.Equal(t, "Welcome aboard!", gotBody["account_intro_text"])
 		require.Equal(t, "Say hi!", gotBody["mattermost_intro_text"])
 		require.Equal(t, "admin@kthais.com", gotBody["updated_by_email"])
@@ -452,16 +454,91 @@ func TestOnboardingEmailSettings(t *testing.T) {
 		require.Equal(t, http.StatusBadGateway, rec.Code, "a bare null body must never render as a blank-but-successful preview")
 	})
 
-	t.Run("preview of the start email includes a button, others don't", func(t *testing.T) {
-		var gotKind string
-		fakeOnboardingService := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// fakeEmailSettingsPreviewServer mirrors what onboarding-service's own
+	// EmailSettingsHandler.Preview actually returns per kind (subject/body
+	// plus, for account/mattermost, a fixed real button; start/confirm get
+	// only a button_text, since their real button_url is a per-record
+	// portal token that doesn't exist for a preview) — see that handler's
+	// own doc comment for the reasoning this mirrors.
+	fakeEmailSettingsPreviewServer := func(t *testing.T) *httptest.Server {
+		t.Helper()
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			require.Equal(t, "/internal/onboarding/email-settings/preview", r.URL.Path)
 			var body map[string]string
 			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
-			gotKind = body["kind"]
+
+			var resp map[string]string
+			switch body["kind"] {
+			case "start":
+				resp = map[string]string{"subject": "Welcome to KTH AI Society", "body": "Hi Alex,\n\nSo glad you're here!", "button_text": "Start onboarding"}
+			case "confirm":
+				resp = map[string]string{"subject": "Confirm your KTH email", "body": "Hi Alex,\n\nPlease confirm.", "button_text": "Continue to confirm"}
+			case "account":
+				resp = map[string]string{"subject": "Your KTH AI Society account", "body": "Hi Alex,\n\nWelcome aboard!", "button_url": "https://accounts.google.com/", "button_text": "Sign in with Google"}
+			case "mattermost":
+				resp = map[string]string{"subject": "Getting started with Mattermost", "body": "Hi Alex,\n\nSay hi!", "button_url": "https://chat.aisociety.se", "button_text": "Open Mattermost"}
+			}
+			payload, err := json.Marshal(resp)
+			require.NoError(t, err)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"subject":"Welcome to KTH AI Society","body":"Hi Alex,\n\nSo glad you're here!\n\nTo get started:\n1. ..."}`))
+			_, _ = w.Write(payload)
+		}))
+		t.Cleanup(server.Close)
+		return server
+	}
+
+	preview := func(t *testing.T, engine *gin.Engine, kind string) (subject, html string) {
+		t.Helper()
+		rec := do(t, engine, "POST", "/api/v1/admin/onboarding/email-settings/preview",
+			map[string]any{"kind": kind, "intro_text": "whatever"}, adminCookie(t))
+		require.Equal(t, http.StatusOK, rec.Code)
+		var resp struct {
+			Subject string `json:"subject"`
+			HTML    string `json:"html"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+		return resp.Subject, resp.HTML
+	}
+
+	t.Run("start and confirm previews get a local placeholder button URL, real button text", func(t *testing.T) {
+		cfg.OnboardingServiceURL = fakeEmailSettingsPreviewServer(t).URL
+		gin.SetMode(gin.TestMode)
+		engine := gin.New()
+		NewManualOnboardingHandler(cfg).Register(engine.Group("/api/v1"))
+
+		startSubject, startHTML := preview(t, engine, "start")
+		require.Equal(t, "Welcome to KTH AI Society", startSubject)
+		require.Contains(t, startHTML, "<!DOCTYPE html>")
+		require.Contains(t, startHTML, "Start onboarding")
+		require.Contains(t, startHTML, previewSampleStartButtonURL)
+
+		_, confirmHTML := preview(t, engine, "confirm")
+		require.Contains(t, confirmHTML, "Continue to confirm")
+		require.Contains(t, confirmHTML, previewSampleConfirmButtonURL)
+	})
+
+	t.Run("account and mattermost previews use onboarding-service's own real button", func(t *testing.T) {
+		cfg.OnboardingServiceURL = fakeEmailSettingsPreviewServer(t).URL
+		gin.SetMode(gin.TestMode)
+		engine := gin.New()
+		NewManualOnboardingHandler(cfg).Register(engine.Group("/api/v1"))
+
+		_, accountHTML := preview(t, engine, "account")
+		require.Contains(t, accountHTML, "Sign in with Google")
+		require.Contains(t, accountHTML, "https://accounts.google.com/")
+		require.NotContains(t, accountHTML, "Start onboarding")
+
+		_, mattermostHTML := preview(t, engine, "mattermost")
+		require.Contains(t, mattermostHTML, "Open Mattermost")
+		require.Contains(t, mattermostHTML, "https://chat.aisociety.se")
+	})
+
+	t.Run("start and confirm previews fall back to a local button label against an older onboarding-service that omits button_text", func(t *testing.T) {
+		fakeOnboardingService := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"subject":"Welcome to KTH AI Society","body":"Hi Alex,\n\nSo glad you're here!"}`))
 		}))
 		t.Cleanup(fakeOnboardingService.Close)
 		cfg.OnboardingServiceURL = fakeOnboardingService.URL
@@ -470,26 +547,8 @@ func TestOnboardingEmailSettings(t *testing.T) {
 		engine := gin.New()
 		NewManualOnboardingHandler(cfg).Register(engine.Group("/api/v1"))
 
-		rec := do(t, engine, "POST", "/api/v1/admin/onboarding/email-settings/preview",
-			map[string]any{"kind": "start", "intro_text": "So glad you're here!"}, adminCookie(t))
-		require.Equal(t, http.StatusOK, rec.Code)
-		require.Equal(t, "start", gotKind)
-
-		var resp struct {
-			Subject string `json:"subject"`
-			HTML    string `json:"html"`
-		}
-		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-		require.Equal(t, "Welcome to KTH AI Society", resp.Subject)
-		require.Contains(t, resp.HTML, "So glad you&#39;re here!")
-		require.Contains(t, resp.HTML, "<!DOCTYPE html>")
-		require.Contains(t, resp.HTML, "Start onboarding")
-
-		accountRec := do(t, engine, "POST", "/api/v1/admin/onboarding/email-settings/preview",
-			map[string]any{"kind": "account", "intro_text": "Welcome aboard!"}, adminCookie(t))
-		require.Equal(t, http.StatusOK, accountRec.Code)
-		var accountResp struct{ HTML string }
-		require.NoError(t, json.Unmarshal(accountRec.Body.Bytes(), &accountResp))
-		require.NotContains(t, accountResp.HTML, "Start onboarding")
+		_, startHTML := preview(t, engine, "start")
+		require.Contains(t, startHTML, "Start onboarding")
+		require.NotContains(t, startHTML, "Contact us")
 	})
 }
