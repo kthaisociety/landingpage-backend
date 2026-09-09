@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"slices"
@@ -150,6 +151,12 @@ type transferHeadOfITRequest struct {
 	Email string `json:"email" binding:"required"`
 }
 
+// errHeadOfITAlreadyTransferred signals the compare-and-swap guard in
+// TransferHeadOfIT's transaction found the requester was no longer the
+// current head by the time the update ran (lost a race with another
+// transfer) — a 409, not a 500, since nothing actually went wrong.
+var errHeadOfITAlreadyTransferred = errors.New("head of IT was already transferred by a concurrent request")
+
 // TransferHeadOfIT hands the Head-of-IT flag to a different admin. There is
 // deliberately no separate "revoke" action — the only way to stop being
 // Head of IT is to name a successor here, in the same transaction that
@@ -194,9 +201,22 @@ func (h *OffboardingHandler) TransferHeadOfIT(c *gin.Context) {
 	}
 
 	err := h.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&models.Profile{}).Where("user_uuid = ?", requesterID).
-			Update("is_head_of_it", false).Error; err != nil {
-			return err
+		// The WHERE also re-checks is_head_of_it=true, not just user_uuid —
+		// requireHeadOfIT's read above happened outside this transaction, so
+		// two overlapping transfer requests from the same current head could
+		// otherwise both pass that check and both go on to grant a
+		// successor, leaving two heads. Postgres row-locks this UPDATE, so
+		// the loser of two concurrent transfers blocks until the winner
+		// commits, then affects zero rows here and rolls back instead of
+		// silently creating a second head.
+		result := tx.Model(&models.Profile{}).
+			Where("user_uuid = ? AND is_head_of_it = ?", requesterID, true).
+			Update("is_head_of_it", false)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return errHeadOfITAlreadyTransferred
 		}
 		if err := tx.Model(&models.Profile{}).Where("user_uuid = ?", target.UserUUID).
 			Update("is_head_of_it", true).Error; err != nil {
@@ -204,6 +224,10 @@ func (h *OffboardingHandler) TransferHeadOfIT(c *gin.Context) {
 		}
 		return nil
 	})
+	if errors.Is(err, errHeadOfITAlreadyTransferred) {
+		c.JSON(http.StatusConflict, gin.H{"error": "you're no longer the head of IT — someone else already transferred it"})
+		return
+	}
 	if err != nil {
 		log.Printf("offboarding: transferring head of IT from %s to %s: %v", requesterEmail, targetEmail, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to transfer head of IT"})

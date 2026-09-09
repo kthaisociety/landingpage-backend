@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"backend/internal/config"
@@ -180,6 +181,68 @@ func TestOffboardingHandler(t *testing.T) {
 		// ...and the new head has it, atomically (never zero heads in between).
 		rec = post(t, "/api/v1/admin/offboarding/deactivate", map[string]any{"email": "test.user@kthais.com"}, otherAdmin.cookie)
 		require.Equal(t, http.StatusOK, rec.Code, "the new head of IT now has access")
+	})
+
+	// Regression for the race Greptile found: requireHeadOfIT's read happens
+	// outside TransferHeadOfIT's transaction, so two overlapping requests
+	// from the same still-current head could both pass that check before
+	// either transaction commits. Fires both at once against real Postgres
+	// and asserts the compare-and-swap in the transaction lets exactly one
+	// through, never leaving two heads.
+	t.Run("concurrent transfers can't create two heads", func(t *testing.T) {
+		// otherAdmin holds it after the previous subtest — hand it back to
+		// headOfIT so this subtest starts from a known single holder.
+		require.NoError(t, db.Model(&models.Profile{}).Where("email = ?", headOfIT.email).Update("is_head_of_it", true).Error)
+		require.NoError(t, db.Model(&models.Profile{}).Where("email = ?", otherAdmin.email).Update("is_head_of_it", false).Error)
+
+		thirdAdmin := mustCreateAdmin(t, db, cfg, "offboarding-third-admin@example.com")
+		t.Cleanup(func() {
+			db.Where("email = ?", thirdAdmin.email).Unscoped().Delete(&models.Profile{})
+			db.Where("email = ?", thirdAdmin.email).Unscoped().Delete(&models.User{})
+		})
+
+		targets := []string{otherAdmin.email, thirdAdmin.email}
+		codes := make([]int, len(targets))
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		for i, target := range targets {
+			wg.Add(1)
+			go func(i int, target string) {
+				defer wg.Done()
+				<-start
+				payload, _ := json.Marshal(map[string]any{"email": target})
+				req := httptest.NewRequest("POST", "/api/v1/admin/head-of-it/transfer", strings.NewReader(string(payload)))
+				req.Header.Set("Content-Type", "application/json")
+				req.AddCookie(headOfIT.cookie)
+				rec := httptest.NewRecorder()
+				engine.ServeHTTP(rec, req)
+				codes[i] = rec.Code
+			}(i, target)
+		}
+		close(start)
+		wg.Wait()
+
+		successes := 0
+		for _, code := range codes {
+			if code == http.StatusOK {
+				successes++
+			} else {
+				// The loser gets 403 if the outer requireHeadOfIT check runs
+				// after the winner's transaction has already committed, or
+				// 409 if it loses the in-transaction compare-and-swap
+				// instead — which one depends on goroutine scheduling, but
+				// either way it must be a clean rejection, not a 500.
+				require.Contains(t, []int{http.StatusForbidden, http.StatusConflict}, code,
+					"the loser must get a clean rejection, not a 500")
+			}
+		}
+		require.Equal(t, 1, successes, "exactly one of the two concurrent transfers should win")
+
+		var headCount int64
+		require.NoError(t, db.Model(&models.Profile{}).
+			Where("email IN ? AND is_head_of_it = ?", []string{headOfIT.email, otherAdmin.email, thirdAdmin.email}, true).
+			Count(&headCount).Error)
+		require.Equal(t, int64(1), headCount, "there must be exactly one head of IT after the race")
 	})
 }
 
