@@ -127,14 +127,18 @@ type offboardingDeleteRequest struct {
 	Confirm string `json:"confirm"`
 }
 
-// Delete permanently deletes the Google Workspace account and attempts to
-// permanently delete the Mattermost account for email, then — unlike
-// Deactivate — also deletes this app's own local User/Profile record for
-// that email, if one exists. Without that second step the member would
-// keep showing up in the admin Users list even though their real accounts
-// are gone; Deactivate leaves the local record alone since it's meant to be
-// reversible. Cannot be undone from this system — requires typing
-// deleteAccountConfirmPhrase exactly.
+// Delete deletes this app's own local User/Profile record for email (if one
+// exists) FIRST, then permanently deletes the Google Workspace account and
+// attempts to permanently delete the Mattermost account. Local-first is
+// deliberate, not incidental: deleteUserAndProfile's row-locked transaction
+// is the only thing actually serializing this against a concurrent Delete
+// of a different Head of IT — running it before the irreversible external
+// call means two requests each targeting one of the last two heads can't
+// both slip past an unlocked check and both reach onboarding-service before
+// either commits. The loser is refused here, before any real account is
+// touched, rather than after. Deactivate leaves the local record alone
+// since it's meant to be reversible; Delete cannot be undone from this
+// system and requires typing deleteAccountConfirmPhrase exactly.
 func (h *OffboardingHandler) Delete(c *gin.Context) {
 	_, adminEmail, ok := h.requireHeadOfIT(c)
 	if !ok {
@@ -152,30 +156,39 @@ func (h *OffboardingHandler) Delete(c *gin.Context) {
 	}
 	targetEmail := strings.ToLower(strings.TrimSpace(req.Email))
 
-	// Fail fast, before touching any real external account, if this would
-	// delete the sole remaining Head of IT — deleteUserAndProfile below
-	// would refuse the local half anyway, but by then the real Google
-	// Workspace + Mattermost accounts would already be gone irreversibly,
-	// leaving a "head of IT" who can never log in again to use it.
-	var target models.Profile
-	hasLocalProfile := h.db.Where("email = ?", targetEmail).First(&target).Error == nil
-	if hasLocalProfile && target.IsHeadOfIT {
-		var otherHeadCount int64
-		h.db.Model(&models.Profile{}).
-			Where("is_head_of_it = ? AND email != ?", true, targetEmail).
-			Count(&otherHeadCount)
-		if otherHeadCount == 0 {
-			c.JSON(http.StatusConflict, gin.H{"error": "can't delete the only remaining head of IT — grant it to someone else first"})
-			return
-		}
-	}
-
-	log.Printf("offboarding: %s is PERMANENTLY DELETING the account for %s", adminEmail, targetEmail)
-
 	if h.cfg.OnboardingServiceURL == "" {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "onboarding service is not configured"})
 		return
 	}
+
+	var target models.Profile
+	lookupErr := h.db.Where("email = ?", targetEmail).First(&target).Error
+	switch {
+	case lookupErr == nil:
+		if err := deleteUserAndProfile(h.db, target.UserId); err != nil {
+			if errors.Is(err, errCannotDeleteLastHeadOfIT) {
+				c.JSON(http.StatusConflict, gin.H{"error": "can't delete the only remaining head of IT — grant it to someone else first"})
+				return
+			}
+			log.Printf("offboarding: failed to delete local record for %s: %v", targetEmail, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete local user record"})
+			return
+		}
+	case errors.Is(lookupErr, gorm.ErrRecordNotFound):
+		// No local record for this email at all (e.g. provisioned but
+		// never actually logged into the site) — nothing to protect or
+		// clean up locally, proceed straight to the external deletion.
+	default:
+		// A real database error, not "no such row" — treated the same as
+		// any other failure to reach a safe state: refuse rather than risk
+		// deleting real external accounts without having actually checked
+		// the Head-of-IT invariant.
+		log.Printf("offboarding: failed to look up local profile for %s: %v", targetEmail, lookupErr)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to look up local profile"})
+		return
+	}
+
+	log.Printf("offboarding: %s is PERMANENTLY DELETING the account for %s", adminEmail, targetEmail)
 	payload, err := json.Marshal(map[string]string{"email": targetEmail})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to build request"})
@@ -184,20 +197,10 @@ func (h *OffboardingHandler) Delete(c *gin.Context) {
 	status, body, err := callOnboardingService(h.cfg, http.MethodPost, "/internal/offboarding/delete", payload)
 	if err != nil {
 		log.Printf("offboarding /internal/offboarding/delete: %v", err)
-		c.JSON(http.StatusBadGateway, gin.H{"error": "onboarding service is unreachable"})
+		c.JSON(http.StatusBadGateway, gin.H{
+			"error": "the local account record was removed, but the onboarding service is unreachable — the Google Workspace/Mattermost accounts may still exist and need manual cleanup",
+		})
 		return
-	}
-
-	if status == http.StatusOK && hasLocalProfile {
-		if err := deleteUserAndProfile(h.db, target.UserId); err != nil {
-			// The real accounts are already gone at this point, so this is
-			// logged rather than surfaced as a failure to the caller — the
-			// member disappearing from Google/Mattermost is the part that
-			// can't be undone. This residual local record (rare — only on
-			// a last-instant Head-of-IT-count race, since the pre-check
-			// above already caught the common case) needs a manual cleanup.
-			log.Printf("offboarding: deleted external accounts for %s but failed to remove the local record: %v", targetEmail, err)
-		}
 	}
 
 	c.Data(status, "application/json; charset=utf-8", body)
