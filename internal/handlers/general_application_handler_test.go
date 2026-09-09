@@ -1,10 +1,24 @@
 package handlers
 
 import (
+	"encoding/json"
+	"fmt"
 	"mime/multipart"
+	"net/http"
 	"net/textproto"
+	"os"
 	"strings"
 	"testing"
+	"time"
+
+	"backend/internal/config"
+	"backend/internal/models"
+
+	"github.com/gin-gonic/gin"
+	"github.com/joho/godotenv"
+	"github.com/stretchr/testify/require"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 )
 
 func validGeneralApplicationInput() generalApplicationInput {
@@ -323,4 +337,91 @@ func TestNormalizeEmail(t *testing.T) {
 	if got != "ada@example.com" {
 		t.Fatalf("normalizeEmail() = %q, want %q", got, "ada@example.com")
 	}
+}
+
+// TestAdminUpdateSettingsPreservesRecruitmentOpensAtWhenOmitted covers a
+// real bug: since Go's JSON decoding can't tell "the client omitted this
+// field" apart from "the client explicitly sent null" once bound into a
+// *time.Time, a caller that doesn't know about recruitment_opens_at (an
+// older client, or one only updating the deadline) would otherwise silently
+// wipe a previously configured future opening date and reopen recruitment
+// immediately. AdminUpdateSettings must only ever clear it on an explicit
+// null, never on omission.
+//
+// Standalone (not part of TestApplicationAndInterviewLifecycle) so it isn't
+// affected by that test's own unrelated failure — same "skip if no .env"
+// convention, since this also needs a real Postgres connection.
+func TestAdminUpdateSettingsPreservesRecruitmentOpensAtWhenOmitted(t *testing.T) {
+	envFile := "../../.env"
+	if _, err := os.Stat(envFile); err != nil {
+		t.Skip("skipping: no .env file present (this test needs local Postgres)")
+	}
+	require.NoError(t, godotenv.Load(envFile))
+
+	cfg, err := config.LoadConfig()
+	require.NoError(t, err)
+
+	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=%s",
+		cfg.Database.Host, cfg.Database.User, cfg.Database.Password, cfg.Database.DBName, cfg.Database.Port, cfg.Database.SSLMode)
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Skipf("skipping: could not connect to Postgres: %v", err)
+	}
+	require.NoError(t, db.AutoMigrate(&models.User{}, &models.Profile{}, &models.GeneralApplicationSettings{}))
+	require.NoError(t, db.Unscoped().Where("1 = 1").Delete(&models.GeneralApplicationSettings{}).Error)
+
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	api := engine.Group("/api/v1")
+	NewGeneralApplicationHandler(db, cfg, nil).Register(api)
+
+	admin := mustCreateAdmin(t, db, cfg, "recruitment-settings-presence@example.com")
+	t.Cleanup(func() {
+		db.Unscoped().Where("1 = 1").Delete(&models.GeneralApplicationSettings{})
+		db.Where("email = ?", admin.email).Unscoped().Delete(&models.Profile{})
+		db.Where("email = ?", admin.email).Unscoped().Delete(&models.User{})
+	})
+
+	deadline := time.Now().Add(30 * 24 * time.Hour).UTC().Truncate(time.Second)
+	opensAt := time.Now().Add(7 * 24 * time.Hour).UTC().Truncate(time.Second)
+
+	rec := doJSONRequest(t, engine, "PUT", "/api/v1/applications/admin/settings", map[string]any{
+		"recruitment_opens_at": opensAt,
+		"submission_deadline":  deadline,
+	}, admin.cookie)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var body struct {
+		RecruitmentOpensAt *time.Time `json:"recruitment_opens_at"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	require.NotNil(t, body.RecruitmentOpensAt)
+	require.True(t, opensAt.Equal(*body.RecruitmentOpensAt))
+
+	t.Run("a request omitting the field entirely leaves it untouched", func(t *testing.T) {
+		rec := doJSONRequest(t, engine, "PUT", "/api/v1/applications/admin/settings", map[string]any{
+			"submission_deadline": deadline,
+		}, admin.cookie)
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		var body struct {
+			RecruitmentOpensAt *time.Time `json:"recruitment_opens_at"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+		require.NotNil(t, body.RecruitmentOpensAt, "omitting the field must not clear a previously saved opening date")
+		require.True(t, opensAt.Equal(*body.RecruitmentOpensAt))
+	})
+
+	t.Run("an explicit null still clears it", func(t *testing.T) {
+		rec := doJSONRequest(t, engine, "PUT", "/api/v1/applications/admin/settings", map[string]any{
+			"recruitment_opens_at": nil,
+			"submission_deadline":  deadline,
+		}, admin.cookie)
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		var body struct {
+			RecruitmentOpensAt *time.Time `json:"recruitment_opens_at"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+		require.Nil(t, body.RecruitmentOpensAt, "an explicit null must still clear it")
+	})
 }

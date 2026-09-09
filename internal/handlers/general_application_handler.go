@@ -8,6 +8,7 @@ import (
 	"backend/internal/models"
 	"backend/internal/utils"
 	"backend/internal/validation"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -497,9 +498,11 @@ func (h *GeneralApplicationHandler) Settings(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"submission_deadline": settings.SubmissionDeadline,
-		"closed_heading":      settings.ClosedHeading,
-		"closed_message":      settings.ClosedMessage,
+		"recruitment_opens_at": settings.RecruitmentOpensAt,
+		"submission_deadline":  settings.SubmissionDeadline,
+		"closed_heading":       settings.ClosedHeading,
+		"closed_message":       settings.ClosedMessage,
+		"is_recruitment_open":  settings.IsRecruitmentOpen(time.Now()),
 	})
 }
 
@@ -510,10 +513,12 @@ func (h *GeneralApplicationHandler) AdminGetSettings(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"submission_deadline": settings.SubmissionDeadline,
-		"closed_heading":      settings.ClosedHeading,
-		"closed_message":      settings.ClosedMessage,
-		"updated_by_email":    settings.UpdatedByEmail,
+		"recruitment_opens_at": settings.RecruitmentOpensAt,
+		"submission_deadline":  settings.SubmissionDeadline,
+		"closed_heading":       settings.ClosedHeading,
+		"closed_message":       settings.ClosedMessage,
+		"is_recruitment_open":  settings.IsRecruitmentOpen(time.Now()),
+		"updated_by_email":     settings.UpdatedByEmail,
 	})
 }
 
@@ -527,25 +532,47 @@ func (h *GeneralApplicationHandler) AdminUpdateSettings(c *gin.Context) {
 		return
 	}
 
+	rawBody, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
 	var body struct {
-		SubmissionDeadline time.Time `json:"submission_deadline" binding:"required"`
+		// Explicit null means "no lower bound" — recruitment CTAs show as
+		// soon as before SubmissionDeadline. Not required, unlike
+		// SubmissionDeadline: an admin clearing this field is a valid,
+		// meaningful choice, not an incomplete form. Omitting the key
+		// entirely (an older or partial caller that doesn't know about this
+		// field) must leave whatever's already saved untouched instead —
+		// see the presence check below, since Go's JSON decoding can't tell
+		// "omitted" apart from "explicit null" on its own.
+		RecruitmentOpensAt *time.Time `json:"recruitment_opens_at"`
+		SubmissionDeadline time.Time  `json:"submission_deadline" binding:"required"`
 		// Empty means "reset to default" — same convention as the Team
 		// Questions email template fields.
 		ClosedHeading string `json:"closed_heading"`
 		ClosedMessage string `json:"closed_message"`
 	}
-	if err := c.ShouldBindJSON(&body); err != nil {
+	if err := json.Unmarshal(rawBody, &body); err != nil || body.SubmissionDeadline.IsZero() {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
 	}
 
+	var presence map[string]json.RawMessage
+	_ = json.Unmarshal(rawBody, &presence)
+	_, recruitmentOpensAtProvided := presence["recruitment_opens_at"]
+
 	var settings models.GeneralApplicationSettings
-	err := h.db.First(&settings).Error
+	err = h.db.First(&settings).Error
 	if err != nil && err != gorm.ErrRecordNotFound {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load application settings"})
 		return
 	}
 
+	if recruitmentOpensAtProvided {
+		settings.RecruitmentOpensAt = body.RecruitmentOpensAt
+	}
 	settings.SubmissionDeadline = body.SubmissionDeadline
 	settings.ClosedHeading = strings.TrimSpace(body.ClosedHeading)
 	settings.ClosedMessage = strings.TrimSpace(body.ClosedMessage)
@@ -571,10 +598,12 @@ func (h *GeneralApplicationHandler) AdminUpdateSettings(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"submission_deadline": settings.SubmissionDeadline,
-		"closed_heading":      responseHeading,
-		"closed_message":      responseMessage,
-		"updated_by_email":    settings.UpdatedByEmail,
+		"recruitment_opens_at": settings.RecruitmentOpensAt,
+		"submission_deadline":  settings.SubmissionDeadline,
+		"closed_heading":       responseHeading,
+		"closed_message":       responseMessage,
+		"is_recruitment_open":  settings.IsRecruitmentOpen(time.Now()),
+		"updated_by_email":     settings.UpdatedByEmail,
 	})
 }
 
