@@ -244,6 +244,58 @@ func TestOffboardingHandler(t *testing.T) {
 			Count(&headCount).Error)
 		require.Equal(t, int64(1), headCount, "there must be exactly one head of IT after the race")
 	})
+
+	// Regression for the second Greptile finding: the successor is validated
+	// to exist before the transaction starts, but the grant update inside
+	// the transaction didn't check RowsAffected — if the successor's
+	// profile vanished in between, GORM reports no error for a zero-row
+	// UPDATE, so the transaction would still commit the requester's own
+	// revocation and leave nobody as head. A GORM "before update" callback
+	// deletes the successor at the exact moment the grant UPDATE is about
+	// to run, deterministically reproducing that gap without needing a real
+	// goroutine race.
+	t.Run("successor vanishing mid-transfer doesn't leave zero heads", func(t *testing.T) {
+		require.NoError(t, db.Model(&models.Profile{}).Where("email = ?", headOfIT.email).Update("is_head_of_it", true).Error)
+		require.NoError(t, db.Model(&models.Profile{}).
+			Where("email IN ?", []string{regularAdmin.email, otherAdmin.email}).
+			Update("is_head_of_it", false).Error)
+
+		victim := mustCreateAdmin(t, db, cfg, "offboarding-vanishing-admin@example.com")
+		t.Cleanup(func() {
+			db.Where("email = ?", victim.email).Unscoped().Delete(&models.Profile{})
+			db.Where("email = ?", victim.email).Unscoped().Delete(&models.User{})
+		})
+
+		var triggered bool
+		const callbackName = "test:delete-successor-before-grant"
+		require.NoError(t, db.Callback().Update().Before("gorm:update").Register(callbackName, func(tx *gorm.DB) {
+			if triggered || tx.Statement.Table != "profiles" {
+				return
+			}
+			changes, ok := tx.Statement.Dest.(map[string]interface{})
+			if !ok {
+				return
+			}
+			granting, ok := changes["is_head_of_it"].(bool)
+			if !ok || !granting {
+				return
+			}
+			triggered = true
+			require.NoError(t, db.Unscoped().Where("email = ?", victim.email).Delete(&models.Profile{}).Error)
+		}))
+		t.Cleanup(func() {
+			require.NoError(t, db.Callback().Update().Remove(callbackName))
+		})
+
+		rec := post(t, "/api/v1/admin/head-of-it/transfer", map[string]any{"email": victim.email}, headOfIT.cookie)
+		require.NotEqual(t, http.StatusOK, rec.Code, "must not report success when the successor vanished mid-transfer")
+		require.True(t, triggered, "the callback should have fired — otherwise this test isn't exercising the race at all")
+
+		var stillHead bool
+		require.NoError(t, db.Model(&models.Profile{}).Select("is_head_of_it").
+			Where("email = ?", headOfIT.email).Scan(&stillHead).Error)
+		require.True(t, stillHead, "the original head must keep the role since the handover never completed")
+	})
 }
 
 // mustCreateHeadOfIT creates an admin and flips Profile.IsHeadOfIT directly

@@ -157,6 +157,13 @@ type transferHeadOfITRequest struct {
 // transfer) — a 409, not a 500, since nothing actually went wrong.
 var errHeadOfITAlreadyTransferred = errors.New("head of IT was already transferred by a concurrent request")
 
+// errHeadOfITSuccessorVanished signals the successor's profile disappeared
+// between TransferHeadOfIT's pre-transaction validation and the grant
+// update inside the transaction — rolling back leaves the original
+// requester still holding the flag instead of committing a handover to
+// nobody.
+var errHeadOfITSuccessorVanished = errors.New("the intended successor's profile no longer exists")
+
 // TransferHeadOfIT hands the Head-of-IT flag to a different admin. There is
 // deliberately no separate "revoke" action — the only way to stop being
 // Head of IT is to name a successor here, in the same transaction that
@@ -218,14 +225,28 @@ func (h *OffboardingHandler) TransferHeadOfIT(c *gin.Context) {
 		if result.RowsAffected == 0 {
 			return errHeadOfITAlreadyTransferred
 		}
-		if err := tx.Model(&models.Profile{}).Where("user_uuid = ?", target.UserUUID).
-			Update("is_head_of_it", true).Error; err != nil {
-			return err
+		// Same reasoning as the check above, mirrored for the successor: the
+		// target was validated to exist before this transaction started, so
+		// if their profile is deleted in the gap between that check and
+		// here, GORM reports no error for a zero-row UPDATE — without this
+		// check the transaction would still commit, leaving the requester
+		// revoked and no one holding the flag at all.
+		grant := tx.Model(&models.Profile{}).Where("user_uuid = ?", target.UserUUID).
+			Update("is_head_of_it", true)
+		if grant.Error != nil {
+			return grant.Error
+		}
+		if grant.RowsAffected == 0 {
+			return errHeadOfITSuccessorVanished
 		}
 		return nil
 	})
 	if errors.Is(err, errHeadOfITAlreadyTransferred) {
 		c.JSON(http.StatusConflict, gin.H{"error": "you're no longer the head of IT — someone else already transferred it"})
+		return
+	}
+	if errors.Is(err, errHeadOfITSuccessorVanished) {
+		c.JSON(http.StatusConflict, gin.H{"error": "that admin's profile no longer exists — you're still the head of IT"})
 		return
 	}
 	if err != nil {
