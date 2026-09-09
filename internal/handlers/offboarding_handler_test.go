@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"backend/internal/config"
@@ -56,7 +57,11 @@ func TestOffboardingHandler(t *testing.T) {
 		}
 	})
 
+	var deleteCallCount int64
 	fakeOnboardingService := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/internal/offboarding/delete" {
+			atomic.AddInt64(&deleteCallCount, 1)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
@@ -117,6 +122,147 @@ func TestOffboardingHandler(t *testing.T) {
 			"email": "test.user@kthais.com", "confirm": "DELETE THIS ACCOUNT",
 		}, regularAdmin.cookie)
 		require.Equal(t, http.StatusForbidden, rec.Code)
+	})
+
+	// Regression for a real gap Sam found in the running app: Delete only
+	// removed the real Google Workspace + Mattermost accounts, never this
+	// app's own local User/Profile row, so the member kept showing up in
+	// the admin Users list afterward. It now removes both when a local
+	// record exists.
+	t.Run("delete also removes the local user record", func(t *testing.T) {
+		victim := mustCreateAdmin(t, db, cfg, "offboarding-delete-victim@kthais.com")
+		t.Cleanup(func() {
+			db.Where("email = ?", victim.email).Unscoped().Delete(&models.Profile{})
+			db.Where("email = ?", victim.email).Unscoped().Delete(&models.User{})
+		})
+
+		rec := post(t, "/api/v1/admin/offboarding/delete", map[string]any{
+			"email": victim.email, "confirm": "DELETE THIS ACCOUNT",
+		}, headOfIT.cookie)
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		var stillExists int64
+		db.Model(&models.User{}).Where("email = ?", victim.email).Count(&stillExists)
+		require.Zero(t, stillExists, "the local user record should be gone after a successful delete")
+
+		var profileStillExists int64
+		db.Model(&models.Profile{}).Where("email = ?", victim.email).Count(&profileStillExists)
+		require.Zero(t, profileStillExists, "the local profile record should be gone after a successful delete")
+	})
+
+	// Regression for a Greptile finding: the local lookup used to query
+	// Profile, not User. RegisteredUserRequired shows a User can exist with
+	// no matching Profile at all (signed in but never finished profile
+	// setup) — looking up by Profile treated that as "no local record,"
+	// skipped deleteUserAndProfile entirely, and left the orphaned User row
+	// (still visible in the admin Users list) behind.
+	t.Run("delete removes a local user even if they never completed their profile", func(t *testing.T) {
+		email := "offboarding-delete-no-profile@kthais.com"
+		require.NoError(t, db.Create(&models.User{
+			UserId:   uuid.New(),
+			Email:    email,
+			Provider: "google",
+			Roles:    pq.StringArray{"user", "member"},
+		}).Error)
+		t.Cleanup(func() {
+			db.Where("email = ?", email).Unscoped().Delete(&models.User{})
+		})
+
+		rec := post(t, "/api/v1/admin/offboarding/delete", map[string]any{
+			"email": email, "confirm": "DELETE THIS ACCOUNT",
+		}, headOfIT.cookie)
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		var stillExists int64
+		db.Model(&models.User{}).Where("email = ?", email).Count(&stillExists)
+		require.Zero(t, stillExists, "the profile-less local user record should be gone after a successful delete")
+	})
+
+	t.Run("delete refuses to remove the only remaining head of IT, before touching any real account", func(t *testing.T) {
+		soleHead := mustCreateHeadOfIT(t, db, cfg, "offboarding-delete-sole-head@kthais.com")
+		t.Cleanup(func() {
+			db.Where("email = ?", soleHead.email).Unscoped().Delete(&models.Profile{})
+			db.Where("email = ?", soleHead.email).Unscoped().Delete(&models.User{})
+		})
+		// Make headOfIT temporarily not a head, so soleHead really is the
+		// only one for the duration of this subtest.
+		require.NoError(t, db.Model(&models.Profile{}).Where("email = ?", headOfIT.email).Update("is_head_of_it", false).Error)
+		t.Cleanup(func() {
+			db.Model(&models.Profile{}).Where("email = ?", headOfIT.email).Update("is_head_of_it", true)
+		})
+
+		before := atomic.LoadInt64(&deleteCallCount)
+		rec := post(t, "/api/v1/admin/offboarding/delete", map[string]any{
+			"email": soleHead.email, "confirm": "DELETE THIS ACCOUNT",
+		}, soleHead.cookie)
+		require.Equal(t, http.StatusConflict, rec.Code)
+
+		var stillExists int64
+		db.Model(&models.User{}).Where("email = ?", soleHead.email).Count(&stillExists)
+		require.EqualValues(t, 1, stillExists, "the refused delete must not have touched the local record")
+		require.Equal(t, before, atomic.LoadInt64(&deleteCallCount),
+			"a refused delete must never reach onboarding-service — the real accounts must stay untouched")
+	})
+
+	// Regression for the Greptile finding on PR #132: the pre-check used to
+	// be an unlocked SELECT COUNT, so two concurrent Delete requests each
+	// targeting one of the last two heads could both pass it and both reach
+	// onboarding-service before either committed — permanently deleting
+	// both real accounts even though the local invariant would only allow
+	// one. Delete now runs deleteUserAndProfile's row-locked transaction
+	// BEFORE calling onboarding-service at all, so the loser is refused
+	// before touching any real account. Proven here by counting actual
+	// calls to the fake onboarding-service's delete endpoint: it must be
+	// exactly 1, never 2, regardless of which of the two requests wins.
+	t.Run("concurrent deletes of the last two heads can't both reach onboarding-service", func(t *testing.T) {
+		firstHead := mustCreateHeadOfIT(t, db, cfg, "offboarding-delete-race-first@kthais.com")
+		secondHead := mustCreateHeadOfIT(t, db, cfg, "offboarding-delete-race-second@kthais.com")
+		t.Cleanup(func() {
+			for _, email := range []string{firstHead.email, secondHead.email} {
+				db.Where("email = ?", email).Unscoped().Delete(&models.Profile{})
+				db.Where("email = ?", email).Unscoped().Delete(&models.User{})
+			}
+		})
+		require.NoError(t, db.Model(&models.Profile{}).Where("email = ?", headOfIT.email).Update("is_head_of_it", false).Error)
+		t.Cleanup(func() {
+			db.Model(&models.Profile{}).Where("email = ?", headOfIT.email).Update("is_head_of_it", true)
+		})
+
+		before := atomic.LoadInt64(&deleteCallCount)
+		targets := []testAdmin{firstHead, secondHead}
+		codes := make([]int, len(targets))
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		for i, target := range targets {
+			wg.Add(1)
+			go func(i int, target testAdmin) {
+				defer wg.Done()
+				<-start
+				payload, _ := json.Marshal(map[string]any{
+					"email": target.email, "confirm": "DELETE THIS ACCOUNT",
+				})
+				req := httptest.NewRequest("POST", "/api/v1/admin/offboarding/delete", strings.NewReader(string(payload)))
+				req.Header.Set("Content-Type", "application/json")
+				req.AddCookie(target.cookie)
+				rec := httptest.NewRecorder()
+				engine.ServeHTTP(rec, req)
+				codes[i] = rec.Code
+			}(i, target)
+		}
+		close(start)
+		wg.Wait()
+
+		successes := 0
+		for _, code := range codes {
+			if code == http.StatusOK {
+				successes++
+			} else {
+				require.Equal(t, http.StatusConflict, code, "the loser must get a clean 409, not a 500")
+			}
+		}
+		require.Equal(t, 1, successes, "exactly one of the two concurrent deletes should win")
+		require.Equal(t, before+1, atomic.LoadInt64(&deleteCallCount),
+			"onboarding-service must be called exactly once, never for the refused loser")
 	})
 
 	t.Run("fails loudly, not silently, when onboarding service isn't configured", func(t *testing.T) {
