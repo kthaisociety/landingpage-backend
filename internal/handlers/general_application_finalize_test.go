@@ -268,6 +268,30 @@ func TestFinalizeRecruitmentPhase(t *testing.T) {
 		require.Equal(t, http.StatusBadRequest, rec.Code)
 	})
 
+	// requesterIsHeadOfTeam(db, userID, "IT") also accepts a verified
+	// Profile.IsHeadOfIT, on top of the self-declared AdminTeam == "IT" it
+	// already checked — a real head of IT (granted via OffboardingHandler)
+	// shouldn't have to separately self-declare "IT" to close this phase
+	// too. Declares "Marketing" specifically to prove this isn't just
+	// falling back to the self-declared check.
+	t.Run("a verified head of IT can close it even without self-declaring the IT team", func(t *testing.T) {
+		verifiedHead := mustCreateTeamAdmin(t, db, cfg, "finalize-admin-verified-head@seed.local", "Marketing")
+		require.NoError(t, db.Model(&models.Profile{}).Where("email = ?", verifiedHead.email).Update("is_head_of_it", true).Error)
+		t.Cleanup(func() {
+			db.Where("email = ?", verifiedHead.email).Unscoped().Delete(&models.Profile{})
+			db.Where("email = ?", verifiedHead.email).Unscoped().Delete(&models.User{})
+		})
+
+		rec := doJSONRequest(t, engine, "POST", "/api/v1/applications/admin/finalize/phase/close",
+			map[string]string{"confirm": finalizePhaseCloseConfirmPhrase}, verifiedHead.cookie)
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		// Reopen so the remaining subtests still see their expected state.
+		reopenRec := doJSONRequest(t, engine, "POST", "/api/v1/applications/admin/finalize/phase/open",
+			map[string]string{"confirm": finalizePhaseOpenConfirmPhrase}, itAdmin.cookie)
+		require.Equal(t, http.StatusOK, reopenRec.Code)
+	})
+
 	t.Run("the head of IT closes the phase, then decisions are blocked again", func(t *testing.T) {
 		rec := doJSONRequest(t, engine, "POST", "/api/v1/applications/admin/finalize/phase/close",
 			map[string]string{"confirm": finalizePhaseCloseConfirmPhrase}, itAdmin.cookie)
