@@ -361,14 +361,23 @@ func (h *ManualOnboardingHandler) PreviewEmailSettings(c *gin.Context) {
 	// account and mattermost have a fixed button — onboarding-service's
 	// response above already carries the real URL/text, used as-is. start
 	// and confirm both have a per-record portal token URL that doesn't
-	// exist for a preview, so only their (already-real) button text is
-	// kept and the URL is swapped for a local placeholder.
+	// exist for a preview, so only their button text is kept (falling back
+	// to a local default if talking to an older onboarding-service that
+	// predates it returning button_text at all — deploy ordering/rollback
+	// should never make the preview silently degrade to "Contact us") and
+	// the URL is swapped for a local placeholder.
 	buttonURL, buttonText := rendered.ButtonURL, rendered.ButtonText
 	switch req.Kind {
 	case "start":
 		buttonURL = previewSampleStartButtonURL
+		if buttonText == "" {
+			buttonText = "Start onboarding"
+		}
 	case "confirm":
 		buttonURL = previewSampleConfirmButtonURL
+		if buttonText == "" {
+			buttonText = "Continue to confirm"
+		}
 	}
 
 	html, err := email.RenderOnboardingEmail(rendered.Subject, rendered.Body, buttonURL, buttonText)

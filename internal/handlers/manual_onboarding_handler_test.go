@@ -533,4 +533,22 @@ func TestOnboardingEmailSettings(t *testing.T) {
 		require.Contains(t, mattermostHTML, "Open Mattermost")
 		require.Contains(t, mattermostHTML, "https://chat.aisociety.se")
 	})
+
+	t.Run("start and confirm previews fall back to a local button label against an older onboarding-service that omits button_text", func(t *testing.T) {
+		fakeOnboardingService := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"subject":"Welcome to KTH AI Society","body":"Hi Alex,\n\nSo glad you're here!"}`))
+		}))
+		t.Cleanup(fakeOnboardingService.Close)
+		cfg.OnboardingServiceURL = fakeOnboardingService.URL
+
+		gin.SetMode(gin.TestMode)
+		engine := gin.New()
+		NewManualOnboardingHandler(cfg).Register(engine.Group("/api/v1"))
+
+		_, startHTML := preview(t, engine, "start")
+		require.Contains(t, startHTML, "Start onboarding")
+		require.NotContains(t, startHTML, "Contact us")
+	})
 }
