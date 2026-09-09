@@ -463,18 +463,18 @@ func SendGeneralApplicationRejection(application models.GeneralApplication) erro
 	return sendEmail(application.Email, "Your KTH AI Society application", htmlBody.String())
 }
 
-// SendOnboardingEmail sends a single onboarding-flow email (start portal link,
-// kth.se confirmation, account credentials, Mattermost invite, etc.) on
-// behalf of onboarding-service, which has no SES setup of its own — see
-// POST /api/v1/internal/onboarding/send-email. body may contain plain text
+// RenderOnboardingEmail renders a single onboarding-flow email's HTML body
+// without sending it, so a preview (see the admin onboarding email-settings
+// preview endpoint) can never drift from what SendOnboardingEmail actually
+// sends — both share this one implementation. body may contain plain text
 // with newlines; it is HTML-escaped and wrapped in <p>/<br> here, never
 // executed as a Go template, since it originates from another service's
 // request body. buttonURL/buttonText may both be empty, in which case the
 // email falls back to the base template's default "Contact us" mailto link.
-func SendOnboardingEmail(to, subject, body, buttonURL, buttonText string) error {
+func RenderOnboardingEmail(subject, body, buttonURL, buttonText string) (string, error) {
 	tmpl, err := parseEmailTemplate("onboarding", "generic.html")
 	if err != nil {
-		return fmt.Errorf("failed to parse onboarding template: %w", err)
+		return "", fmt.Errorf("failed to parse onboarding template: %w", err)
 	}
 
 	rendered := strings.ReplaceAll(template.HTMLEscapeString(body), "\n", "<br>")
@@ -495,10 +495,22 @@ func SendOnboardingEmail(to, subject, body, buttonURL, buttonText string) error 
 
 	var htmlBody bytes.Buffer
 	if err := tmpl.ExecuteTemplate(&htmlBody, "base", data); err != nil {
-		return fmt.Errorf("failed to execute onboarding template: %w", err)
+		return "", fmt.Errorf("failed to execute onboarding template: %w", err)
 	}
 
-	return sendEmail(to, subject, htmlBody.String())
+	return htmlBody.String(), nil
+}
+
+// SendOnboardingEmail sends a single onboarding-flow email (start portal link,
+// kth.se confirmation, account credentials, Mattermost invite, etc.) on
+// behalf of onboarding-service, which has no SES setup of its own — see
+// POST /api/v1/internal/onboarding/send-email.
+func SendOnboardingEmail(to, subject, body, buttonURL, buttonText string) error {
+	html, err := RenderOnboardingEmail(subject, body, buttonURL, buttonText)
+	if err != nil {
+		return err
+	}
+	return sendEmail(to, subject, html)
 }
 
 // TeamQuestionsAnswer pairs a single team question with the applicant's answer, in

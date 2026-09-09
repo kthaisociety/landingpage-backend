@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"backend/internal/config"
+	"backend/internal/email"
 	"backend/internal/middleware"
 
 	"github.com/gin-gonic/gin"
@@ -42,6 +43,9 @@ func (h *ManualOnboardingHandler) Register(r *gin.RouterGroup) {
 	admin.GET("/records", h.ListRecords)
 	admin.POST("/cancel", h.CancelOnboarding)
 	admin.POST("/restart", h.RestartOnboarding)
+	admin.GET("/email-settings", h.GetEmailSettings)
+	admin.PUT("/email-settings", h.UpdateEmailSettings)
+	admin.POST("/email-settings/preview", h.PreviewEmailSettings)
 }
 
 type manualOnboardingRequest struct {
@@ -196,4 +200,146 @@ func (h *ManualOnboardingHandler) proxyRecordAction(c *gin.Context, path string)
 		return
 	}
 	c.Data(status, "application/json; charset=utf-8", body)
+}
+
+// GetEmailSettings proxies onboarding-service's own
+// /internal/onboarding/email-settings straight through — see that service's
+// EmailSettingsHandler for why the admin-editable intro text lives there,
+// not here.
+func (h *ManualOnboardingHandler) GetEmailSettings(c *gin.Context) {
+	if h.cfg.OnboardingServiceURL == "" {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "onboarding service is not configured"})
+		return
+	}
+
+	status, body, err := h.callOnboardingService(http.MethodGet, "/internal/onboarding/email-settings", nil)
+	if err != nil {
+		log.Printf("onboarding email-settings: %v", err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "onboarding service is unreachable"})
+		return
+	}
+	c.Data(status, "application/json; charset=utf-8", body)
+}
+
+type onboardingEmailSettingsRequest struct {
+	StartIntroText      string `json:"start_intro_text"`
+	AccountIntroText    string `json:"account_intro_text"`
+	MattermostIntroText string `json:"mattermost_intro_text"`
+}
+
+// UpdateEmailSettings proxies to onboarding-service's own PUT
+// /internal/onboarding/email-settings, attaching the admin's identity so
+// onboarding-service (which has no notion of admin identity itself) can
+// record who last changed it.
+func (h *ManualOnboardingHandler) UpdateEmailSettings(c *gin.Context) {
+	_, adminEmail, ok := getAdminIdentity(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	var req onboardingEmailSettingsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	if h.cfg.OnboardingServiceURL == "" {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "onboarding service is not configured"})
+		return
+	}
+
+	payload, err := json.Marshal(map[string]string{
+		"start_intro_text":      req.StartIntroText,
+		"account_intro_text":    req.AccountIntroText,
+		"mattermost_intro_text": req.MattermostIntroText,
+		"updated_by_email":      adminEmail,
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to build request"})
+		return
+	}
+
+	status, body, err := h.callOnboardingService(http.MethodPut, "/internal/onboarding/email-settings", payload)
+	if err != nil {
+		log.Printf("onboarding email-settings update: %v", err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "onboarding service is unreachable"})
+		return
+	}
+	c.Data(status, "application/json; charset=utf-8", body)
+}
+
+// previewSampleButtonURL is a placeholder link, matching how the interview
+// invite preview substitutes a fake booking URL when none is set yet — this
+// is never a real link the admin panel would let anyone click through to.
+// Only the start-onboarding email has a button at all.
+const previewSampleButtonURL = "https://kthais.com/onboarding/start"
+
+type previewOnboardingEmailRequest struct {
+	Kind      string `json:"kind"`
+	IntroText string `json:"intro_text"`
+}
+
+// PreviewEmailSettings renders one of the three onboarding emails exactly
+// as it would be sent for the given (possibly unsaved) intro text: it asks
+// onboarding-service to build the same subject/body a real send would (see
+// that service's EmailSettingsHandler.Preview), then wraps it in this
+// backend's own HTML template via the same RenderOnboardingEmail used when
+// actually sending, so the preview can never drift from the real email.
+func (h *ManualOnboardingHandler) PreviewEmailSettings(c *gin.Context) {
+	var req previewOnboardingEmailRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	if req.Kind != "start" && req.Kind != "account" && req.Kind != "mattermost" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "kind must be one of: start, account, mattermost"})
+		return
+	}
+	if h.cfg.OnboardingServiceURL == "" {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "onboarding service is not configured"})
+		return
+	}
+
+	payload, err := json.Marshal(map[string]string{"kind": req.Kind, "intro_text": req.IntroText})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to build request"})
+		return
+	}
+
+	status, body, err := h.callOnboardingService(http.MethodPost, "/internal/onboarding/email-settings/preview", payload)
+	if err != nil {
+		log.Printf("onboarding email-settings preview: %v", err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "onboarding service is unreachable"})
+		return
+	}
+	if status != http.StatusOK {
+		c.Data(status, "application/json; charset=utf-8", body)
+		return
+	}
+
+	var rendered struct {
+		Subject string `json:"subject"`
+		Body    string `json:"body"`
+	}
+	// json.Unmarshal of a bare `null` body succeeds and leaves rendered
+	// zero-valued — checked for explicitly (rather than just handling the
+	// unmarshal error) so a malformed-but-syntactically-valid upstream
+	// response can never look like a real, blank preview to an admin.
+	if err := json.Unmarshal(body, &rendered); err != nil || rendered.Subject == "" || rendered.Body == "" {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "onboarding service returned an invalid response"})
+		return
+	}
+
+	var buttonURL, buttonText string
+	if req.Kind == "start" {
+		buttonURL, buttonText = previewSampleButtonURL, "Start onboarding"
+	}
+
+	html, err := email.RenderOnboardingEmail(rendered.Subject, rendered.Body, buttonURL, buttonText)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to render preview"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"subject": rendered.Subject, "html": html})
 }
