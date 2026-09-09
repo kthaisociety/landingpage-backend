@@ -124,10 +124,10 @@ func (h *GeneralApplicationHandler) AdminFinalizePhaseStatus(c *gin.Context) {
 }
 
 // AdminCloseFinalizePhase closes the finalize phase: no further finalize
-// decisions can be made afterward until it's reopened. This is the point at
-// which the list of accepted applicants is treated as solid and onboarding
-// begins for them (see onboarding-service-plan.md at the repo root) — no
-// onboarding call happens here yet, that service doesn't exist yet. Requires
+// decisions can be made afterward until it's reopened. Onboarding itself
+// does not happen here — it's already triggered per-applicant, as each one
+// is individually accepted via AdminFinalizeDecision (see
+// notifyOnboardingService there), not batched at phase-close. Requires
 // specifically the head of IT (not just any IT admin) and the exact
 // confirmation phrase.
 func (h *GeneralApplicationHandler) AdminCloseFinalizePhase(c *gin.Context) {
