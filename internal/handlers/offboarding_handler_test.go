@@ -150,6 +150,34 @@ func TestOffboardingHandler(t *testing.T) {
 		require.Zero(t, profileStillExists, "the local profile record should be gone after a successful delete")
 	})
 
+	// Regression for a Greptile finding: the local lookup used to query
+	// Profile, not User. RegisteredUserRequired shows a User can exist with
+	// no matching Profile at all (signed in but never finished profile
+	// setup) — looking up by Profile treated that as "no local record,"
+	// skipped deleteUserAndProfile entirely, and left the orphaned User row
+	// (still visible in the admin Users list) behind.
+	t.Run("delete removes a local user even if they never completed their profile", func(t *testing.T) {
+		email := "offboarding-delete-no-profile@kthais.com"
+		require.NoError(t, db.Create(&models.User{
+			UserId:   uuid.New(),
+			Email:    email,
+			Provider: "google",
+			Roles:    pq.StringArray{"user", "member"},
+		}).Error)
+		t.Cleanup(func() {
+			db.Where("email = ?", email).Unscoped().Delete(&models.User{})
+		})
+
+		rec := post(t, "/api/v1/admin/offboarding/delete", map[string]any{
+			"email": email, "confirm": "DELETE THIS ACCOUNT",
+		}, headOfIT.cookie)
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		var stillExists int64
+		db.Model(&models.User{}).Where("email = ?", email).Count(&stillExists)
+		require.Zero(t, stillExists, "the profile-less local user record should be gone after a successful delete")
+	})
+
 	t.Run("delete refuses to remove the only remaining head of IT, before touching any real account", func(t *testing.T) {
 		soleHead := mustCreateHeadOfIT(t, db, cfg, "offboarding-delete-sole-head@kthais.com")
 		t.Cleanup(func() {

@@ -161,11 +161,18 @@ func (h *OffboardingHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	var target models.Profile
-	lookupErr := h.db.Where("email = ?", targetEmail).First(&target).Error
+	// Looked up by User, not Profile: RegisteredUserRequired shows a User
+	// can exist with no matching Profile at all (signed in but never
+	// finished profile setup) — looking up Profile here would treat that
+	// as "no local record," skip deleteUserAndProfile entirely, and leave
+	// the orphaned User row (still visible in the admin Users list) behind.
+	// deleteUserAndProfile's own head-of-IT check is Profile-based and
+	// already correct either way: a User with no Profile can't be a head.
+	var targetUser models.User
+	lookupErr := h.db.Where("email = ?", targetEmail).First(&targetUser).Error
 	switch {
 	case lookupErr == nil:
-		if err := deleteUserAndProfile(h.db, target.UserId); err != nil {
+		if err := deleteUserAndProfile(h.db, targetUser.ID); err != nil {
 			if errors.Is(err, errCannotDeleteLastHeadOfIT) {
 				c.JSON(http.StatusConflict, gin.H{"error": "can't delete the only remaining head of IT — grant it to someone else first"})
 				return
@@ -183,8 +190,8 @@ func (h *OffboardingHandler) Delete(c *gin.Context) {
 		// any other failure to reach a safe state: refuse rather than risk
 		// deleting real external accounts without having actually checked
 		// the Head-of-IT invariant.
-		log.Printf("offboarding: failed to look up local profile for %s: %v", targetEmail, lookupErr)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to look up local profile"})
+		log.Printf("offboarding: failed to look up local user for %s: %v", targetEmail, lookupErr)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to look up local user record"})
 		return
 	}
 
