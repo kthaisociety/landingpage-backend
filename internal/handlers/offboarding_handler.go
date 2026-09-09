@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // deleteAccountConfirmPhrase must be typed exactly, byte-for-byte, to
@@ -54,7 +55,9 @@ func (h *OffboardingHandler) Register(r *gin.RouterGroup) {
 	headOfIT := r.Group("/admin/head-of-it")
 	headOfIT.Use(middleware.AuthRequiredJWT(h.cfg))
 	headOfIT.Use(middleware.RoleRequired(h.cfg, "admin"))
-	headOfIT.POST("/transfer", h.TransferHeadOfIT)
+	headOfIT.GET("", h.ListHeadsOfIT)
+	headOfIT.POST("/grant", h.GrantHeadOfIT)
+	headOfIT.POST("/revoke", h.RevokeHeadOfIT)
 }
 
 // requesterIsHeadOfIT checks Profile.IsHeadOfIT — deliberately not
@@ -147,36 +150,101 @@ func (h *OffboardingHandler) Delete(c *gin.Context) {
 	h.proxy(c, "/internal/offboarding/delete", req.Email)
 }
 
-type transferHeadOfITRequest struct {
+// ListHeadsOfIT returns the emails of every current Head of IT. Open to any
+// admin (not head-of-IT-gated) — who holds this power isn't sensitive, and
+// the admin panel needs it to decide whether to offer "Make Head of IT" or
+// "Remove Head of IT" for each admin row.
+func (h *OffboardingHandler) ListHeadsOfIT(c *gin.Context) {
+	var emails []string
+	if err := h.db.Model(&models.Profile{}).Where("is_head_of_it = ?", true).Pluck("email", &emails).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list heads of IT"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"emails": emails})
+}
+
+type headOfITTargetRequest struct {
 	Email string `json:"email" binding:"required"`
 }
 
-// errHeadOfITAlreadyTransferred signals the compare-and-swap guard in
-// TransferHeadOfIT's transaction found the requester was no longer the
-// current head by the time the update ran (lost a race with another
-// transfer) — a 409, not a 500, since nothing actually went wrong.
-var errHeadOfITAlreadyTransferred = errors.New("head of IT was already transferred by a concurrent request")
+// resolveAdminTarget validates that email belongs to an existing admin,
+// shared by Grant and Revoke since both act on "some other admin, by
+// email."
+func (h *OffboardingHandler) resolveAdminTarget(c *gin.Context, rawEmail string) (target models.Profile, ok bool) {
+	targetEmail := strings.ToLower(strings.TrimSpace(rawEmail))
+	if targetEmail == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "email is required"})
+		return models.Profile{}, false
+	}
+	if err := h.db.Where("email = ?", targetEmail).First(&target).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "no profile found for that email"})
+		return models.Profile{}, false
+	}
+	var targetUser models.User
+	if err := h.db.Where("id = ?", target.UserId).First(&targetUser).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "no user found for that email"})
+		return models.Profile{}, false
+	}
+	if !slices.Contains([]string(targetUser.Roles), models.RoleAdmin) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "must already be an admin"})
+		return models.Profile{}, false
+	}
+	return target, true
+}
 
-// errHeadOfITSuccessorVanished signals the successor's profile disappeared
-// between TransferHeadOfIT's pre-transaction validation and the grant
-// update inside the transaction — rolling back leaves the original
-// requester still holding the flag instead of committing a handover to
-// nobody.
-var errHeadOfITSuccessorVanished = errors.New("the intended successor's profile no longer exists")
-
-// TransferHeadOfIT hands the Head-of-IT flag to a different admin. There is
-// deliberately no separate "revoke" action — the only way to stop being
-// Head of IT is to name a successor here, in the same transaction that
-// grants it to them, so the system can never end up with zero heads. The
-// very first Head of IT has to be set with a one-off manual database
-// update; every handover after that goes through this endpoint.
-func (h *OffboardingHandler) TransferHeadOfIT(c *gin.Context) {
-	requesterID, requesterEmail, ok := h.requireHeadOfIT(c)
+// GrantHeadOfIT adds another admin as a Head of IT alongside every existing
+// one — there can be any number of heads at once, so granting never
+// threatens the "at least one" invariant and needs no transaction: it's a
+// pure addition. The very first Head of IT still has to be set with a
+// one-off manual database update, since granting itself requires already
+// being one.
+func (h *OffboardingHandler) GrantHeadOfIT(c *gin.Context) {
+	_, requesterEmail, ok := h.requireHeadOfIT(c)
 	if !ok {
 		return
 	}
 
-	var req transferHeadOfITRequest
+	var req headOfITTargetRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "email is required"})
+		return
+	}
+	target, ok := h.resolveAdminTarget(c, req.Email)
+	if !ok {
+		return
+	}
+
+	if err := h.db.Model(&models.Profile{}).Where("user_uuid = ?", target.UserUUID).
+		Update("is_head_of_it", true).Error; err != nil {
+		log.Printf("offboarding: granting head of IT to %s: %v", target.Email, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to grant head of IT"})
+		return
+	}
+
+	log.Printf("offboarding: %s made %s a head of IT", requesterEmail, target.Email)
+	c.JSON(http.StatusOK, gin.H{"email": target.Email})
+}
+
+// errCannotRevokeLastHeadOfIT signals RevokeHeadOfIT's lock-and-count check
+// found the target is the only remaining Head of IT — a 409, not a 500,
+// since nothing went wrong; the action is just refused to preserve the
+// invariant that there's always at least one.
+var errCannotRevokeLastHeadOfIT = errors.New("cannot revoke the only remaining head of IT")
+
+// RevokeHeadOfIT removes email as a Head of IT — themselves or another
+// current head, doesn't matter which — as long as at least one other admin
+// still holds it afterward. Locks every current head-of-IT row for the
+// duration of the check-and-update so two concurrent revokes (e.g. the last
+// two heads each trying to step down at once) can't both succeed and leave
+// zero: Postgres serializes them on that lock, and the loser re-evaluates
+// the count after the winner's commit is visible.
+func (h *OffboardingHandler) RevokeHeadOfIT(c *gin.Context) {
+	_, requesterEmail, ok := h.requireHeadOfIT(c)
+	if !ok {
+		return
+	}
+
+	var req headOfITTargetRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "email is required"})
 		return
@@ -186,78 +254,51 @@ func (h *OffboardingHandler) TransferHeadOfIT(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "email is required"})
 		return
 	}
-	if targetEmail == strings.ToLower(requesterEmail) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "you're already the head of IT"})
-		return
-	}
-
-	var target models.Profile
-	if err := h.db.Where("email = ?", targetEmail).First(&target).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "no profile found for that email"})
-		return
-	}
-
-	var targetUser models.User
-	if err := h.db.Where("id = ?", target.UserId).First(&targetUser).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "no user found for that email"})
-		return
-	}
-	if !slices.Contains([]string(targetUser.Roles), models.RoleAdmin) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "the new head of IT must already be an admin"})
-		return
-	}
 
 	err := h.db.Transaction(func(tx *gorm.DB) error {
-		// The WHERE also re-checks is_head_of_it=true, not just user_uuid —
-		// requireHeadOfIT's read above happened outside this transaction, so
-		// two overlapping transfer requests from the same current head could
-		// otherwise both pass that check and both go on to grant a
-		// successor, leaving two heads. Postgres row-locks this UPDATE, so
-		// the loser of two concurrent transfers blocks until the winner
-		// commits, then affects zero rows here and rolls back instead of
-		// silently creating a second head.
-		result := tx.Model(&models.Profile{}).
-			Where("user_uuid = ? AND is_head_of_it = ?", requesterID, true).
-			Update("is_head_of_it", false)
-		if result.Error != nil {
-			return result.Error
+		var heads []models.Profile
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("is_head_of_it = ?", true).Find(&heads).Error; err != nil {
+			return err
 		}
-		if result.RowsAffected == 0 {
-			return errHeadOfITAlreadyTransferred
+		targetIsHead := false
+		for _, p := range heads {
+			if strings.EqualFold(p.Email, targetEmail) {
+				targetIsHead = true
+				break
+			}
 		}
-		// Same reasoning as the check above, mirrored for the successor: the
-		// target was validated to exist before this transaction started, so
-		// if their profile is deleted in the gap between that check and
-		// here, GORM reports no error for a zero-row UPDATE — without this
-		// check the transaction would still commit, leaving the requester
-		// revoked and no one holding the flag at all.
-		grant := tx.Model(&models.Profile{}).Where("user_uuid = ?", target.UserUUID).
-			Update("is_head_of_it", true)
-		if grant.Error != nil {
-			return grant.Error
+		if !targetIsHead {
+			return errHeadOfITTargetNotAHead
 		}
-		if grant.RowsAffected == 0 {
-			return errHeadOfITSuccessorVanished
+		if len(heads) <= 1 {
+			return errCannotRevokeLastHeadOfIT
 		}
-		return nil
+		return tx.Model(&models.Profile{}).Where("email = ?", targetEmail).
+			Update("is_head_of_it", false).Error
 	})
-	if errors.Is(err, errHeadOfITAlreadyTransferred) {
-		c.JSON(http.StatusConflict, gin.H{"error": "you're no longer the head of IT — someone else already transferred it"})
+	if errors.Is(err, errCannotRevokeLastHeadOfIT) {
+		c.JSON(http.StatusConflict, gin.H{"error": "can't remove the only remaining head of IT — make someone else one first"})
 		return
 	}
-	if errors.Is(err, errHeadOfITSuccessorVanished) {
-		c.JSON(http.StatusConflict, gin.H{"error": "that admin's profile no longer exists — you're still the head of IT"})
+	if errors.Is(err, errHeadOfITTargetNotAHead) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "that admin isn't a head of IT"})
 		return
 	}
 	if err != nil {
-		log.Printf("offboarding: transferring head of IT from %s to %s: %v", requesterEmail, targetEmail, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to transfer head of IT"})
+		log.Printf("offboarding: revoking head of IT from %s: %v", targetEmail, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to revoke head of IT"})
 		return
 	}
 
-	log.Printf("offboarding: %s transferred head of IT to %s", requesterEmail, targetEmail)
-	c.JSON(http.StatusOK, gin.H{"new_head_of_it_email": targetEmail})
+	log.Printf("offboarding: %s removed %s as a head of IT", requesterEmail, targetEmail)
+	c.JSON(http.StatusOK, gin.H{"email": targetEmail})
 }
+
+// errHeadOfITTargetNotAHead signals Revoke was asked to remove someone who
+// doesn't currently hold the flag at all — a 400, not a no-op, so the
+// caller's mental model of who's a head stays accurate.
+var errHeadOfITTargetNotAHead = errors.New("target is not a head of IT")
 
 func (h *OffboardingHandler) proxy(c *gin.Context, path, email string) {
 	if h.cfg.OnboardingServiceURL == "" {

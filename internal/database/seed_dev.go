@@ -443,8 +443,11 @@ func SeedDev(db *gorm.DB, cfg *config.Config) {
 		// template editor locally without extra setup.
 		AdminTeam: "IT",
 		// Likewise, so offboarding (Head-of-IT-only) is exercisable locally
-		// without a manual DB update — see Profile.IsHeadOfIT's doc comment
-		// for why this can't be set via any self-service endpoint in prod.
+		// without a manual DB update — see Profile.IsHeadOfIT's doc comment.
+		// Unconditional is fine: any number of admins can be Head of IT at
+		// once (the only real invariant is "at least one", not "at most
+		// one"), so re-asserting this on every restart never revokes
+		// anyone else's status.
 		IsHeadOfIT: true,
 	}
 

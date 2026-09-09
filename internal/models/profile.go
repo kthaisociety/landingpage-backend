@@ -67,11 +67,11 @@ type Profile struct {
 	// account). Deliberately separate from the self-editable AdminTeam field
 	// above and NOT settable via UpdateInterviewSettings or any other
 	// self-service endpoint — the only way it changes hands is
-	// OffboardingHandler.TransferHeadOfIT, which flips it on the new holder
-	// and off the old one in the same transaction, so there is always
-	// exactly one Head of IT. The very first holder has to be set with a
-	// one-off manual database update; every handover after that goes
-	// through the app.
+	// OffboardingHandler.GrantHeadOfIT/RevokeHeadOfIT. Any number of admins
+	// can hold this at once (granting is unrestricted); the only invariant
+	// is that revoking is refused if it would leave zero. The very first
+	// holder has to be set with a one-off manual database update; every
+	// grant/revoke after that goes through the app.
 	IsHeadOfIT bool `gorm:"default:false" json:"is_head_of_it,omitempty"`
 }
 
