@@ -40,6 +40,7 @@ func (h *ManualOnboardingHandler) Register(r *gin.RouterGroup) {
 	admin.Use(middleware.RoleRequired(h.cfg, "admin"))
 	admin.POST("/manual", h.Create)
 	admin.GET("/records", h.ListRecords)
+	admin.POST("/retry", h.RetryOnboarding)
 	admin.POST("/cancel", h.CancelOnboarding)
 	admin.POST("/restart", h.RestartOnboarding)
 }
@@ -155,6 +156,14 @@ func (h *ManualOnboardingHandler) ListRecords(c *gin.Context) {
 
 type onboardingRecordActionRequest struct {
 	ID uint `json:"id" binding:"required"`
+}
+
+// RetryOnboarding proxies to onboarding-service's own
+// /retry-provisioning — see that service's RecordActionsHandler.Retry for
+// what it actually does (re-runs provisioning from wherever it left off;
+// only valid for a record in kth_email_confirmed or failed).
+func (h *ManualOnboardingHandler) RetryOnboarding(c *gin.Context) {
+	h.proxyRecordAction(c, "/internal/onboarding/retry-provisioning")
 }
 
 // CancelOnboarding proxies to onboarding-service's own /cancel — see that

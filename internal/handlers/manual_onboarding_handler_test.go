@@ -250,7 +250,16 @@ func TestOnboardingRecordActions(t *testing.T) {
 		return rec
 	}
 
-	for _, action := range []string{"cancel", "restart"} {
+	actions := []struct {
+		route        string
+		internalPath string
+	}{
+		{"cancel", "/internal/onboarding/cancel"},
+		{"restart", "/internal/onboarding/restart"},
+		{"retry", "/internal/onboarding/retry-provisioning"},
+	}
+	for _, tc := range actions {
+		action := tc.route
 		t.Run(action, func(t *testing.T) {
 			t.Run("proxies to onboarding-service with the shared secret", func(t *testing.T) {
 				var gotPath, gotSecret string
@@ -272,7 +281,7 @@ func TestOnboardingRecordActions(t *testing.T) {
 
 				rec := postAction(t, engine, "/api/v1/admin/onboarding/"+action, map[string]any{"id": 5}, adminCookie(t))
 				require.Equal(t, http.StatusOK, rec.Code)
-				require.Equal(t, "/internal/onboarding/"+action, gotPath)
+				require.Equal(t, tc.internalPath, gotPath)
 				require.Equal(t, "test-onboarding-service-secret", gotSecret)
 				require.Equal(t, uint(5), gotBody["id"])
 			})
