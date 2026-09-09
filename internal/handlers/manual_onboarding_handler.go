@@ -44,6 +44,7 @@ func (h *ManualOnboardingHandler) Register(r *gin.RouterGroup) {
 	admin.POST("/retry", h.RetryOnboarding)
 	admin.POST("/cancel", h.CancelOnboarding)
 	admin.POST("/restart", h.RestartOnboarding)
+	admin.POST("/delete-record", h.DeleteOnboardingRecord)
 	admin.GET("/email-settings", h.GetEmailSettings)
 	admin.PUT("/email-settings", h.UpdateEmailSettings)
 	admin.POST("/email-settings/preview", h.PreviewEmailSettings)
@@ -183,6 +184,15 @@ func (h *ManualOnboardingHandler) CancelOnboarding(c *gin.Context) {
 // that service's RecordActionsHandler.Restart.
 func (h *ManualOnboardingHandler) RestartOnboarding(c *gin.Context) {
 	h.proxyRecordAction(c, "/internal/onboarding/restart")
+}
+
+// DeleteOnboardingRecord proxies to onboarding-service's own
+// /delete-record — see that service's RecordActionsHandler.Delete. Only
+// removes onboarding-service's own tracking row; a real Google
+// Workspace/Mattermost account, if one was ever created, is untouched (see
+// OffboardingHandler for that).
+func (h *ManualOnboardingHandler) DeleteOnboardingRecord(c *gin.Context) {
+	h.proxyRecordAction(c, "/internal/onboarding/delete-record")
 }
 
 func (h *ManualOnboardingHandler) proxyRecordAction(c *gin.Context, path string) {

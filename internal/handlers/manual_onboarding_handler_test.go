@@ -257,6 +257,7 @@ func TestOnboardingRecordActions(t *testing.T) {
 		{"cancel", "/internal/onboarding/cancel"},
 		{"restart", "/internal/onboarding/restart"},
 		{"retry", "/internal/onboarding/retry-provisioning"},
+		{"delete-record", "/internal/onboarding/delete-record"},
 	}
 	for _, tc := range actions {
 		action := tc.route
