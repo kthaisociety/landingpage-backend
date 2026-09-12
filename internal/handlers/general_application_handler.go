@@ -204,6 +204,7 @@ func (h *GeneralApplicationHandler) Register(r *gin.RouterGroup) {
 	admin.GET("/finalize/phase", h.AdminFinalizePhaseStatus)
 	admin.POST("/finalize/phase/close", h.AdminCloseFinalizePhase)
 	admin.POST("/:id/finalize", h.AdminFinalizeDecision)
+	admin.POST("/:id/retry-onboarding-notify", h.AdminRetryOnboardingNotify)
 	// End-of-cycle bulk rejection sweep — see AdminSendRejectionsBulk.
 	admin.GET("/finalize/rejections/preview", h.AdminSendRejectionsBulkPreview)
 	admin.POST("/finalize/rejections/send", h.AdminSendRejectionsBulk)
@@ -578,6 +579,11 @@ func (h *GeneralApplicationHandler) AdminUpdateSettings(c *gin.Context) {
 	var presence map[string]json.RawMessage
 	_ = json.Unmarshal(rawBody, &presence)
 	_, recruitmentOpensAtProvided := presence["recruitment_opens_at"]
+	// Same reasoning: an older or partial caller that doesn't know about this
+	// field yet (e.g. this backend deployed ahead of the frontend that sends
+	// it) must leave whatever's already saved untouched, not blank it back to
+	// the default.
+	_, rejectionIntroTextProvided := presence["rejection_intro_text"]
 
 	var settings models.GeneralApplicationSettings
 	err = h.db.First(&settings).Error
@@ -592,7 +598,9 @@ func (h *GeneralApplicationHandler) AdminUpdateSettings(c *gin.Context) {
 	settings.SubmissionDeadline = body.SubmissionDeadline
 	settings.ClosedHeading = strings.TrimSpace(body.ClosedHeading)
 	settings.ClosedMessage = strings.TrimSpace(body.ClosedMessage)
-	settings.RejectionIntroText = strings.TrimSpace(body.RejectionIntroText)
+	if rejectionIntroTextProvided {
+		settings.RejectionIntroText = strings.TrimSpace(body.RejectionIntroText)
+	}
 	settings.UpdatedByEmail = adminEmail
 
 	if err == gorm.ErrRecordNotFound {

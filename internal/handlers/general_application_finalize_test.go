@@ -316,9 +316,11 @@ func TestFinalizeRecruitmentPhase(t *testing.T) {
 // blocked until the finalize phase has been closed, restricted to the head
 // of IT, and — the actual point of the feature — reaches applications
 // AdminFinalizeDecision itself never could (never interviewed, or marked
-// ineligible), while leaving accepted and withdrawn applications alone.
-// Needs real Postgres, so it skips when .env isn't present, like its
-// siblings above.
+// ineligible), while leaving accepted/withdrawn/already-rejected
+// applications alone (an already-rejected one went through
+// AdminFinalizeDecision, which already attempted its own send — the bulk
+// sweep never retries those, see pendingRejectionApplications). Needs real
+// Postgres, so it skips when .env isn't present, like its siblings above.
 func TestSendRejectionsBulk(t *testing.T) {
 	envFile := "../../.env"
 	if _, err := os.Stat(envFile); err != nil {
@@ -387,10 +389,14 @@ func TestSendRejectionsBulk(t *testing.T) {
 	pastSend := time.Now().Add(-24 * time.Hour)
 	pending := newApplication(t, models.GeneralApplicationStatusPending, nil)
 	ineligible := newApplication(t, models.GeneralApplicationStatusIneligible, nil)
-	rejectedRetry := newApplication(t, models.GeneralApplicationStatusRejected, nil)
 	accepted := newApplication(t, models.GeneralApplicationStatusAccepted, nil)
 	withdrawn := newApplication(t, models.GeneralApplicationStatusWithdrawn, nil)
-	alreadyEmailed := newApplication(t, models.GeneralApplicationStatusRejected, &pastSend)
+	// Both already went through an individual AdminFinalizeDecision — the
+	// bulk sweep must never touch either, regardless of whether their own
+	// send is still unmarked (e.g. still in flight, or failed with no
+	// reliable way to tell) or already marked sent.
+	rejectedUnmarked := newApplication(t, models.GeneralApplicationStatusRejected, nil)
+	rejectedAlreadyEmailed := newApplication(t, models.GeneralApplicationStatusRejected, &pastSend)
 
 	t.Run("preview reports phase not closed and refuses to send", func(t *testing.T) {
 		previewRec := doJSONRequest(t, engine, "GET", "/api/v1/applications/admin/finalize/rejections/preview", nil, itAdmin.cookie)
@@ -429,8 +435,8 @@ func TestSendRejectionsBulk(t *testing.T) {
 		require.NoError(t, json.Unmarshal(previewRec.Body.Bytes(), &preview))
 		require.True(t, preview.PhaseClosed)
 		require.True(t, preview.CanSend)
-		// pending, ineligible, and rejectedRetry — accepted/withdrawn/already-emailed excluded.
-		require.GreaterOrEqual(t, preview.Count, 3)
+		// pending and ineligible only — accepted/withdrawn/already-rejected excluded.
+		require.GreaterOrEqual(t, preview.Count, 2)
 
 		plainPreviewRec := doJSONRequest(t, engine, "GET", "/api/v1/applications/admin/finalize/rejections/preview", nil, plainAdmin.cookie)
 		require.Equal(t, http.StatusOK, plainPreviewRec.Code)
@@ -446,7 +452,7 @@ func TestSendRejectionsBulk(t *testing.T) {
 		require.Equal(t, http.StatusForbidden, rec.Code)
 	})
 
-	t.Run("sending targets the right applications, leaving accepted/withdrawn/already-emailed alone", func(t *testing.T) {
+	t.Run("sending targets only pending/ineligible, leaving accepted/withdrawn/already-rejected alone", func(t *testing.T) {
 		rec := doJSONRequest(t, engine, "POST", "/api/v1/applications/admin/finalize/rejections/send", nil, itAdmin.cookie)
 		require.Equal(t, http.StatusOK, rec.Code)
 		var result struct {
@@ -462,15 +468,35 @@ func TestSendRejectionsBulk(t *testing.T) {
 		attempted := append([]string{}, result.Failed...)
 		require.Contains(t, attempted, pending.String())
 		require.Contains(t, attempted, ineligible.String())
-		require.Contains(t, attempted, rejectedRetry.String())
 		require.NotContains(t, attempted, accepted.String())
 		require.NotContains(t, attempted, withdrawn.String())
-		require.NotContains(t, attempted, alreadyEmailed.String())
+		require.NotContains(t, attempted, rejectedUnmarked.String())
+		require.NotContains(t, attempted, rejectedAlreadyEmailed.String())
 
 		// A failed send must never be recorded as if it succeeded.
 		var untouched models.GeneralApplication
 		require.NoError(t, db.First(&untouched, "id = ?", pending).Error)
 		require.Nil(t, untouched.RejectionEmailSentAt)
 		require.Equal(t, models.GeneralApplicationStatusPending, untouched.Status)
+	})
+
+	t.Run("claiming is atomic — only the first of two racing callers wins", func(t *testing.T) {
+		handler := NewGeneralApplicationHandler(db, cfg, nil)
+		candidate := newApplication(t, models.GeneralApplicationStatusPending, nil)
+
+		firstClaimed, err := handler.claimRejectionEmail(candidate)
+		require.NoError(t, err)
+		require.True(t, firstClaimed, "the first caller must win the claim")
+
+		secondClaimed, err := handler.claimRejectionEmail(candidate)
+		require.NoError(t, err)
+		require.False(t, secondClaimed, "a second caller racing the same application must lose the claim")
+
+		// Releasing (e.g. because the send that followed the winning claim
+		// failed) must make the application claimable again.
+		handler.releaseRejectionEmailClaim(candidate)
+		reclaimed, err := handler.claimRejectionEmail(candidate)
+		require.NoError(t, err)
+		require.True(t, reclaimed, "releasing a claim must allow a later retry to claim it again")
 	})
 }

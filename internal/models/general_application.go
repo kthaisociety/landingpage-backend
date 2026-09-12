@@ -69,16 +69,22 @@ type GeneralApplication struct {
 	AssignedTeam                 string     `gorm:"default:''" json:"assigned_team"`
 	FinalizedByEmail             string     `gorm:"default:''" json:"finalized_by_email"`
 	FinalizedAt                  *time.Time `json:"finalized_at"`
-	// RejectionEmailSentAt is stamped once the rejection email has actually
-	// been sent — by AdminFinalizeDecision for an individually rejected
-	// applicant, or by the end-of-cycle bulk sweep (see
-	// AdminSendRejectionsBulk) for everyone else this cycle didn't accept.
-	// Tracked separately from FinalizedAt/Status because the bulk sweep also
-	// reaches applications that never went through a finalize decision at
-	// all (never interviewed, or marked ineligible) — this is the one source
-	// of truth for "don't email this person again," regardless of which path
-	// got them there.
+	// RejectionEmailSentAt is claimed (see claimRejectionEmail) just before
+	// the rejection email is actually sent — by AdminFinalizeDecision for an
+	// individually rejected applicant, or by the end-of-cycle bulk sweep
+	// (see AdminSendRejectionsBulk) for applicants who never went through an
+	// individual decision at all (never interviewed, or marked ineligible).
+	// Tracked separately from FinalizedAt/Status so both paths, and any
+	// concurrent overlap between them, can never send the same applicant two
+	// rejection emails.
 	RejectionEmailSentAt *time.Time `json:"rejection_email_sent_at"`
+	// OnboardingNotifiedAt is stamped once notifyOnboardingService actually
+	// succeeds for an accepted applicant — this is their only welcome notice
+	// now that AdminFinalizeDecision no longer sends its own acceptance
+	// email directly, so a still-nil value on an accepted application is the
+	// visible sign that they were never actually notified and
+	// AdminRetryOnboardingNotify needs to be run for them.
+	OnboardingNotifiedAt *time.Time `json:"onboarding_notified_at"`
 	// KthaisEmail records the @kthais.com address onboarding-service created
 	// for this applicant once account provisioning finished — pure
 	// bookkeeping so admins can see, from the application itself, that
