@@ -69,6 +69,16 @@ type GeneralApplication struct {
 	AssignedTeam                 string     `gorm:"default:''" json:"assigned_team"`
 	FinalizedByEmail             string     `gorm:"default:''" json:"finalized_by_email"`
 	FinalizedAt                  *time.Time `json:"finalized_at"`
+	// RejectionEmailSentAt is stamped once the rejection email has actually
+	// been sent — by AdminFinalizeDecision for an individually rejected
+	// applicant, or by the end-of-cycle bulk sweep (see
+	// AdminSendRejectionsBulk) for everyone else this cycle didn't accept.
+	// Tracked separately from FinalizedAt/Status because the bulk sweep also
+	// reaches applications that never went through a finalize decision at
+	// all (never interviewed, or marked ineligible) — this is the one source
+	// of truth for "don't email this person again," regardless of which path
+	// got them there.
+	RejectionEmailSentAt *time.Time `json:"rejection_email_sent_at"`
 	// KthaisEmail records the @kthais.com address onboarding-service created
 	// for this applicant once account provisioning finished — pure
 	// bookkeeping so admins can see, from the application itself, that

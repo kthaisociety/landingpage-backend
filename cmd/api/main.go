@@ -149,6 +149,7 @@ func main() {
 
 	database.BackfillProfileSlugs(db)
 	database.BackfillSharedNoteEntries(db)
+	database.BackfillRejectionEmailSentAt(db)
 
 	database.SeedDev(db, cfg)
 

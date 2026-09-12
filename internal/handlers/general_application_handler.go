@@ -43,6 +43,13 @@ var defaultSubmissionDeadline = time.Date(2026, time.September, 6, 23, 59, 0, 0,
 const defaultClosedHeading = "Applications are now closed"
 const defaultClosedMessage = "Thank you to everyone who applied to KTH AI Society this year. We're reviewing every application and will follow up by email with next steps by September 22, 2026. In the meantime, join our Luma community to stay in the loop on events and future opportunities."
 
+// defaultRejectionIntroText is the "not selected" email's body until an admin
+// customises it via the Settings panel. May contain {{first_name}} and
+// {{year}} placeholders — see email.RenderGeneralApplicationRejection.
+const defaultRejectionIntroText = "Thank you for applying to KTH AI Society for {{year}}.\n\n" +
+	"After careful consideration, we're not able to offer you a place this time. There are a variety of reasons this can happen — you may not have been eligible for the team(s) you applied to, or you may simply not have made our top candidate list this year, when we had far more strong applicants than spots. Either way, this isn't a reflection of your potential.\n\n" +
+	"We recruit new members throughout the year, so we'd love to keep you around: follow KTH AI Society on Luma, come to our events, and stay connected with our members — we'd be glad to see you apply again."
+
 var allowedApplicationTeams = map[string]struct{}{
 	"Business":    {},
 	"Development": {},
@@ -170,6 +177,7 @@ func (h *GeneralApplicationHandler) Register(r *gin.RouterGroup) {
 	admin.Use(middleware.RoleRequired(h.cfg, "admin"))
 	admin.GET("/settings", h.AdminGetSettings)
 	admin.PUT("/settings", h.AdminUpdateSettings)
+	admin.POST("/settings/rejection-email/preview", h.AdminPreviewRejectionEmail)
 	admin.GET("", h.AdminList)
 	admin.PATCH("/:id/status", h.AdminUpdateStatus)
 	admin.DELETE("/:id", h.AdminDelete)
@@ -196,6 +204,9 @@ func (h *GeneralApplicationHandler) Register(r *gin.RouterGroup) {
 	admin.GET("/finalize/phase", h.AdminFinalizePhaseStatus)
 	admin.POST("/finalize/phase/close", h.AdminCloseFinalizePhase)
 	admin.POST("/:id/finalize", h.AdminFinalizeDecision)
+	// End-of-cycle bulk rejection sweep — see AdminSendRejectionsBulk.
+	admin.GET("/finalize/rejections/preview", h.AdminSendRejectionsBulkPreview)
+	admin.POST("/finalize/rejections/send", h.AdminSendRejectionsBulk)
 }
 
 func (h *GeneralApplicationHandler) Create(c *gin.Context) {
@@ -486,6 +497,9 @@ func (h *GeneralApplicationHandler) getGeneralApplicationSettings() (models.Gene
 	if strings.TrimSpace(settings.ClosedMessage) == "" {
 		settings.ClosedMessage = defaultClosedMessage
 	}
+	if strings.TrimSpace(settings.RejectionIntroText) == "" {
+		settings.RejectionIntroText = defaultRejectionIntroText
+	}
 	return settings, nil
 }
 
@@ -517,6 +531,7 @@ func (h *GeneralApplicationHandler) AdminGetSettings(c *gin.Context) {
 		"submission_deadline":  settings.SubmissionDeadline,
 		"closed_heading":       settings.ClosedHeading,
 		"closed_message":       settings.ClosedMessage,
+		"rejection_intro_text": settings.RejectionIntroText,
 		"is_recruitment_open":  settings.IsRecruitmentOpen(time.Now()),
 		"updated_by_email":     settings.UpdatedByEmail,
 	})
@@ -551,8 +566,9 @@ func (h *GeneralApplicationHandler) AdminUpdateSettings(c *gin.Context) {
 		SubmissionDeadline time.Time  `json:"submission_deadline" binding:"required"`
 		// Empty means "reset to default" — same convention as the Team
 		// Questions email template fields.
-		ClosedHeading string `json:"closed_heading"`
-		ClosedMessage string `json:"closed_message"`
+		ClosedHeading      string `json:"closed_heading"`
+		ClosedMessage      string `json:"closed_message"`
+		RejectionIntroText string `json:"rejection_intro_text"`
 	}
 	if err := json.Unmarshal(rawBody, &body); err != nil || body.SubmissionDeadline.IsZero() {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
@@ -576,6 +592,7 @@ func (h *GeneralApplicationHandler) AdminUpdateSettings(c *gin.Context) {
 	settings.SubmissionDeadline = body.SubmissionDeadline
 	settings.ClosedHeading = strings.TrimSpace(body.ClosedHeading)
 	settings.ClosedMessage = strings.TrimSpace(body.ClosedMessage)
+	settings.RejectionIntroText = strings.TrimSpace(body.RejectionIntroText)
 	settings.UpdatedByEmail = adminEmail
 
 	if err == gorm.ErrRecordNotFound {
@@ -596,15 +613,48 @@ func (h *GeneralApplicationHandler) AdminUpdateSettings(c *gin.Context) {
 	if responseMessage == "" {
 		responseMessage = defaultClosedMessage
 	}
+	responseRejectionIntro := settings.RejectionIntroText
+	if responseRejectionIntro == "" {
+		responseRejectionIntro = defaultRejectionIntroText
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"recruitment_opens_at": settings.RecruitmentOpensAt,
 		"submission_deadline":  settings.SubmissionDeadline,
 		"closed_heading":       responseHeading,
 		"closed_message":       responseMessage,
+		"rejection_intro_text": responseRejectionIntro,
 		"is_recruitment_open":  settings.IsRecruitmentOpen(time.Now()),
 		"updated_by_email":     settings.UpdatedByEmail,
 	})
+}
+
+// AdminPreviewRejectionEmail renders the rejection email exactly as
+// SendGeneralApplicationRejection would for a real applicant, using the
+// given (possibly unsaved) intro text. It calls the same
+// email.RenderGeneralApplicationRejection used when actually sending — both
+// individually and from the bulk sweep — so the preview can never drift from
+// the real email. Sample name matches PreviewInterviewSettings's convention.
+func (h *GeneralApplicationHandler) AdminPreviewRejectionEmail(c *gin.Context) {
+	var input struct {
+		RejectionIntroText string `json:"rejection_intro_text"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	introText := input.RejectionIntroText
+	if strings.TrimSpace(introText) == "" {
+		introText = defaultRejectionIntroText
+	}
+
+	subject, html, err := email.RenderGeneralApplicationRejection("Alex", "Jones", generalApplicationYear, introText)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to render preview"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"subject": subject, "html": html})
 }
 
 // requesterIsOnTeam resolves a user's admin team the same way the frontend

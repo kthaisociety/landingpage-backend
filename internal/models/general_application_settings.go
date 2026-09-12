@@ -26,9 +26,15 @@ type GeneralApplicationSettings struct {
 	// ClosedHeading and ClosedMessage are the /apply closed screen's copy.
 	// An empty value means "not yet configured" — same default-fallback
 	// convention as SubmissionDeadline (see defaultClosedHeading/Message).
-	ClosedHeading  string `gorm:"type:text;not null;default:''" json:"closed_heading"`
-	ClosedMessage  string `gorm:"type:text;not null;default:''" json:"closed_message"`
-	UpdatedByEmail string `gorm:"type:text;not null;default:''" json:"updated_by_email"`
+	ClosedHeading string `gorm:"type:text;not null;default:''" json:"closed_heading"`
+	ClosedMessage string `gorm:"type:text;not null;default:''" json:"closed_message"`
+	// RejectionIntroText is the admin-editable body of the "not selected"
+	// email sent to applicants who weren't accepted — see
+	// email.RenderGeneralApplicationRejection. Empty means "not yet
+	// configured" — same default-fallback convention as ClosedHeading/
+	// ClosedMessage (see defaultRejectionIntroText).
+	RejectionIntroText string `gorm:"type:text;not null;default:''" json:"rejection_intro_text"`
+	UpdatedByEmail     string `gorm:"type:text;not null;default:''" json:"updated_by_email"`
 }
 
 // IsRecruitmentOpen reports whether the public site should show Apply CTAs

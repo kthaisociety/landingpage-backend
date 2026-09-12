@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -285,17 +286,17 @@ func (h *GeneralApplicationHandler) AdminFinalizeDecision(c *gin.Context) {
 		return
 	}
 
-	go func(application models.GeneralApplication) {
-		var sendErr error
-		if application.Status == models.GeneralApplicationStatusAccepted {
-			sendErr = email.SendGeneralApplicationAcceptance(application)
-		} else {
-			sendErr = email.SendGeneralApplicationRejection(application)
-		}
-		if sendErr != nil {
-			log.Printf("failed to send finalize decision email for %s (%s): %v", application.Id, application.Status, sendErr)
-		}
-	}(application)
+	// Accepted applicants get no direct email here — onboarding-service's own
+	// "start onboarding" email (sent via notifyOnboardingService below) is
+	// their welcome notice, and now carries the assigned team too. Only
+	// rejection needs a one-off email straight from this handler.
+	if application.Status == models.GeneralApplicationStatusRejected {
+		go func(application models.GeneralApplication) {
+			if err := h.sendRejectionEmailAndMark(application); err != nil {
+				log.Printf("failed to send finalize rejection email for %s: %v", application.Id, err)
+			}
+		}(application)
+	}
 
 	if application.Status == models.GeneralApplicationStatusAccepted {
 		go notifyOnboardingService(h.cfg, application.Id.String(), application.FirstName, application.LastName, application.Email, application.AssignedTeam)
@@ -309,3 +310,156 @@ func (h *GeneralApplicationHandler) AdminFinalizeDecision(c *gin.Context) {
 // "not found" (404) and genuine DB errors (500), since gorm.Transaction only
 // gives the callback's returned error back to the caller.
 var errApplicationNotFinalizable = errors.New("application not eligible for a finalize decision")
+
+// sendRejectionEmailAndMark sends the rejection email for application and,
+// on success, stamps RejectionEmailSentAt — the one signal both this
+// individual finalize-decision path and the end-of-cycle bulk sweep (see
+// AdminSendRejectionsBulk) rely on to never email the same applicant twice.
+func (h *GeneralApplicationHandler) sendRejectionEmailAndMark(application models.GeneralApplication) error {
+	settings, err := h.getGeneralApplicationSettings()
+	if err != nil {
+		return fmt.Errorf("failed to load application settings: %w", err)
+	}
+	if err := email.SendGeneralApplicationRejection(application, settings.RejectionIntroText); err != nil {
+		return err
+	}
+	now := time.Now()
+	if err := h.db.Model(&models.GeneralApplication{}).Where("id = ?", application.Id).Update("rejection_email_sent_at", now).Error; err != nil {
+		log.Printf("ATTENTION: rejection email for application %s was sent but not recorded — verify manually before resending: %v", application.Id, err)
+	}
+	return nil
+}
+
+// pendingRejectionApplications finds every application from this
+// recruitment cycle that wasn't accepted, didn't withdraw on its own, and
+// hasn't already been sent a rejection email. This deliberately reaches
+// further than AdminFinalizeDecision ever does: isFinalizeEligible only
+// lets an admin decide applicants who were actually interviewed, so anyone
+// never interviewed, or marked ineligible, would otherwise never reach a
+// terminal decision or hear back at all. Shared by AdminSendRejectionsBulk
+// and its preview.
+func (h *GeneralApplicationHandler) pendingRejectionApplications() ([]models.GeneralApplication, error) {
+	var applications []models.GeneralApplication
+	err := h.db.
+		Where("application_year = ? AND status NOT IN ? AND rejection_email_sent_at IS NULL",
+			generalApplicationYear,
+			[]string{string(models.GeneralApplicationStatusAccepted), string(models.GeneralApplicationStatusWithdrawn)},
+		).
+		Find(&applications).Error
+	return applications, err
+}
+
+// AdminSendRejectionsBulkPreview reports how many applications the next
+// AdminSendRejectionsBulk call would email, without sending anything — lets
+// the admin UI confirm the count before committing. Also reports whether the
+// requester is allowed to actually send (only the head of IT) and whether
+// the finalize phase has been closed yet, which AdminSendRejectionsBulk
+// requires.
+func (h *GeneralApplicationHandler) AdminSendRejectionsBulkPreview(c *gin.Context) {
+	userID, _, ok := getAdminIdentity(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	phase, err := h.getFinalizeRecruitmentPhase()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load finalize phase"})
+		return
+	}
+	canSend, err := requesterIsHeadOfTeam(h.db, userID, "IT")
+	if err != nil {
+		canSend = false
+	}
+	if phase.ClosedAt == nil {
+		c.JSON(http.StatusOK, gin.H{"count": 0, "can_send": false, "phase_closed": false})
+		return
+	}
+
+	applications, err := h.pendingRejectionApplications()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load applications"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"count": len(applications), "can_send": canSend, "phase_closed": true})
+}
+
+// AdminSendRejectionsBulk is restricted to the head of IT — bulk-emailing
+// every remaining applicant, and stamping a terminal decision on
+// applications that were never individually decided, is disruptive and hard
+// to undo, the same reasoning as TeamQuestionsHandler.AdminSendBulk. Requires
+// the finalize phase to have been closed at least once (see
+// AdminCloseFinalizePhase): this is meant to run once recruitment for the
+// cycle has genuinely concluded — after acceptances have gone out and new
+// members are being onboarded — not mid-process.
+func (h *GeneralApplicationHandler) AdminSendRejectionsBulk(c *gin.Context) {
+	userID, adminEmail, ok := getAdminIdentity(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	isHeadOfIT, err := requesterIsHeadOfTeam(h.db, userID, "IT")
+	if err != nil || !isHeadOfIT {
+		c.JSON(http.StatusForbidden, gin.H{"error": "only the head of IT can bulk-send rejection emails"})
+		return
+	}
+	phase, err := h.getFinalizeRecruitmentPhase()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load finalize phase"})
+		return
+	}
+	if phase.ClosedAt == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "the finalize phase must be closed before bulk-sending rejections"})
+		return
+	}
+
+	sent, failed, err := h.SendPendingRejections(adminEmail)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to send rejection emails"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"sent": sent, "failed": failed})
+}
+
+// SendPendingRejections emails the rejection notice to every application
+// pendingRejectionApplications finds. Applications that never went through
+// AdminFinalizeDecision (never interviewed, or marked ineligible) are
+// stamped rejected here, since this bulk sweep is their only path to a
+// terminal decision; one already marked rejected (e.g. an earlier send that
+// failed) is left as-is, just retried.
+func (h *GeneralApplicationHandler) SendPendingRejections(adminEmail string) (sent int, failed []string, err error) {
+	applications, err := h.pendingRejectionApplications()
+	if err != nil {
+		return 0, nil, err
+	}
+	if len(applications) == 0 {
+		return 0, nil, nil
+	}
+
+	settings, err := h.getGeneralApplicationSettings()
+	if err != nil {
+		return 0, nil, err
+	}
+
+	failed = []string{}
+	for _, application := range applications {
+		if sendErr := email.SendGeneralApplicationRejection(application, settings.RejectionIntroText); sendErr != nil {
+			log.Printf("failed to send bulk rejection email for application %s: %v", application.Id, sendErr)
+			failed = append(failed, application.Id.String())
+			continue
+		}
+
+		now := time.Now()
+		updates := map[string]interface{}{"rejection_email_sent_at": now}
+		if application.Status != models.GeneralApplicationStatusRejected {
+			updates["status"] = models.GeneralApplicationStatusRejected
+			updates["finalized_by_email"] = adminEmail
+			updates["finalized_at"] = now
+		}
+		if err := h.db.Model(&models.GeneralApplication{}).Where("id = ?", application.Id).Updates(updates).Error; err != nil {
+			log.Printf("ATTENTION: rejection email for application %s was sent but not recorded — verify manually before resending: %v", application.Id, err)
+		}
+		sent++
+	}
+
+	return sent, failed, nil
+}

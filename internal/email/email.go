@@ -406,61 +406,63 @@ func SendGeneralApplicationConfirmation(application models.GeneralApplication) e
 	return sendEmail(application.Email, "KTH AI Society application received", htmlBody.String())
 }
 
-// SendGeneralApplicationAcceptance sends the acceptance email once an admin
-// finalizes an interviewed applicant as accepted, in finalize god mode. This
-// is separate from onboarding proper (account creation etc.) — it's the
-// "you're in, more details soon" notice.
-func SendGeneralApplicationAcceptance(application models.GeneralApplication) error {
-	tmpl, err := parseEmailTemplate("application", "acceptance.html")
-	if err != nil {
-		return fmt.Errorf("failed to parse templates: %w", err)
-	}
-
-	data := GeneralApplicationEmailData{
-		EmailData:   newEmailData(),
-		Application: application,
-	}
-	data.Profile = models.Profile{
-		Email:     application.Email,
-		FirstName: application.FirstName,
-		LastName:  application.LastName,
-	}
-	data.URL = "https://kthais.com/"
-
-	var htmlBody bytes.Buffer
-	if err := tmpl.ExecuteTemplate(&htmlBody, "base", data); err != nil {
-		return fmt.Errorf("failed to execute template: %w", err)
-	}
-
-	return sendEmail(application.Email, "Welcome to KTH AI Society!", htmlBody.String())
-}
-
-// SendGeneralApplicationRejection sends the "not selected this time" email
-// once an admin finalizes an interviewed applicant as rejected, in finalize
-// god mode.
-func SendGeneralApplicationRejection(application models.GeneralApplication) error {
+// RenderGeneralApplicationRejection renders the "not selected this time"
+// email's subject and HTML body for the given recipient, without sending it.
+// Mirrors RenderInterviewInvite/RenderTeamQuestionsInvite: the single
+// implementation of the rejection email's structure, shared by
+// SendGeneralApplicationRejection and the admin settings preview endpoint, so
+// a preview can never drift from what actually sends. templateText may
+// contain {{first_name}} and {{year}} placeholders, replaced by simple string
+// substitution — never executed as a Go template, since this text is saved
+// by an admin, not a developer.
+func RenderGeneralApplicationRejection(firstName, lastName string, applicationYear int, templateText string) (subject, html string, err error) {
 	tmpl, err := parseEmailTemplate("application", "rejection.html")
 	if err != nil {
-		return fmt.Errorf("failed to parse templates: %w", err)
+		return "", "", fmt.Errorf("failed to parse rejection template: %w", err)
 	}
 
-	data := GeneralApplicationEmailData{
-		EmailData:   newEmailData(),
-		Application: application,
+	// Safe string interpolation — no Go template execution of user-supplied text.
+	rendered := strings.NewReplacer(
+		"{{first_name}}", template.HTMLEscapeString(firstName),
+		"{{year}}", template.HTMLEscapeString(fmt.Sprintf("%d", applicationYear)),
+	).Replace(templateText)
+	// Convert newlines to <br> so plain-text line breaks survive in HTML.
+	rendered = strings.ReplaceAll(rendered, "\n", "<br>")
+
+	type rejectionEmailData struct {
+		EmailData
+		RenderedBody template.HTML
+	}
+
+	data := rejectionEmailData{
+		EmailData:    newEmailData(),
+		RenderedBody: template.HTML(rendered), // #nosec G203 — sanitised above
 	}
 	data.Profile = models.Profile{
-		Email:     application.Email,
-		FirstName: application.FirstName,
-		LastName:  application.LastName,
+		FirstName: firstName,
+		LastName:  lastName,
 	}
 	data.URL = "https://kthais.com/"
 
 	var htmlBody bytes.Buffer
 	if err := tmpl.ExecuteTemplate(&htmlBody, "base", data); err != nil {
-		return fmt.Errorf("failed to execute template: %w", err)
+		return "", "", fmt.Errorf("failed to execute rejection template: %w", err)
 	}
 
-	return sendEmail(application.Email, "Your KTH AI Society application", htmlBody.String())
+	return "Your KTH AI Society application", htmlBody.String(), nil
+}
+
+// SendGeneralApplicationRejection sends the "not selected this time" email —
+// either from an individual finalize decision, or from the end-of-cycle bulk
+// sweep (see AdminSendRejectionsBulk in the handlers package). templateText
+// is the admin-editable intro (GeneralApplicationSettings.RejectionIntroText,
+// already defaulted by the caller if unset).
+func SendGeneralApplicationRejection(application models.GeneralApplication, templateText string) error {
+	subject, html, err := RenderGeneralApplicationRejection(application.FirstName, application.LastName, application.ApplicationYear, templateText)
+	if err != nil {
+		return err
+	}
+	return sendEmail(application.Email, subject, html)
 }
 
 // RenderOnboardingEmail renders a single onboarding-flow email's HTML body
