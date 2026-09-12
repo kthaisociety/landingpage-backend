@@ -579,14 +579,32 @@ func (h *GeneralApplicationHandler) SendPendingRejections(adminEmail string) (se
 			continue
 		}
 
+		// The email is already sent and claimed at this point — this write is
+		// "just" bookkeeping (Status/FinalizedAt), but a transient failure
+		// here (e.g. a momentary DB hiccup) would otherwise strand the
+		// application in a self-contradictory state forever: emailed and
+		// excluded from any future sweep (via the claim above), yet still
+		// sitting in a non-terminal status with no reconciliation path.
+		// Retried a few times before giving up, same reasoning as
+		// notifyOnboardingService's retries.
 		now := time.Now()
 		updates := map[string]interface{}{
 			"status":             models.GeneralApplicationStatusRejected,
 			"finalized_by_email": adminEmail,
 			"finalized_at":       now,
 		}
-		if err := h.db.Model(&models.GeneralApplication{}).Where("id = ?", application.Id).Updates(updates).Error; err != nil {
-			log.Printf("ATTENTION: rejection email for application %s was sent but the terminal status was not recorded — verify manually: %v", application.Id, err)
+		var updateErr error
+		for attempt := 1; attempt <= 3; attempt++ {
+			updateErr = h.db.Model(&models.GeneralApplication{}).Where("id = ?", application.Id).Updates(updates).Error
+			if updateErr == nil {
+				break
+			}
+			if attempt < 3 {
+				time.Sleep(200 * time.Millisecond)
+			}
+		}
+		if updateErr != nil {
+			log.Printf("ATTENTION: rejection email for application %s was sent but the terminal status was not recorded after retries — it is stuck non-terminal even though it was emailed; fix its status manually: %v", application.Id, updateErr)
 		}
 		sent++
 	}
