@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"testing"
+	"time"
 
 	"backend/internal/config"
 	"backend/internal/models"
@@ -308,5 +309,194 @@ func TestFinalizeRecruitmentPhase(t *testing.T) {
 		decisionRec := doJSONRequest(t, engine, "POST", "/api/v1/applications/admin/"+appID.String()+"/finalize",
 			map[string]string{"decision": "rejected"}, plainAdmin.cookie)
 		require.Equal(t, http.StatusForbidden, decisionRec.Code)
+	})
+}
+
+// TestSendRejectionsBulk exercises the end-of-cycle bulk rejection sweep:
+// blocked until the finalize phase has been closed, restricted to the head
+// of IT, and — the actual point of the feature — reaches applications
+// AdminFinalizeDecision itself never could (never interviewed, or marked
+// ineligible), while leaving accepted/withdrawn/already-rejected
+// applications alone (an already-rejected one went through
+// AdminFinalizeDecision, which already attempted its own send — the bulk
+// sweep never retries those, see pendingRejectionApplications). Needs real
+// Postgres, so it skips when .env isn't present, like its siblings above.
+func TestSendRejectionsBulk(t *testing.T) {
+	envFile := "../../.env"
+	if _, err := os.Stat(envFile); err != nil {
+		t.Skip("skipping: no .env file present (this test needs local Postgres)")
+	}
+	require.NoError(t, godotenv.Load(envFile))
+
+	cfg, err := config.LoadConfig()
+	require.NoError(t, err)
+
+	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=%s",
+		cfg.Database.Host, cfg.Database.User, cfg.Database.Password, cfg.Database.DBName, cfg.Database.Port, cfg.Database.SSLMode)
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Skipf("skipping: could not connect to Postgres: %v", err)
+	}
+	require.NoError(t, db.AutoMigrate(
+		&models.User{}, &models.Profile{}, &models.GeneralApplication{},
+		&models.TeamMember{}, &models.FinalizeRecruitmentPhase{}, &models.GeneralApplicationSettings{},
+	))
+
+	require.NoError(t, db.Exec("DELETE FROM finalize_recruitment_phases").Error)
+
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	api := engine.Group("/api/v1")
+	NewGeneralApplicationHandler(db, cfg, nil).Register(api)
+
+	itAdmin := mustCreateTeamAdmin(t, db, cfg, "bulk-reject-admin-it@seed.local", "IT")
+	plainAdmin := mustCreateAdmin(t, db, cfg, "bulk-reject-admin-plain@seed.local")
+	t.Cleanup(func() {
+		emails := []string{itAdmin.email, plainAdmin.email}
+		db.Where("email IN ?", emails).Unscoped().Delete(&models.Profile{})
+		db.Where("email IN ?", emails).Unscoped().Delete(&models.User{})
+		db.Exec("DELETE FROM finalize_recruitment_phases")
+	})
+
+	newApplication := func(t *testing.T, status models.GeneralApplicationStatus, rejectionEmailSentAt *time.Time) uuid.UUID {
+		t.Helper()
+		id := uuid.New()
+		app := models.GeneralApplication{
+			Id:                   id,
+			ApplicationYear:      generalApplicationYear,
+			FirstName:            "Bulk",
+			LastName:             "Candidate",
+			Email:                fmt.Sprintf("bulk-reject-candidate-%s@seed.local", id.String()[:8]),
+			EmailNormalized:      fmt.Sprintf("bulk-reject-candidate-%s@seed.local", id.String()[:8]),
+			Programme:            "Computer Science",
+			GraduationYear:       2027,
+			LinkedinURL:          "https://linkedin.com/in/bulk-reject-candidate",
+			ResumeFileName:       "resume.pdf",
+			ResumeContentType:    "application/pdf",
+			Teams:                []string{"Development"},
+			Availability:         "4-6 hours",
+			Contribution:         "Contribution text.",
+			Status:               status,
+			RejectionEmailSentAt: rejectionEmailSentAt,
+		}
+		require.NoError(t, db.Create(&app).Error)
+		t.Cleanup(func() {
+			db.Unscoped().Delete(&app)
+		})
+		return id
+	}
+
+	pastSend := time.Now().Add(-24 * time.Hour)
+	pending := newApplication(t, models.GeneralApplicationStatusPending, nil)
+	ineligible := newApplication(t, models.GeneralApplicationStatusIneligible, nil)
+	accepted := newApplication(t, models.GeneralApplicationStatusAccepted, nil)
+	withdrawn := newApplication(t, models.GeneralApplicationStatusWithdrawn, nil)
+	// Both already went through an individual AdminFinalizeDecision — the
+	// bulk sweep must never touch either, regardless of whether their own
+	// send is still unmarked (e.g. still in flight, or failed with no
+	// reliable way to tell) or already marked sent.
+	rejectedUnmarked := newApplication(t, models.GeneralApplicationStatusRejected, nil)
+	rejectedAlreadyEmailed := newApplication(t, models.GeneralApplicationStatusRejected, &pastSend)
+
+	t.Run("preview reports phase not closed and refuses to send", func(t *testing.T) {
+		previewRec := doJSONRequest(t, engine, "GET", "/api/v1/applications/admin/finalize/rejections/preview", nil, itAdmin.cookie)
+		require.Equal(t, http.StatusOK, previewRec.Code)
+		var preview struct {
+			Count       int  `json:"count"`
+			CanSend     bool `json:"can_send"`
+			PhaseClosed bool `json:"phase_closed"`
+		}
+		require.NoError(t, json.Unmarshal(previewRec.Body.Bytes(), &preview))
+		require.False(t, preview.PhaseClosed)
+		require.Equal(t, 0, preview.Count)
+
+		sendRec := doJSONRequest(t, engine, "POST", "/api/v1/applications/admin/finalize/rejections/send", nil, itAdmin.cookie)
+		require.Equal(t, http.StatusBadRequest, sendRec.Code)
+	})
+
+	// Open then immediately close the phase — this test only cares about it
+	// having been closed at least once, not about the accept/reject flow the
+	// phase otherwise gates.
+	openRec := doJSONRequest(t, engine, "POST", "/api/v1/applications/admin/finalize/phase/open",
+		map[string]string{"confirm": finalizePhaseOpenConfirmPhrase}, itAdmin.cookie)
+	require.Equal(t, http.StatusOK, openRec.Code)
+	closeRec := doJSONRequest(t, engine, "POST", "/api/v1/applications/admin/finalize/phase/close",
+		map[string]string{"confirm": finalizePhaseCloseConfirmPhrase}, itAdmin.cookie)
+	require.Equal(t, http.StatusOK, closeRec.Code)
+
+	t.Run("preview counts every unaccepted, unemailed application once the phase is closed", func(t *testing.T) {
+		previewRec := doJSONRequest(t, engine, "GET", "/api/v1/applications/admin/finalize/rejections/preview", nil, itAdmin.cookie)
+		require.Equal(t, http.StatusOK, previewRec.Code)
+		var preview struct {
+			Count       int  `json:"count"`
+			CanSend     bool `json:"can_send"`
+			PhaseClosed bool `json:"phase_closed"`
+		}
+		require.NoError(t, json.Unmarshal(previewRec.Body.Bytes(), &preview))
+		require.True(t, preview.PhaseClosed)
+		require.True(t, preview.CanSend)
+		// pending and ineligible only — accepted/withdrawn/already-rejected excluded.
+		require.GreaterOrEqual(t, preview.Count, 2)
+
+		plainPreviewRec := doJSONRequest(t, engine, "GET", "/api/v1/applications/admin/finalize/rejections/preview", nil, plainAdmin.cookie)
+		require.Equal(t, http.StatusOK, plainPreviewRec.Code)
+		var plainPreview struct {
+			CanSend bool `json:"can_send"`
+		}
+		require.NoError(t, json.Unmarshal(plainPreviewRec.Body.Bytes(), &plainPreview))
+		require.False(t, plainPreview.CanSend)
+	})
+
+	t.Run("only the head of IT can trigger the send", func(t *testing.T) {
+		rec := doJSONRequest(t, engine, "POST", "/api/v1/applications/admin/finalize/rejections/send", nil, plainAdmin.cookie)
+		require.Equal(t, http.StatusForbidden, rec.Code)
+	})
+
+	t.Run("sending targets only pending/ineligible, leaving accepted/withdrawn/already-rejected alone", func(t *testing.T) {
+		rec := doJSONRequest(t, engine, "POST", "/api/v1/applications/admin/finalize/rejections/send", nil, itAdmin.cookie)
+		require.Equal(t, http.StatusOK, rec.Code)
+		var result struct {
+			Sent   int      `json:"sent"`
+			Failed []string `json:"failed"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &result))
+
+		// No SES configured in this test environment, so every real send
+		// attempt fails — what matters here is *which* applications were
+		// attempted, not that the email itself went out (see
+		// email_test.go's captureMailer for that).
+		attempted := append([]string{}, result.Failed...)
+		require.Contains(t, attempted, pending.String())
+		require.Contains(t, attempted, ineligible.String())
+		require.NotContains(t, attempted, accepted.String())
+		require.NotContains(t, attempted, withdrawn.String())
+		require.NotContains(t, attempted, rejectedUnmarked.String())
+		require.NotContains(t, attempted, rejectedAlreadyEmailed.String())
+
+		// A failed send must never be recorded as if it succeeded.
+		var untouched models.GeneralApplication
+		require.NoError(t, db.First(&untouched, "id = ?", pending).Error)
+		require.Nil(t, untouched.RejectionEmailSentAt)
+		require.Equal(t, models.GeneralApplicationStatusPending, untouched.Status)
+	})
+
+	t.Run("claiming is atomic — only the first of two racing callers wins", func(t *testing.T) {
+		handler := NewGeneralApplicationHandler(db, cfg, nil)
+		candidate := newApplication(t, models.GeneralApplicationStatusPending, nil)
+
+		firstClaimed, err := handler.claimRejectionEmail(candidate)
+		require.NoError(t, err)
+		require.True(t, firstClaimed, "the first caller must win the claim")
+
+		secondClaimed, err := handler.claimRejectionEmail(candidate)
+		require.NoError(t, err)
+		require.False(t, secondClaimed, "a second caller racing the same application must lose the claim")
+
+		// Releasing (e.g. because the send that followed the winning claim
+		// failed) must make the application claimable again.
+		handler.releaseRejectionEmailClaim(candidate)
+		reclaimed, err := handler.claimRejectionEmail(candidate)
+		require.NoError(t, err)
+		require.True(t, reclaimed, "releasing a claim must allow a later retry to claim it again")
 	})
 }

@@ -148,6 +148,16 @@ type onboardingNotifyRequest struct {
 	AssignedTeam  string `json:"assigned_team"`
 }
 
+// onboardingNotifyMaxAttempts/onboardingNotifyRetryDelay smooth over a
+// transient failure (a redeploy, a network blip) in notifyOnboardingService
+// — now that AdminFinalizeDecision no longer sends its own acceptance email,
+// this call is a freshly-accepted applicant's *only* welcome notice, so one
+// flaky attempt must not be the difference between "welcomed" and "silently
+// never heard from again."
+const onboardingNotifyMaxAttempts = 3
+
+var onboardingNotifyRetryDelay = 2 * time.Second
+
 // notifyOnboardingService hands off a person to onboarding-service so it
 // can run account provisioning — either a newly accepted applicant
 // (applicationID set, called from AdminFinalizeDecision) or an admin's
@@ -157,13 +167,41 @@ type onboardingNotifyRequest struct {
 // saved, so a delivery failure here must never roll back or block the
 // admin's accept action; for the manual path there's nothing to roll back
 // in the first place. Skipped entirely (not an error) when
-// OnboardingServiceURL isn't configured — expected in any environment
-// where onboarding-service isn't deployed yet.
-func notifyOnboardingService(cfg *config.Config, applicationID, firstName, lastName, personalEmail, assignedTeam string) {
+// OnboardingServiceURL isn't configured — expected in any environment where
+// onboarding-service isn't deployed yet. Retries up to
+// onboardingNotifyMaxAttempts times before giving up; returns whether it
+// ultimately succeeded so callers with a GeneralApplication to update (see
+// AdminFinalizeDecision) can record that durably instead of only logging it
+// — a failure here otherwise vanishes into server logs nobody's watching,
+// leaving an accepted applicant permanently un-notified with no visible sign
+// anything went wrong.
+func notifyOnboardingService(cfg *config.Config, applicationID, firstName, lastName, personalEmail, assignedTeam string) (succeeded bool) {
 	if cfg.OnboardingServiceURL == "" {
-		return
+		return false
 	}
 
+	for attempt := 1; attempt <= onboardingNotifyMaxAttempts; attempt++ {
+		if notifyOnboardingServiceOnce(cfg, applicationID, firstName, lastName, personalEmail, assignedTeam) {
+			return true
+		}
+		if attempt < onboardingNotifyMaxAttempts {
+			time.Sleep(onboardingNotifyRetryDelay)
+		}
+	}
+	log.Printf("ATTENTION: onboarding notify permanently failed after %d attempts for %s %s (application %s) — they have not received any welcome notice; retry manually", onboardingNotifyMaxAttempts, firstName, lastName, logID(applicationID))
+	return false
+}
+
+// logID renders an empty applicationID (the manual-onboarding case) as
+// something more legible than "" in a log line.
+func logID(applicationID string) string {
+	if applicationID == "" {
+		return "manual, no application"
+	}
+	return applicationID
+}
+
+func notifyOnboardingServiceOnce(cfg *config.Config, applicationID, firstName, lastName, personalEmail, assignedTeam string) bool {
 	body, err := json.Marshal(onboardingNotifyRequest{
 		ApplicationID: applicationID,
 		FirstName:     firstName,
@@ -173,13 +211,13 @@ func notifyOnboardingService(cfg *config.Config, applicationID, firstName, lastN
 	})
 	if err != nil {
 		log.Printf("onboarding notify: failed to marshal request for %s %s: %v", firstName, lastName, err)
-		return
+		return false
 	}
 
 	req, err := http.NewRequest(http.MethodPost, cfg.OnboardingServiceURL+"/notify", bytes.NewReader(body))
 	if err != nil {
 		log.Printf("onboarding notify: failed to build request for %s %s: %v", firstName, lastName, err)
-		return
+		return false
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Service-Secret", cfg.OnboardingServiceSecret)
@@ -188,10 +226,12 @@ func notifyOnboardingService(cfg *config.Config, applicationID, firstName, lastN
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Printf("onboarding notify: request failed for %s %s: %v", firstName, lastName, err)
-		return
+		return false
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		log.Printf("onboarding notify: onboarding-service returned %d for %s %s", resp.StatusCode, firstName, lastName)
+		return false
 	}
+	return true
 }
