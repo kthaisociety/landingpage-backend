@@ -139,10 +139,9 @@ func LoadConfig() (*Config, error) {
 	cfg.OAuth.GoogleClientSecret = getEnv("GOOGLE_CLIENT_SECRET", "")
 
 	cfg.SessionKey = getEnv("SESSION_KEY", "")
-	// Development mode is on unless GIN_MODE is explicitly set to "release".
-	// This means local dev (GIN_MODE unset or "debug") gets seeders and dev bypasses,
-	// while production (GIN_MODE=release) does not.
-	cfg.DevelopmentMode = os.Getenv("GIN_MODE") != "release"
+	// Development mode must be set via env var DEVELOPMENT_MODE=true
+	// Defaults to false
+	cfg.DevelopmentMode = strings.EqualFold(os.Getenv("DEVELOPMENT_MODE"), "true")
 
 	cfg.CookieDomain = normalizeCookieDomain(getEnv("COOKIE_DOMAIN", ""))
 	cfg.JwtCookieSecure = strings.EqualFold(getEnv("SECURE_COOKIE", "false"), "true")
