@@ -15,7 +15,6 @@ import (
 	"backend/internal/handlers"
 	"backend/internal/luma"
 	"backend/internal/mailchimp"
-	"backend/internal/models"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-contrib/sessions"
@@ -116,34 +115,7 @@ func main() {
 	}
 
 	// Auto migrate the schema
-	err = db.AutoMigrate(
-		&models.User{},
-		&models.Profile{},
-		&models.Event{},
-		&models.Registration{},
-		&models.TeamMember{},
-		&models.BlobData{},
-		&models.JobListing{},
-		&models.Company{},
-		&models.Project{},
-		&models.ProjectMember{},
-		&models.Team{},
-		&models.TeamProjectPair{},
-		&models.TeamMemberPair{},
-		&models.GeneralApplication{},
-		&models.AdminInterviewNote{},
-		&models.ApplicationSharedNote{},
-		&models.ApplicationSharedNoteEntry{},
-		&models.NewsletterSubscription{},
-		&models.TeamQuestionsSubmission{},
-		&models.TeamQuestionsToken{},
-		&models.TeamQuestionsSettings{},
-		&models.TeamQuestion{},
-		&models.GeneralApplicationSettings{},
-		&models.FinalizeRecruitmentPhase{},
-		&models.TeamQuestionsDeliveryEvent{},
-	)
-	if err != nil {
+	if err := database.Migrate(db); err != nil {
 		log.Fatal("Failed to migrate database:", err)
 	}
 

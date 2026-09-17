@@ -13,6 +13,25 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
+
+    # The migration regression test needs a real Postgres: it asserts that
+    # AutoMigrate keeps the Registration/User foreign key on registrations,
+    # which only reproduces against a live server.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: kthais
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
     - uses: actions/checkout@v7
 
@@ -35,4 +54,6 @@ jobs:
         fi
 
     - name: Test
+      env:
+        MIGRATION_TEST_DSN: host=localhost user=postgres password=postgres dbname=kthais port=5432 sslmode=disable
       run: go test -v ./...
