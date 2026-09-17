@@ -20,11 +20,17 @@ import (
 // migrationTestDSN resolves a Postgres DSN from MIGRATION_TEST_DSN (how CI runs
 // this) or from a local .env (how the sibling handler tests run), and skips when
 // neither is available.
-func migrationTestDSN(t *testing.T) string {
+//
+// The returned flag reports whether the DSN was configured explicitly. An
+// explicit DSN means someone asked for these assertions to run, so an
+// unreachable server has to fail the test: skipping there would let CI report
+// success without ever checking the schema, which is the regression this file
+// exists to catch.
+func migrationTestDSN(t *testing.T) (dsn string, explicit bool) {
 	t.Helper()
 
 	if dsn := strings.TrimSpace(os.Getenv("MIGRATION_TEST_DSN")); dsn != "" {
-		return dsn
+		return dsn, true
 	}
 
 	envFile := "../../.env"
@@ -38,7 +44,24 @@ func migrationTestDSN(t *testing.T) string {
 
 	return fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=%s",
 		cfg.Database.Host, cfg.Database.User, cfg.Database.Password,
-		cfg.Database.DBName, cfg.Database.Port, cfg.Database.SSLMode)
+		cfg.Database.DBName, cfg.Database.Port, cfg.Database.SSLMode), false
+}
+
+// connectOrSkip opens dsn, failing rather than skipping when the DSN was
+// configured explicitly.
+func connectOrSkip(t *testing.T, dsn string, explicit bool) *gorm.DB {
+	t.Helper()
+
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err == nil {
+		return db
+	}
+	if explicit {
+		require.NoErrorf(t, err,
+			"MIGRATION_TEST_DSN is set, so Postgres must be reachable; refusing to skip and report success")
+	}
+	t.Skipf("skipping: could not connect to Postgres: %v", err)
+	return nil
 }
 
 // TestMigrateKeepsRegistrationUserForeignKey guards the startup migration path.
@@ -53,12 +76,8 @@ func migrationTestDSN(t *testing.T) string {
 // Dropping the tag, or a future gorm changing its inference again, has to fail
 // here rather than at boot on a deployed environment.
 func TestMigrateKeepsRegistrationUserForeignKey(t *testing.T) {
-	dsn := migrationTestDSN(t)
-
-	base, err := gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
-	if err != nil {
-		t.Skipf("skipping: could not connect to Postgres: %v", err)
-	}
+	dsn, explicit := migrationTestDSN(t)
+	base := connectOrSkip(t, dsn, explicit)
 
 	// Migrate into a throwaway schema so the test never touches whatever else
 	// lives in the target database.
