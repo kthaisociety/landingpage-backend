@@ -13,8 +13,12 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
-    # The rate limiter's tests (internal/middleware) need a real Redis and
-    # skip without one.
+
+    # Integration tests need real backing services:
+    # - Redis: the rate limiter's tests (internal/middleware) skip without one.
+    # - Postgres: the migration regression test asserts that AutoMigrate keeps
+    #   the Registration/User foreign key on registrations, which only
+    #   reproduces against a live server.
     services:
       redis:
         image: redis:7-alpine
@@ -25,6 +29,20 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: kthais
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
     - uses: actions/checkout@v7
 
@@ -47,4 +65,6 @@ jobs:
         fi
 
     - name: Test
+      env:
+        MIGRATION_TEST_DSN: host=localhost user=postgres password=postgres dbname=kthais port=5432 sslmode=disable
       run: go test -v ./...
