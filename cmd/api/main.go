@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"time"
@@ -160,24 +161,30 @@ func main() {
 	// Initialize router
 	r := gin.Default()
 
-	// Only trust X-Forwarded-For/X-Real-IP when the immediate connecting peer is on
-	// a private network (loopback/RFC1918/ULA) - i.e. a platform-managed load
-	// balancer or sidecar proxy sitting in front of this container, which is how
-	// most hosting setups (Render/Fly/Heroku-style, k8s ingress, ALB-to-task, a
-	// docker-compose reverse proxy) reach the app. A public internet client can't
-	// forge their RemoteAddr to look like it came from one of these ranges, so
-	// c.ClientIP() stays spoof-proof if there's no such proxy, while still
-	// resolving distinct real visitor IPs (instead of collapsing everyone onto the
-	// proxy's own IP) if there is one. Tighten this to the exact proxy IP/CIDR once
-	// the production network topology is confirmed.
-	if err := r.SetTrustedProxies([]string{
-		"127.0.0.0/8",
-		"10.0.0.0/8",
-		"172.16.0.0/12",
-		"192.168.0.0/16",
-		"::1/128",
-		"fc00::/7",
-	}); err != nil {
+	// Only trust X-Forwarded-For/X-Real-IP from the reverse proxy itself (Traefik, in the
+	// Dokploy stack), not from an entire private-address range - anything broader lets a
+	// sibling workload on the same private network spoof its own X-Forwarded-For and pick
+	// its own rate-limit identity. Resolved by DNS rather than hardcoded: Docker Swarm
+	// gives a service a stable Virtual IP that survives its own task restarts/rescheduling
+	// (it only changes if the Traefik service itself is torn down and recreated), so
+	// resolving at boot self-heals across redeploys without pinning an IP in source. A
+	// changed VIP while this process keeps running requires restarting it to pick up -
+	// acceptable since Traefik and this service are redeployed independently, not in
+	// lockstep, but worth knowing.
+	//
+	// Trust nothing if the lookup fails, rather than falling back to gin's own default of
+	// trusting every proxy: c.ClientIP() then just returns the raw peer, and every visitor
+	// behind Traefik collapses into one shared rate-limit bucket - degraded, not broken,
+	// and never silently spoofable.
+	var trustedProxies []string
+	if ips, err := net.LookupIP(cfg.TrustedProxyHost); err != nil {
+		log.Printf("Could not resolve trusted proxy host %q, forwarded headers will not be trusted: %v", cfg.TrustedProxyHost, err)
+	} else {
+		for _, ip := range ips {
+			trustedProxies = append(trustedProxies, ip.String())
+		}
+	}
+	if err := r.SetTrustedProxies(trustedProxies); err != nil {
 		log.Fatal("Failed to set trusted proxies:", err)
 	}
 
