@@ -67,18 +67,21 @@ func requesterAcceptTeam(db *gorm.DB, userID uuid.UUID) (string, error) {
 }
 
 // AdminOpenFinalizePhase opens the finalize recruitment phase, unlocking
-// AdminFinalizeDecision for every admin. Requires an IT admin and the exact
-// confirmation phrase. Also usable to re-open a previously closed phase (same
-// gate applies) — not a normal step, but not blocked either.
+// AdminFinalizeDecision for every admin. Requires specifically the head of
+// IT (not just any IT admin) and the exact confirmation phrase — opening is
+// at least as high-stakes as closing (it's what unlocks every admin's
+// accept/reject power in the first place), so it gets the same gate as
+// AdminCloseFinalizePhase. Also usable to re-open a previously closed phase
+// (same gate applies) — not a normal step, but not blocked either.
 func (h *GeneralApplicationHandler) AdminOpenFinalizePhase(c *gin.Context) {
 	userID, adminEmail, ok := getAdminIdentity(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
-	isIT, err := requesterIsOnTeam(h.db, userID, "IT")
-	if err != nil || !isIT {
-		c.JSON(http.StatusForbidden, gin.H{"error": "only IT admins can open the finalize phase"})
+	isHeadOfIT, err := requesterIsHeadOfTeam(h.db, userID, "IT")
+	if err != nil || !isHeadOfIT {
+		c.JSON(http.StatusForbidden, gin.H{"error": "only the head of IT can open the finalize phase"})
 		return
 	}
 

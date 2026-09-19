@@ -20,10 +20,10 @@ import (
 )
 
 // TestFinalizeRecruitmentPhase exercises the finalize phase end to end: no
-// decision can be made while it's closed, only an IT admin can open it, any
-// admin can act while it's open (with accept forced onto their own team, and
-// an admin with no team unable to accept at all), and only the head of IT —
-// not just any IT admin — can close it.
+// decision can be made while it's closed, only the head of IT — not just any
+// IT admin — can open it, any admin can act while it's open (with accept
+// forced onto their own team, and an admin with no team unable to accept at
+// all), and only the head of IT can close it too.
 //
 // Like TestApplicationAndInterviewLifecycle, this needs real Postgres, so it
 // skips when .env isn't present.
@@ -140,9 +140,15 @@ func TestFinalizeRecruitmentPhase(t *testing.T) {
 		require.Equal(t, http.StatusForbidden, rec.Code)
 	})
 
-	t.Run("only IT admins can open the phase", func(t *testing.T) {
+	t.Run("only the head of IT can open the phase", func(t *testing.T) {
 		rec := doJSONRequest(t, engine, "POST", "/api/v1/applications/admin/finalize/phase/open",
 			map[string]string{"confirm": finalizePhaseOpenConfirmPhrase}, plainAdmin.cookie)
+		require.Equal(t, http.StatusForbidden, rec.Code)
+	})
+
+	t.Run("an IT team member who isn't its head cannot open the phase", func(t *testing.T) {
+		rec := doJSONRequest(t, engine, "POST", "/api/v1/applications/admin/finalize/phase/open",
+			map[string]string{"confirm": finalizePhaseOpenConfirmPhrase}, itMember.cookie)
 		require.Equal(t, http.StatusForbidden, rec.Code)
 	})
 
@@ -158,9 +164,9 @@ func TestFinalizeRecruitmentPhase(t *testing.T) {
 		require.False(t, status.IsOpen())
 	})
 
-	t.Run("an IT team member who isn't its head can also open the phase", func(t *testing.T) {
+	t.Run("the head of IT opens the phase", func(t *testing.T) {
 		rec := doJSONRequest(t, engine, "POST", "/api/v1/applications/admin/finalize/phase/open",
-			map[string]string{"confirm": finalizePhaseOpenConfirmPhrase}, itMember.cookie)
+			map[string]string{"confirm": finalizePhaseOpenConfirmPhrase}, itAdmin.cookie)
 		require.Equal(t, http.StatusOK, rec.Code)
 
 		statusRec := doJSONRequest(t, engine, "GET", "/api/v1/applications/admin/finalize/phase", nil, plainAdmin.cookie)
@@ -168,7 +174,7 @@ func TestFinalizeRecruitmentPhase(t *testing.T) {
 		var status models.FinalizeRecruitmentPhase
 		require.NoError(t, json.Unmarshal(statusRec.Body.Bytes(), &status))
 		require.True(t, status.IsOpen())
-		require.Equal(t, itMember.email, status.OpenedByEmail)
+		require.Equal(t, itAdmin.email, status.OpenedByEmail)
 	})
 
 	t.Run("an admin with no team cannot accept", func(t *testing.T) {
