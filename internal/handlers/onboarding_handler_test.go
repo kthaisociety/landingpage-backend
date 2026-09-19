@@ -49,7 +49,7 @@ func TestOnboardingHandler(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
 	api := engine.Group("/api/v1")
-	NewOnboardingHandler(db, cfg).Register(api)
+	NewOnboardingHandler(db, cfg, nil).Register(api)
 
 	newApplication := func(t *testing.T, status models.GeneralApplicationStatus) models.GeneralApplication {
 		t.Helper()

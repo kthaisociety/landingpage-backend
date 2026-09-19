@@ -268,18 +268,19 @@ func setupRoutes(r *gin.Engine, db *gorm.DB, mailchimpApi *mailchimp.MailchimpAP
 	// Register all handlers
 	allHandlers := []handlers.Handler{
 		handlers.NewAuthHandler(db, mailchimpApi, cfg),
-		handlers.NewNewsletterHandler(db, lumaApi),
+		handlers.NewNewsletterHandler(db),
 		handlers.NewProfileHandler(db, mailchimpApi, cfg),
 		handlers.NewAdminHandler(db, cfg),
 		handlers.NewCompanyHandler(db, cfg),
 		handlers.NewJobListingHandler(db, cfg),
 		handlers.NewProjectHandler(db, cfg),
 		handlers.NewTeamHandler(db, cfg),
-		handlers.NewGeneralApplicationHandler(db, cfg, lumaApi),
+		handlers.NewGeneralApplicationHandler(db, cfg),
 		teamQuestionsHandler,
-		handlers.NewOnboardingHandler(db, cfg),
+		handlers.NewOnboardingHandler(db, cfg, lumaApi),
 		handlers.NewManualOnboardingHandler(cfg),
 		handlers.NewOffboardingHandler(db, cfg),
+		handlers.NewLumaHandler(cfg, lumaApi),
 	}
 
 	for _, h := range allHandlers {

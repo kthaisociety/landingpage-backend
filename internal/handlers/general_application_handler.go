@@ -3,7 +3,6 @@ package handlers
 import (
 	"backend/internal/config"
 	"backend/internal/email"
-	"backend/internal/luma"
 	"backend/internal/middleware"
 	"backend/internal/models"
 	"backend/internal/utils"
@@ -119,9 +118,8 @@ var allowedResumeContentTypes = map[string]struct{}{
 }
 
 type GeneralApplicationHandler struct {
-	db   *gorm.DB
-	cfg  *config.Config
-	luma *luma.LumaAPI
+	db  *gorm.DB
+	cfg *config.Config
 }
 
 func getAdminIdentity(c *gin.Context) (userID uuid.UUID, adminEmail string, ok bool) {
@@ -160,8 +158,8 @@ type generalApplicationInput struct {
 	NewsletterOptIn      bool
 }
 
-func NewGeneralApplicationHandler(db *gorm.DB, cfg *config.Config, lumaApi *luma.LumaAPI) *GeneralApplicationHandler {
-	return &GeneralApplicationHandler{db: db, cfg: cfg, luma: lumaApi}
+func NewGeneralApplicationHandler(db *gorm.DB, cfg *config.Config) *GeneralApplicationHandler {
+	return &GeneralApplicationHandler{db: db, cfg: cfg}
 }
 
 func (h *GeneralApplicationHandler) Register(r *gin.RouterGroup) {
@@ -326,7 +324,7 @@ func (h *GeneralApplicationHandler) Create(c *gin.Context) {
 
 	if input.NewsletterOptIn {
 		go func(application models.GeneralApplication) {
-			subscription, err := upsertNewsletterSubscription(h.db, newsletterSubscriptionFields{
+			if _, err := upsertNewsletterSubscription(h.db, newsletterSubscriptionFields{
 				FirstName:            application.FirstName,
 				LastName:             application.LastName,
 				Email:                application.Email,
@@ -338,13 +336,8 @@ func (h *GeneralApplicationHandler) Create(c *gin.Context) {
 				Interests:            application.Interests,
 				DataRetentionConsent: true,
 				Source:               models.NewsletterSourceApplicationOptIn,
-			})
-			if err != nil {
+			}); err != nil {
 				log.Printf("failed to store newsletter opt-in for application %s: %v", application.Id, err)
-				return
-			}
-			if err := h.luma.AddMember(subscription); err != nil {
-				log.Printf("newsletter opt-in: luma sync failed for %s: %v", subscription.Email, err)
 			}
 		}(application)
 	}

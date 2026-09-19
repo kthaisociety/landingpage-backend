@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"backend/internal/luma"
 	"backend/internal/middleware"
 	"backend/internal/models"
 	"backend/internal/validation"
@@ -18,12 +17,11 @@ import (
 )
 
 type NewsletterHandler struct {
-	db   *gorm.DB
-	luma *luma.LumaAPI
+	db *gorm.DB
 }
 
-func NewNewsletterHandler(db *gorm.DB, lumaApi *luma.LumaAPI) *NewsletterHandler {
-	return &NewsletterHandler{db: db, luma: lumaApi}
+func NewNewsletterHandler(db *gorm.DB) *NewsletterHandler {
+	return &NewsletterHandler{db: db}
 }
 
 func (h *NewsletterHandler) Register(r *gin.RouterGroup) {
@@ -55,7 +53,7 @@ func (h *NewsletterHandler) Subscribe(c *gin.Context) {
 		return
 	}
 
-	subscription, err := upsertNewsletterSubscription(h.db, newsletterSubscriptionFields{
+	if _, err := upsertNewsletterSubscription(h.db, newsletterSubscriptionFields{
 		FirstName:            strings.TrimSpace(body.FirstName),
 		LastName:             strings.TrimSpace(body.LastName),
 		Email:                strings.TrimSpace(body.Email),
@@ -67,15 +65,10 @@ func (h *NewsletterHandler) Subscribe(c *gin.Context) {
 		Interests:            body.Interests,
 		DataRetentionConsent: body.DataRetentionConsent,
 		Source:               models.NewsletterSourceForm,
-	})
-	if err != nil {
+	}); err != nil {
 		log.Printf("newsletter subscribe: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not subscribe"})
 		return
-	}
-
-	if err := h.luma.AddMember(subscription); err != nil {
-		log.Printf("newsletter subscribe: luma sync failed for %s: %v", subscription.Email, err)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})

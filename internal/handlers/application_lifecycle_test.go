@@ -89,7 +89,7 @@ func TestApplicationAndInterviewLifecycle(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
 	api := engine.Group("/api/v1")
-	NewGeneralApplicationHandler(db, cfg, nil).Register(api)
+	NewGeneralApplicationHandler(db, cfg).Register(api)
 	teamQuestionsNow := time.Date(2026, time.September, 6, 12, 0, 0, 0, teamQuestionsInviteTZ)
 	teamQuestionsHandler := NewTeamQuestionsHandler(db, cfg)
 	teamQuestionsHandler.now = func() time.Time { return teamQuestionsNow }

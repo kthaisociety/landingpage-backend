@@ -50,7 +50,7 @@ func TestApplicationSharedNotes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
 	api := engine.Group("/api/v1")
-	NewGeneralApplicationHandler(db, cfg, nil).Register(api)
+	NewGeneralApplicationHandler(db, cfg).Register(api)
 
 	adminA := mustCreateAdmin(t, db, cfg, "shared-notes-admin-a@seed.local")
 	adminB := mustCreateAdmin(t, db, cfg, "shared-notes-admin-b@seed.local")

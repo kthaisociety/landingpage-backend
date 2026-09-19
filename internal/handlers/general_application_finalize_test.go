@@ -56,7 +56,7 @@ func TestFinalizeRecruitmentPhase(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
 	api := engine.Group("/api/v1")
-	NewGeneralApplicationHandler(db, cfg, nil).Register(api)
+	NewGeneralApplicationHandler(db, cfg).Register(api)
 
 	plainAdmin := mustCreateAdmin(t, db, cfg, "finalize-admin-plain@seed.local")
 	itAdmin := mustCreateTeamAdmin(t, db, cfg, "finalize-admin-it@seed.local", "IT")
@@ -353,7 +353,7 @@ func TestSendRejectionsBulk(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
 	api := engine.Group("/api/v1")
-	NewGeneralApplicationHandler(db, cfg, nil).Register(api)
+	NewGeneralApplicationHandler(db, cfg).Register(api)
 
 	itAdmin := mustCreateTeamAdmin(t, db, cfg, "bulk-reject-admin-it@seed.local", "IT")
 	plainAdmin := mustCreateAdmin(t, db, cfg, "bulk-reject-admin-plain@seed.local")
@@ -487,7 +487,7 @@ func TestSendRejectionsBulk(t *testing.T) {
 	})
 
 	t.Run("claiming is atomic — only the first of two racing callers wins", func(t *testing.T) {
-		handler := NewGeneralApplicationHandler(db, cfg, nil)
+		handler := NewGeneralApplicationHandler(db, cfg)
 		candidate := newApplication(t, models.GeneralApplicationStatusPending, nil)
 
 		firstClaimed, err := handler.claimRejectionEmail(candidate)
