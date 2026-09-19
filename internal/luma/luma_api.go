@@ -3,14 +3,22 @@ package luma
 import (
 	"backend/internal/config"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
-const baseURL = "https://public-api.luma.com/v1"
+const defaultBaseURL = "https://public-api.luma.com/v1"
+
+// defaultHTTPClient is shared across calls (for connection reuse) unless a
+// LumaAPI overrides it. Bounded timeout so a hung Luma connection can't
+// block a caller (e.g. AddToLuma, called synchronously from an HTTP
+// handler) forever — net/http's zero-value client has no timeout at all.
+var defaultHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
 type LumaAPI struct {
 	APIKey string
@@ -18,6 +26,25 @@ type LumaAPI struct {
 	// — see AddMemberToTier, called both by onboarding-service's
 	// provisioning step and this backend's own /admin/luma/add-member.
 	MembersTierID string
+	// BaseURL and HTTPClient override the defaults above — only ever set
+	// in tests, to point requests at an httptest.Server instead of the
+	// real Luma API.
+	BaseURL    string
+	HTTPClient *http.Client
+}
+
+func (api *LumaAPI) baseURL() string {
+	if api.BaseURL != "" {
+		return api.BaseURL
+	}
+	return defaultBaseURL
+}
+
+func (api *LumaAPI) httpClient() *http.Client {
+	if api.HTTPClient != nil {
+		return api.HTTPClient
+	}
+	return defaultHTTPClient
 }
 
 // LumaAPIError is the error response from the Luma API.
@@ -59,8 +86,11 @@ type addMemberResponse struct {
 
 // AddMemberToTier adds email to tierID. Only requires an API key — safe to
 // call on a nil receiver (returns an error rather than panicking), since
-// main.go leaves the client nil when LUMA_API_KEY isn't set.
-func (api *LumaAPI) AddMemberToTier(email, tierID string) error {
+// main.go leaves the client nil when LUMA_API_KEY isn't set. ctx is wired
+// through to the outbound request so a caller (e.g. AddToLuma, run
+// synchronously inside an HTTP handler) that cancels or times out actually
+// stops waiting on Luma instead of leaking a blocked goroutine.
+func (api *LumaAPI) AddMemberToTier(ctx context.Context, email, tierID string) error {
 	if api == nil || strings.TrimSpace(api.APIKey) == "" {
 		return fmt.Errorf("luma is not configured")
 	}
@@ -74,14 +104,14 @@ func (api *LumaAPI) AddMemberToTier(email, tierID string) error {
 		return err
 	}
 
-	req, err := http.NewRequest(http.MethodPost, baseURL+"/memberships/members/add", bytes.NewBuffer(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, api.baseURL()+"/memberships/members/add", bytes.NewBuffer(body))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-luma-api-key", api.APIKey)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := api.httpClient().Do(req)
 	if err != nil {
 		return err
 	}

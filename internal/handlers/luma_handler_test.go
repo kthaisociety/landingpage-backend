@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"backend/internal/config"
+	"backend/internal/luma"
 	"backend/internal/utils"
 
 	"github.com/gin-gonic/gin"
@@ -82,4 +83,57 @@ func TestLumaHandler(t *testing.T) {
 		rec := addMember(t, validBody, adminCookie(t))
 		require.Equal(t, http.StatusBadGateway, rec.Code)
 	})
+}
+
+// TestLumaHandlerAddMemberSuccess covers the real HTTP contract against a
+// fake Luma server — request URL, x-luma-api-key header, JSON body, and a
+// successful response — rather than only the "not configured" failure path
+// above.
+func TestLumaHandlerAddMemberSuccess(t *testing.T) {
+	jwtKey := generateTestJWTKey(t)
+	cfg := &config.Config{JwtSigningKey: jwtKey, JwtValidatingKey: jwtKey}
+	cfg.Luma.MembersTierID = "tier-123"
+
+	var gotMethod, gotPath, gotAPIKey string
+	var gotBody map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		gotAPIKey = r.Header.Get("x-luma-api-key")
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&gotBody))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"membership_id":"mem-1","status":"approved"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	lumaApi := &luma.LumaAPI{
+		APIKey:        "test-luma-key",
+		MembersTierID: cfg.Luma.MembersTierID,
+		BaseURL:       server.URL,
+		HTTPClient:    server.Client(),
+	}
+
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	api := engine.Group("/api/v1")
+	NewLumaHandler(cfg, lumaApi).Register(api)
+
+	token, err := utils.WriteJWT("admin@kthais.com", []string{"user", "member", "admin"}, uuid.New(), cfg.JwtSigningKey, 60)
+	require.NoError(t, err)
+	cookie := &http.Cookie{Name: "jwt", Value: token}
+
+	payload, err := json.Marshal(map[string]string{"email": "grace.hopper@kthais.com"})
+	require.NoError(t, err)
+	req := httptest.NewRequest("POST", "/api/v1/admin/luma/add-member", strings.NewReader(string(payload)))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	engine.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, http.MethodPost, gotMethod)
+	require.Equal(t, "/memberships/members/add", gotPath)
+	require.Equal(t, "test-luma-key", gotAPIKey)
+	require.Equal(t, "grace.hopper@kthais.com", gotBody["email"])
+	require.Equal(t, "tier-123", gotBody["membership_tier_id"])
 }

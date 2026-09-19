@@ -49,7 +49,7 @@ func (h *LumaHandler) AddMember(c *gin.Context) {
 		return
 	}
 
-	if err := h.luma.AddMemberToTier(req.Email, h.cfg.Luma.MembersTierID); err != nil {
+	if err := h.luma.AddMemberToTier(c.Request.Context(), req.Email, h.cfg.Luma.MembersTierID); err != nil {
 		log.Printf("luma add-member: failed to add %s: %v", req.Email, err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to add member to luma"})
 		return

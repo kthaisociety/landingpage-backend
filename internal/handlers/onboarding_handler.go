@@ -143,8 +143,7 @@ type addToLumaRequest struct {
 	Email string `json:"email" binding:"required"`
 }
 
-// AddToLuma adds email to Luma's "Members" tier (cfg.Luma.MembersTierID)
-// — distinct from the newsletter-opt-in tier internal/luma's AddMember uses.
+// AddToLuma adds email to Luma's "Members" tier (cfg.Luma.MembersTierID).
 // Called both by onboarding-service's provisioning step (blocking: a
 // failure here fails the whole onboarding record, retryable the same way a
 // Google Workspace failure is) and, indirectly, by this backend's own
@@ -157,7 +156,7 @@ func (h *OnboardingHandler) AddToLuma(c *gin.Context) {
 		return
 	}
 
-	if err := h.luma.AddMemberToTier(req.Email, h.cfg.Luma.MembersTierID); err != nil {
+	if err := h.luma.AddMemberToTier(c.Request.Context(), req.Email, h.cfg.Luma.MembersTierID); err != nil {
 		log.Printf("onboarding add-to-luma: failed to add %s: %v", req.Email, err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to add member to luma"})
 		return
