@@ -97,3 +97,38 @@ func RateLimit() gin.HandlerFunc {
 		c.Next()
 	}
 }
+
+// ClickRateLimit uses its own Redis key prefix and a more generous threshold than
+// RateLimit, so low-stakes click pings (e.g. job "Apply" clicks) don't share a quota
+// bucket with form submissions (general application, newsletter) from the same IP.
+func ClickRateLimit() gin.HandlerFunc {
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		panic(fmt.Sprintf("Failed to load config: %v", err))
+	}
+
+	limiter, err := NewRedisRateLimiter(cfg, 30, time.Minute)
+	if err != nil {
+		panic(fmt.Sprintf("Failed to create rate limiter: %v", err))
+	}
+
+	return func(c *gin.Context) {
+		ip := c.ClientIP()
+		key := fmt.Sprintf("click_rate_limit:%s", ip)
+
+		allowed, err := limiter.Allow(c.Request.Context(), key)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "Rate limiter error"})
+			c.Abort()
+			return
+		}
+
+		if !allowed {
+			c.JSON(429, gin.H{"error": "Too many requests"})
+			c.Abort()
+			return
+		}
+
+		c.Next()
+	}
+}

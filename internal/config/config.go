@@ -37,7 +37,12 @@ type Config struct {
 	AllowedOrigins []string
 	BackendURL     string
 	FrontendURL    string
-	Redis          struct {
+	// TrustedProxyHost is the DNS name of the reverse proxy in front of this service
+	// (e.g. the Traefik service name in the Dokploy stack). Resolved at startup via the
+	// platform's service discovery DNS so c.ClientIP() honors X-Forwarded-For only from
+	// that proxy - see the SetTrustedProxies call in cmd/api/main.go.
+	TrustedProxyHost string
+	Redis            struct {
 		Host     string
 		Port     string
 		Password string
@@ -122,6 +127,11 @@ func LoadConfig() (*Config, error) {
 
 	cfg.BackendURL = getEnv("BACKEND_URL", "http://localhost:8080")
 	cfg.FrontendURL = getEnv("FRONTEND_URL", "https://kthais.com")
+
+	// Default is an educated guess at Dokploy's Traefik service name, not a confirmed
+	// value - verify against the actual Dokploy stack (e.g. `docker service ls`) and
+	// override via env if it differs. See cmd/api/main.go for how this is used.
+	cfg.TrustedProxyHost = getEnv("TRUSTED_PROXY_HOST", "dokploy-traefik")
 
 	// Mailchimp config
 	cfg.Mailchimp.APIKey = getEnv("MAILCHIMP_API_KEY", "")
