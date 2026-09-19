@@ -10,6 +10,7 @@ import (
 
 	"backend/internal/config"
 	"backend/internal/email"
+	"backend/internal/luma"
 	"backend/internal/models"
 
 	"github.com/gin-gonic/gin"
@@ -19,19 +20,22 @@ import (
 
 // OnboardingHandler exposes the small set of endpoints onboarding-service
 // calls into this backend for — sending emails (this backend already owns
-// SES + templates) and, once that flow's data model is settled, activating
-// a new member's Profile. Every route here is server-to-server only, gated
-// by a shared secret, never behind AuthRequiredJWT (the caller has no user
-// session). See onboarding-service-plan.md at the repo root for the full
-// design; this backend never calls out to Google Workspace or Mattermost
-// itself — that's exclusively onboarding-service's job.
+// SES + templates), adding a newly provisioned member to Luma's "Members"
+// tier (this backend already owns the Luma API key — see internal/luma),
+// and, once that flow's data model is settled, activating a new member's
+// Profile. Every route here is server-to-server only, gated by a shared
+// secret, never behind AuthRequiredJWT (the caller has no user session).
+// See onboarding-service-plan.md at the repo root for the full design;
+// this backend never calls out to Google Workspace or
+// Mattermost itself — that's exclusively onboarding-service's job.
 type OnboardingHandler struct {
-	db  *gorm.DB
-	cfg *config.Config
+	db   *gorm.DB
+	cfg  *config.Config
+	luma *luma.LumaAPI
 }
 
-func NewOnboardingHandler(db *gorm.DB, cfg *config.Config) *OnboardingHandler {
-	return &OnboardingHandler{db: db, cfg: cfg}
+func NewOnboardingHandler(db *gorm.DB, cfg *config.Config, lumaApi *luma.LumaAPI) *OnboardingHandler {
+	return &OnboardingHandler{db: db, cfg: cfg, luma: lumaApi}
 }
 
 func (h *OnboardingHandler) Register(r *gin.RouterGroup) {
@@ -40,6 +44,7 @@ func (h *OnboardingHandler) Register(r *gin.RouterGroup) {
 	{
 		onboarding.POST("/send-email", h.SendEmail)
 		onboarding.POST("/record-account", h.RecordAccount)
+		onboarding.POST("/add-to-luma", h.AddToLuma)
 	}
 }
 
@@ -132,6 +137,33 @@ func (h *OnboardingHandler) RecordAccount(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, application)
+}
+
+type addToLumaRequest struct {
+	Email string `json:"email" binding:"required"`
+}
+
+// AddToLuma adds email to Luma's "Members" tier (cfg.Luma.MembersTierID)
+// — distinct from the newsletter-opt-in tier internal/luma's AddMember uses.
+// Called both by onboarding-service's provisioning step (blocking: a
+// failure here fails the whole onboarding record, retryable the same way a
+// Google Workspace failure is) and, indirectly, by this backend's own
+// /admin/luma/add-member (LumaHandler) for retroactively adding a member
+// who onboarded before this integration existed.
+func (h *OnboardingHandler) AddToLuma(c *gin.Context) {
+	var req addToLumaRequest
+	if err := c.ShouldBindJSON(&req); err != nil || !isKthaisEmail(req.Email) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "a valid @kthais.com email is required"})
+		return
+	}
+
+	if err := h.luma.AddMemberToTier(req.Email, h.cfg.Luma.MembersTierID); err != nil {
+		log.Printf("onboarding add-to-luma: failed to add %s: %v", req.Email, err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to add member to luma"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "added"})
 }
 
 // onboardingNotifyRequest is the body sent to onboarding-service's own

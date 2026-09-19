@@ -2,7 +2,6 @@ package luma
 
 import (
 	"backend/internal/config"
-	"backend/internal/models"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -14,10 +13,11 @@ import (
 const baseURL = "https://public-api.luma.com/v1"
 
 type LumaAPI struct {
-	APIKey              string
-	MembershipTierID    string
-	FirstNameQuestionID string
-	LastNameQuestionID  string
+	APIKey string
+	// MembersTierID is the Luma tier new @kthais.com members are added to
+	// — see AddMemberToTier, called both by onboarding-service's
+	// provisioning step and this backend's own /admin/luma/add-member.
+	MembersTierID string
 }
 
 // LumaAPIError is the error response from the Luma API.
@@ -30,55 +30,26 @@ func (err *LumaAPIError) Error() string {
 	return fmt.Sprintf("luma API error: status %d: %s", err.Status, err.Body)
 }
 
-// InitLumaApi creates a LumaAPI client for registering newsletter subscribers
-// as members via Luma. Mirrors mailchimp.InitMailchimpApi's error-if-missing
-// contract so main.go can log-and-continue the same way it does for Mailchimp/SES.
+// InitLumaApi creates a LumaAPI client. Mirrors mailchimp.InitMailchimpApi's
+// error-if-missing contract so main.go can log-and-continue the same way it
+// does for Mailchimp/SES. MembersTierID isn't required here — a missing
+// tier ID only breaks AddMemberToTier's one call, checked there, rather
+// than disabling the client (and its shared API key) entirely.
 func InitLumaApi(cfg *config.Config) (*LumaAPI, error) {
 	apiKey := cfg.Luma.APIKey
-	tierID := cfg.Luma.MembershipTierID
-	firstNameQuestionID := cfg.Luma.FirstNameQuestionID
-	lastNameQuestionID := cfg.Luma.LastNameQuestionID
-
 	if strings.TrimSpace(apiKey) == "" {
 		return nil, fmt.Errorf("luma API key is missing")
 	}
-	if strings.TrimSpace(tierID) == "" {
-		return nil, fmt.Errorf("luma membership tier id is missing")
-	}
-	if strings.TrimSpace(firstNameQuestionID) == "" {
-		return nil, fmt.Errorf("luma first name question id is missing")
-	}
-	if strings.TrimSpace(lastNameQuestionID) == "" {
-		return nil, fmt.Errorf("luma last name question id is missing")
-	}
 
 	return &LumaAPI{
-		APIKey:              apiKey,
-		MembershipTierID:    tierID,
-		FirstNameQuestionID: firstNameQuestionID,
-		LastNameQuestionID:  lastNameQuestionID,
+		APIKey:        apiKey,
+		MembersTierID: cfg.Luma.MembersTierID,
 	}, nil
 }
 
-func (api *LumaAPI) IsConfigured() bool {
-	return api != nil &&
-		strings.TrimSpace(api.APIKey) != "" &&
-		strings.TrimSpace(api.MembershipTierID) != "" &&
-		strings.TrimSpace(api.FirstNameQuestionID) != "" &&
-		strings.TrimSpace(api.LastNameQuestionID) != ""
-}
-
-type registrationAnswer struct {
-	Label        string `json:"label"`
-	QuestionID   string `json:"question_id"`
-	QuestionType string `json:"question_type"`
-	Value        string `json:"value"`
-}
-
 type addMemberRequest struct {
-	Email               string               `json:"email"`
-	MembershipTierID    string               `json:"membership_tier_id"`
-	RegistrationAnswers []registrationAnswer `json:"registration_answers,omitempty"`
+	Email            string `json:"email"`
+	MembershipTierID string `json:"membership_tier_id"`
 }
 
 type addMemberResponse struct {
@@ -86,44 +57,18 @@ type addMemberResponse struct {
 	Status       string `json:"status"`
 }
 
-// AddMember registers a newsletter subscriber with the configured Luma
-// membership tier, including their first/last name as answers to the two
-// configured registration questions.
-//
-// Luma's membership API has no first-class "name" field — a member created
-// here shows as "Anonymous" in the Luma dashboard until someone edits it by
-// hand or the person signs into their own Luma account with a name set;
-// there's no API to set it directly (confirmed: Luma's own dashboard uses an
-// internal, session-cookie-only admin endpoint for that, which rejects API
-// keys). Sending the name as registration answers instead makes it visible
-// on the member record — e.g. for a future script to copy from there into
-// the actual name fields via that admin endpoint. The full structured data
-// (name, gender, university, programme, graduation year, interests) always
-// lives in our own NewsletterSubscription table regardless.
-func (api *LumaAPI) AddMember(sub *models.NewsletterSubscription) error {
-	if !api.IsConfigured() {
+// AddMemberToTier adds email to tierID. Only requires an API key — safe to
+// call on a nil receiver (returns an error rather than panicking), since
+// main.go leaves the client nil when LUMA_API_KEY isn't set.
+func (api *LumaAPI) AddMemberToTier(email, tierID string) error {
+	if api == nil || strings.TrimSpace(api.APIKey) == "" {
 		return fmt.Errorf("luma is not configured")
 	}
-
-	request := addMemberRequest{
-		Email:            sub.Email,
-		MembershipTierID: api.MembershipTierID,
-		RegistrationAnswers: []registrationAnswer{
-			{
-				Label:        "First Name",
-				QuestionID:   api.FirstNameQuestionID,
-				QuestionType: "text",
-				Value:        sub.FirstName,
-			},
-			{
-				Label:        "Last Name",
-				QuestionID:   api.LastNameQuestionID,
-				QuestionType: "text",
-				Value:        sub.LastName,
-			},
-		},
+	if strings.TrimSpace(tierID) == "" {
+		return fmt.Errorf("luma tier id is missing")
 	}
 
+	request := addMemberRequest{Email: email, MembershipTierID: tierID}
 	body, err := json.Marshal(request)
 	if err != nil {
 		return err

@@ -60,10 +60,11 @@ type Config struct {
 		ListID string
 	}
 	Luma struct {
-		APIKey              string
-		MembershipTierID    string
-		FirstNameQuestionID string
-		LastNameQuestionID  string
+		APIKey string
+		// MembersTierID is the Luma tier new @kthais.com members are added
+		// to on onboarding. See internal/luma's AddMemberToTier and
+		// onboarding_handler.go's AddToLuma.
+		MembersTierID string
 	}
 	JwtSigningKey    string
 	JwtValidatingKey string
@@ -140,9 +141,7 @@ func LoadConfig() (*Config, error) {
 
 	// Luma config
 	cfg.Luma.APIKey = getEnv("LUMA_API_KEY", "")
-	cfg.Luma.MembershipTierID = getEnv("LUMA_MEMBERSHIP_TIER_ID", "")
-	cfg.Luma.FirstNameQuestionID = getEnv("LUMA_FIRST_NAME_QUESTION_ID", "")
-	cfg.Luma.LastNameQuestionID = getEnv("LUMA_LAST_NAME_QUESTION_ID", "")
+	cfg.Luma.MembersTierID = getEnv("LUMA_MEMBERS_TIER_ID", "")
 
 	// OAuth config
 	cfg.OAuth.GoogleClientID = getEnv("GOOGLE_CLIENT_ID", "")
