@@ -183,6 +183,7 @@ func main() {
 		for _, ip := range ips {
 			trustedProxies = append(trustedProxies, ip.String())
 		}
+		log.Printf("Trusting forwarded headers from proxy host %q, resolved to %v", cfg.TrustedProxyHost, trustedProxies)
 	}
 	if err := r.SetTrustedProxies(trustedProxies); err != nil {
 		log.Fatal("Failed to set trusted proxies:", err)

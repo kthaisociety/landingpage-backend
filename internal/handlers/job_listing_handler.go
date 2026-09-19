@@ -164,7 +164,10 @@ func (h *JobListingHandler) TrackApplyClick(c *gin.Context) {
 	result := h.db.Model(&models.JobListing{}).Where("id = ?", jobID).
 		UpdateColumn("apply_click_count", gorm.Expr("apply_click_count + 1"))
 	if result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": result.Error.Error()})
+		// Unauthenticated endpoint: never echo the raw DB error back to the caller, it can
+		// disclose driver/connection/schema details. Log server-side instead.
+		log.Printf("TrackApplyClick: failed to increment apply_click_count for job %s: %v", jobID, result.Error)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Unable to record apply click"})
 		return
 	}
 	if result.RowsAffected == 0 {
