@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"backend/internal/config"
 	"backend/internal/middleware"
@@ -119,7 +120,21 @@ func (h *OffboardingHandler) Deactivate(c *gin.Context) {
 	}
 
 	log.Printf("offboarding: %s is deactivating the account for %s", adminEmail, req.Email)
-	h.proxy(c, "/internal/offboarding/deactivate", req.Email)
+	targetEmail := strings.ToLower(strings.TrimSpace(req.Email))
+	status := h.proxy(c, "/internal/offboarding/deactivate", targetEmail)
+	if status != http.StatusOK {
+		return
+	}
+
+	// Best-effort, doesn't affect the response already written above: the
+	// real, external deactivation already succeeded by the time this runs.
+	// This is the only local record that the account is deactivated —
+	// LumaHandler.SyncAll relies on it to not silently undo this by
+	// re-adding the member to Luma.
+	now := time.Now()
+	if err := h.db.Model(&models.User{}).Where("email = ?", targetEmail).Update("deactivated_at", &now).Error; err != nil {
+		log.Printf("offboarding: deactivated %s but failed to record it locally: %v", targetEmail, err)
+	}
 }
 
 type offboardingDeleteRequest struct {
@@ -363,23 +378,28 @@ func (h *OffboardingHandler) RevokeHeadOfIT(c *gin.Context) {
 // caller's mental model of who's a head stays accurate.
 var errHeadOfITTargetNotAHead = errors.New("target is not a head of IT")
 
-func (h *OffboardingHandler) proxy(c *gin.Context, path, email string) {
+// proxy writes the response itself either way, but also returns the
+// upstream status code (0 if it never got that far) so a caller like
+// Deactivate can react to success without duplicating this request/error
+// handling.
+func (h *OffboardingHandler) proxy(c *gin.Context, path, email string) int {
 	if h.cfg.OnboardingServiceURL == "" {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "onboarding service is not configured"})
-		return
+		return 0
 	}
 
 	payload, err := json.Marshal(map[string]string{"email": email})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to build request"})
-		return
+		return 0
 	}
 
 	status, body, err := callOnboardingService(h.cfg, http.MethodPost, path, payload)
 	if err != nil {
 		log.Printf("offboarding %s: %v", path, err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "onboarding service is unreachable"})
-		return
+		return 0
 	}
 	c.Data(status, "application/json; charset=utf-8", body)
+	return status
 }

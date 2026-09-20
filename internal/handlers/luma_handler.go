@@ -67,16 +67,20 @@ type lumaSyncFailure struct {
 	Error string `json:"error"`
 }
 
-// SyncAll adds every registered @kthais.com member to the Luma Members
-// tier in one pass — for backfilling members who joined before this
-// integration existed. Runs synchronously and sequentially (no job queue
-// in this codebase); fine at this org's member counts, and each call is
-// already bounded by luma.LumaAPI's own request timeout. A per-member
-// failure doesn't stop the rest — the response summarizes both counts so
-// an admin can see partial progress rather than an opaque one-shot error.
+// SyncAll adds every registered, currently-active @kthais.com member to
+// the Luma Members tier in one pass — for backfilling members who joined
+// before this integration existed. Excludes anyone with DeactivatedAt set:
+// Deactivate leaves the local User row otherwise untouched (see its own
+// doc comment), so without this filter, running SyncAll would silently
+// re-add every currently-deactivated member's Luma access, undoing that
+// deactivation. Runs synchronously and sequentially (no job queue in this
+// codebase); fine at this org's member counts, and each call is already
+// bounded by luma.LumaAPI's own request timeout. A per-member failure
+// doesn't stop the rest — the response summarizes both counts so an admin
+// can see partial progress rather than an opaque one-shot error.
 func (h *LumaHandler) SyncAll(c *gin.Context) {
 	var emails []string
-	if err := h.db.Model(&models.User{}).Pluck("email", &emails).Error; err != nil {
+	if err := h.db.Model(&models.User{}).Where("deactivated_at IS NULL").Pluck("email", &emails).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list members"})
 		return
 	}
