@@ -205,6 +205,26 @@ func TestBoardRoleHandler(t *testing.T) {
 		require.Equal(t, models.BoardRoleHeadOfIT, boardRoleOf(t, headOfIT.email), "the refused transfer must not have taken effect")
 	})
 
+	// Every /admin/board-role/* route requires the caller to already be an
+	// admin, so transferring any of the other seven exactly-one roles to a
+	// non-admin would create an administrative dead end — that recipient
+	// could never call the transfer endpoint themselves to hand the role
+	// onward. This applies the same admin-eligibility check the previous
+	// subtest exercises for head_of_it to a non-head_of_it role too.
+	t.Run("non-head-of-IT recipient must also already be an admin", func(t *testing.T) {
+		nonAdminEmail := "board-role-non-admin-treasurer@example.com"
+		mustCreateNonAdminMember(t, db, nonAdminEmail)
+		t.Cleanup(func() {
+			db.Where("email = ?", nonAdminEmail).Unscoped().Delete(&models.Profile{})
+			db.Where("email = ?", nonAdminEmail).Unscoped().Delete(&models.User{})
+		})
+
+		rec := post(t, "/api/v1/admin/board-role/transfer",
+			map[string]any{"role": models.BoardRoleTreasurer, "to_email": nonAdminEmail}, treasurer.cookie)
+		require.Equal(t, http.StatusBadRequest, rec.Code)
+		require.Equal(t, models.BoardRoleTreasurer, boardRoleOf(t, treasurer.email), "the refused transfer must not have taken effect")
+	})
+
 	// Two concurrent transfers of the same role, to two different
 	// recipients: the SELECT ... FOR UPDATE lock on the requester's own
 	// profile row should serialize them, so exactly one succeeds and the

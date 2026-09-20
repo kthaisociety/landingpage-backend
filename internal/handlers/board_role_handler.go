@@ -104,10 +104,13 @@ var (
 	// already holds a different board role — accepting it would silently
 	// vacate that other role with no successor.
 	errBoardRoleRecipientAlreadyHolds = errors.New("recipient already holds a board role")
-	// errHeadOfITRecipientNotAdmin mirrors the old GrantHeadOfIT's
-	// resolveAdminTarget check: granting IT privilege to a non-admin who
-	// couldn't reach the gated endpoints anyway never made sense.
-	errHeadOfITRecipientNotAdmin = errors.New("head of IT recipient must already be an admin")
+	// errRecipientNotAdmin mirrors the old GrantHeadOfIT's
+	// resolveAdminTarget check, generalized to every exactly-one role: every
+	// /admin/board-role/* route requires the *caller* to already be an
+	// admin, so transferring one of these roles to a non-admin would create
+	// an administrative dead end — that recipient could never call the
+	// transfer endpoint themselves to hand the role onward.
+	errRecipientNotAdmin = errors.New("recipient must already be an admin")
 )
 
 // TransferBoardRole is the only write path for the eight exactly-one board
@@ -162,14 +165,12 @@ func (h *BoardRoleHandler) TransferBoardRole(c *gin.Context) {
 		if recipient.BoardRole != "" {
 			return errBoardRoleRecipientAlreadyHolds
 		}
-		if req.Role == models.BoardRoleHeadOfIT {
-			var recipientUser models.User
-			if err := tx.Where("id = ?", recipient.UserId).First(&recipientUser).Error; err != nil {
-				return err
-			}
-			if !slices.Contains([]string(recipientUser.Roles), models.RoleAdmin) {
-				return errHeadOfITRecipientNotAdmin
-			}
+		var recipientUser models.User
+		if err := tx.Where("id = ?", recipient.UserId).First(&recipientUser).Error; err != nil {
+			return err
+		}
+		if !slices.Contains([]string(recipientUser.Roles), models.RoleAdmin) {
+			return errRecipientNotAdmin
 		}
 
 		if err := tx.Model(&requester).Update("board_role", "").Error; err != nil {
@@ -188,7 +189,7 @@ func (h *BoardRoleHandler) TransferBoardRole(c *gin.Context) {
 	case errors.Is(err, errBoardRoleRecipientAlreadyHolds):
 		c.JSON(http.StatusBadRequest, gin.H{"error": "recipient already holds a board role — they need to transfer or be removed from it first"})
 		return
-	case errors.Is(err, errHeadOfITRecipientNotAdmin):
+	case errors.Is(err, errRecipientNotAdmin):
 		c.JSON(http.StatusBadRequest, gin.H{"error": "recipient must already be an admin"})
 		return
 	case err != nil:
