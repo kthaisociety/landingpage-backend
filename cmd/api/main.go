@@ -150,6 +150,8 @@ func main() {
 
 	database.BackfillProfileSlugs(db)
 	database.BackfillSharedNoteEntries(db)
+	database.BackfillHeadOfITRole(db)
+	database.EnsureBoardRoleConstraints(db)
 
 	database.SeedDev(db, cfg)
 
@@ -281,6 +283,7 @@ func setupRoutes(r *gin.Engine, db *gorm.DB, mailchimpApi *mailchimp.MailchimpAP
 		handlers.NewManualOnboardingHandler(cfg),
 		handlers.NewOffboardingHandler(db, cfg),
 		handlers.NewLumaHandler(db, cfg, lumaApi),
+		handlers.NewBoardRoleHandler(db, cfg),
 	}
 
 	for _, h := range allHandlers {

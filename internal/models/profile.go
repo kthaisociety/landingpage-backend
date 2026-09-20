@@ -62,17 +62,62 @@ type Profile struct {
 	BookingPageURL         string         `gorm:"default:''" json:"booking_page_url,omitempty"`
 	InterviewEmailTemplate string         `gorm:"type:text;default:''" json:"interview_email_template,omitempty"`
 	AdminTeam              string         `gorm:"default:''" json:"admin_team,omitempty"`
-	// IsHeadOfIT gates the single most destructive class of admin action
-	// (permanently deleting a member's real Google Workspace + Mattermost
-	// account). Deliberately separate from the self-editable AdminTeam field
-	// above and NOT settable via UpdateInterviewSettings or any other
-	// self-service endpoint — the only way it changes hands is
-	// OffboardingHandler.GrantHeadOfIT/RevokeHeadOfIT. Any number of admins
-	// can hold this at once (granting is unrestricted); the only invariant
-	// is that revoking is refused if it would leave zero. The very first
-	// holder has to be set with a one-off manual database update; every
-	// grant/revoke after that goes through the app.
-	IsHeadOfIT bool `gorm:"default:false" json:"is_head_of_it,omitempty"`
+	// Team is the recruitment team (see AllBoardRoles' sibling teams list)
+	// this member joined through — best-effort auto-populated from their
+	// accepted GeneralApplication when their Profile is first created (see
+	// resolveTeamFromAcceptedApplication), and freely admin-editable
+	// afterward via POST /admin/team/set. Superseded by BoardRole as the
+	// member's dashboard label the moment BoardRole is non-empty.
+	Team string `gorm:"default:''" json:"team,omitempty"`
+	// BoardRole is one of the AllBoardRoles values, or "" for none. Eight of
+	// the nine values (everything except BoardRoleBoardAdvisor) are held by
+	// exactly one person at a time; the *only* way one of those eight
+	// changes hands is a self-service transfer by its current holder
+	// (POST /admin/board-role/transfer) — there is no admin grant/revoke/
+	// set-for-anyone, deliberately, since BoardRoleHeadOfIT is one of the
+	// eight and gates real permissions (see requesterIsHeadOfIT,
+	// requesterIsHeadOfTeam, deleteUserAndProfile). A transfer is one
+	// atomic operation that clears the sender's BoardRole and sets the
+	// recipient's, so holding a non-empty value here structurally *means*
+	// "I am the sole holder" — there's no separate headcount invariant to
+	// maintain. BoardRoleBoardAdvisor is the one exception: any number of
+	// people (including zero) may hold it, managed by plain admin add/
+	// remove (POST /admin/board-role/board-advisor/add|remove), same as
+	// Team. The very first holder of any of the eight exactly-one roles
+	// (including, historically, Head of IT) has to be set with a one-off
+	// manual database update — deliberately no bootstrap API shortcut, to
+	// avoid a bypass that would only need to exist for the other seven but
+	// would be a standing temptation to also (mis)use for Head of IT.
+	BoardRole string `gorm:"default:''" json:"board_role,omitempty"`
+}
+
+// BoardRole* enumerates every value Profile.BoardRole may hold. See its
+// field doc comment for which are exactly-one/transfer-only vs. the one
+// multi-holder exception (BoardRoleBoardAdvisor).
+const (
+	BoardRoleChairperson       = "chairperson"
+	BoardRoleViceChairperson   = "vice_chairperson"
+	BoardRoleHeadOfIT          = "head_of_it"
+	BoardRoleHeadOfBusiness    = "head_of_business"
+	BoardRoleHeadOfDevelopment = "head_of_development"
+	BoardRoleHeadOfResearch    = "head_of_research"
+	BoardRoleHeadOfGrowth      = "head_of_growth"
+	BoardRoleBoardAdvisor      = "board_advisor"
+	BoardRoleTreasurer         = "treasurer"
+)
+
+// AllBoardRoles lists every valid Profile.BoardRole value, for request
+// validation.
+var AllBoardRoles = []string{
+	BoardRoleChairperson,
+	BoardRoleViceChairperson,
+	BoardRoleHeadOfIT,
+	BoardRoleHeadOfBusiness,
+	BoardRoleHeadOfDevelopment,
+	BoardRoleHeadOfResearch,
+	BoardRoleHeadOfGrowth,
+	BoardRoleBoardAdvisor,
+	BoardRoleTreasurer,
 }
 
 // BeforeCreate assigns a URL-safe slug derived from the profile's name if

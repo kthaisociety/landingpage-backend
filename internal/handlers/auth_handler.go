@@ -393,6 +393,10 @@ func (h *AuthHandler) GoogleCallback(c *gin.Context) {
 		profile.FirstName = firstName
 		profile.LastName = lastName
 		profile.Registered = false
+		// Best-effort: if they came through recruitment, start them on the
+		// team they were actually accepted into instead of "" (Unassigned)
+		// — see Profile.Team's doc comment and resolveTeamFromAcceptedApplication.
+		profile.Team = resolveTeamFromAcceptedApplication(h.db, user.Email)
 		if err := h.db.Create(&profile).Error; err != nil {
 			log.Printf("Failed to create profile for user: %v\n", profile)
 		}
