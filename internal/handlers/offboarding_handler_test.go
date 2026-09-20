@@ -267,14 +267,14 @@ func TestOffboardingHandler(t *testing.T) {
 	})
 }
 
-// mustCreateHeadOfIT creates an admin and sets Profile.BoardRole directly
-// in the database to models.BoardRoleHeadOfIT — matching how the first
-// holder of any of the eight exactly-one board roles actually gets
-// bootstrapped in production (see Profile.BoardRole's doc comment); every
-// change after that goes through BoardRoleHandler.TransferBoardRole.
+// mustCreateHeadOfIT creates an admin holding models.BoardRoleHeadOfIT —
+// matching how the first holder of any of the eight exactly-one board
+// roles actually gets bootstrapped in production (see Profile.BoardRole's
+// doc comment); every change after that goes through
+// BoardRoleHandler.TransferBoardRole. See mustCreateBoardRoleHolder (which
+// this delegates to) for why a real ambient holder gets vacated and
+// restored around the fixture.
 func mustCreateHeadOfIT(t *testing.T, db *gorm.DB, cfg *config.Config, email string) testAdmin {
 	t.Helper()
-	admin := mustCreateAdmin(t, db, cfg, email)
-	require.NoError(t, db.Model(&models.Profile{}).Where("email = ?", email).Update("board_role", models.BoardRoleHeadOfIT).Error)
-	return admin
+	return mustCreateBoardRoleHolder(t, db, cfg, email, models.BoardRoleHeadOfIT)
 }

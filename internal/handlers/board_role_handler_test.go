@@ -44,13 +44,45 @@ func mustCreateNonAdminMember(t *testing.T, db *gorm.DB, email string) testAdmin
 	return testAdmin{email: email, userID: userID}
 }
 
+// vacateBoardRoleHolder lets a test freely assign one of the eight
+// exactly-one board roles to its own fixture despite
+// idx_profiles_board_role_single_holder: a shared dev database may already
+// have a real holder for role (e.g. seed_dev.go's devMembers), so this
+// vacates that holder for the duration of the calling test and restores it
+// via t.Cleanup, once the calling test's own fixtures using role are gone
+// (register this call, and therefore this restore, before any t.Cleanup
+// that deletes those fixtures — t.Cleanup is LIFO). No-op for
+// board_advisor, which has no single holder to protect. Updates go through
+// the already-loaded struct rather than a hand-built "id = ?": Profile
+// embeds gorm.Model (a uint ID) but also declares its own uuid.UUID Id as
+// the actual primary key column, so .ID would bind the wrong
+// (always-zero) field.
+func vacateBoardRoleHolder(t *testing.T, db *gorm.DB, role string) {
+	t.Helper()
+	if role == models.BoardRoleBoardAdvisor {
+		return
+	}
+	var previousHolder models.Profile
+	if err := db.Where("board_role = ?", role).First(&previousHolder).Error; err == nil {
+		require.NoError(t, db.Model(&previousHolder).Update("board_role", "").Error)
+		t.Cleanup(func(holder models.Profile, role string) func() {
+			return func() {
+				db.Model(&holder).Update("board_role", role)
+			}
+		}(previousHolder, role))
+	}
+}
+
 // mustCreateBoardRoleHolder creates an admin and sets Profile.BoardRole
 // directly in the database — the same one-off bootstrap every first holder
 // of an exactly-one role needs (see Profile.BoardRole's doc comment); every
-// change after that goes through TransferBoardRole.
+// change after that goes through TransferBoardRole. See
+// vacateBoardRoleHolder for how this avoids colliding with a real holder
+// already present in a shared dev database.
 func mustCreateBoardRoleHolder(t *testing.T, db *gorm.DB, cfg *config.Config, email, role string) testAdmin {
 	t.Helper()
 	admin := mustCreateAdmin(t, db, cfg, email)
+	vacateBoardRoleHolder(t, db, role)
 	require.NoError(t, db.Model(&models.Profile{}).Where("email = ?", email).Update("board_role", role).Error)
 	return admin
 }
@@ -126,14 +158,21 @@ func TestBoardRoleHandler(t *testing.T) {
 		// Chairperson may already be held in a shared dev database (e.g. by
 		// seed_dev.go's devMembers) — vacate it for the duration of this
 		// assertion and restore whoever held it afterward, so the test
-		// doesn't depend on ambient state it doesn't own.
+		// doesn't depend on ambient state it doesn't own. Updates go
+		// through the already-loaded struct (same pattern as
+		// BackfillMemberTeams — see its comment), not a hand-built
+		// "id = ?": Profile embeds gorm.Model (a uint ID) but also declares
+		// its own uuid.UUID Id as the actual primary key column, so .ID
+		// would bind the wrong (always-zero) field.
 		var previousChairperson models.Profile
 		hadChairperson := db.Where("board_role = ?", models.BoardRoleChairperson).First(&previousChairperson).Error == nil
 		if hadChairperson {
 			require.NoError(t, db.Model(&previousChairperson).Update("board_role", "").Error)
-			t.Cleanup(func() {
-				db.Model(&models.Profile{}).Where("id = ?", previousChairperson.ID).Update("board_role", models.BoardRoleChairperson)
-			})
+			t.Cleanup(func(holder models.Profile) func() {
+				return func() {
+					db.Model(&holder).Update("board_role", models.BoardRoleChairperson)
+				}
+			}(previousChairperson))
 		}
 
 		rec := get(t, "/api/v1/admin/board-role", plainAdmin.cookie)
@@ -381,6 +420,7 @@ func TestBackfillMemberTeams(t *testing.T) {
 	// A board-role holder with no team and a matching accepted application
 	// — must still be left as "" (Unassigned): board roles aren't scoped to
 	// any recruitment team, so this isn't a gap to fill.
+	vacateBoardRoleHolder(t, db, models.BoardRoleTreasurer)
 	mustCreateMemberProfile(t, boardRoleEmail, "", models.BoardRoleTreasurer)
 	mustCreateAcceptedApplication(t, boardRoleEmail, "Development")
 

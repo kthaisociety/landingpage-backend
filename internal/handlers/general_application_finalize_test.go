@@ -284,6 +284,7 @@ func TestFinalizeRecruitmentPhase(t *testing.T) {
 	// back to the self-declared check.
 	t.Run("a verified head of IT can close it even without self-declaring the IT team", func(t *testing.T) {
 		verifiedHead := mustCreateTeamAdmin(t, db, cfg, "finalize-admin-verified-head@seed.local", "Marketing")
+		vacateBoardRoleHolder(t, db, models.BoardRoleHeadOfIT)
 		require.NoError(t, db.Model(&models.Profile{}).Where("email = ?", verifiedHead.email).Update("board_role", models.BoardRoleHeadOfIT).Error)
 		t.Cleanup(func() {
 			db.Where("email = ?", verifiedHead.email).Unscoped().Delete(&models.Profile{})

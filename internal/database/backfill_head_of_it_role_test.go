@@ -48,6 +48,33 @@ func TestBackfillHeadOfITRole(t *testing.T) {
 
 	legacyHolderEmail := "backfill-head-of-it-legacy@example.com"
 	alreadySetEmail := "backfill-head-of-it-already-set@example.com"
+
+	// idx_profiles_board_role_single_holder allows only one holder of each
+	// exactly-one role at a time, and a shared dev database may already
+	// have holders for head_of_it and treasurer (e.g. seed_dev.go's
+	// devMembers) — vacate both for the duration of this test and restore
+	// whoever held them afterward, so this doesn't depend on or clobber
+	// ambient state it doesn't own. Updates go through the already-loaded
+	// struct (same pattern as BackfillMemberTeams — see its comment):
+	// Profile embeds gorm.Model (a uint ID) but also declares its own
+	// uuid.UUID Id as the actual primary key column, so a hand-built
+	// "id = ?" using .ID would bind the wrong (always-zero) field.
+	// Registered before the fixture-deletion cleanup below so it runs
+	// after (t.Cleanup is LIFO): the restore must happen once this test's
+	// own head_of_it/treasurer fixture rows are gone, or it would collide
+	// with them under the same unique index.
+	for _, role := range []string{models.BoardRoleHeadOfIT, models.BoardRoleTreasurer} {
+		var previousHolder models.Profile
+		if err := db.Where("board_role = ?", role).First(&previousHolder).Error; err == nil {
+			require.NoError(t, db.Model(&previousHolder).Update("board_role", "").Error)
+			t.Cleanup(func(holder models.Profile, role string) func() {
+				return func() {
+					db.Model(&holder).Update("board_role", role)
+				}
+			}(previousHolder, role))
+		}
+	}
+
 	t.Cleanup(func() {
 		emails := []string{legacyHolderEmail, alreadySetEmail}
 		db.Where("email IN ?", emails).Unscoped().Delete(&models.Profile{})
