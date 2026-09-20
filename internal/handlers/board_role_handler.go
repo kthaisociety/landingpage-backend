@@ -341,7 +341,7 @@ func (h *BoardRoleHandler) SetTeam(c *gin.Context) {
 // profile_handler.go and AuthHandler.GoogleCallback — this is deliberately
 // not a raw SQL migration, so this is the single place that logic lives.
 // Idempotent and safe to call more than once: it only ever touches
-// profiles with team = '' and board_role = '', and a member with no
+// profiles with an empty team and an empty board_role, and a member with no
 // matching application (never applied, or admin-onboarded outside
 // recruitment) is silently left as "" (Unassigned), same as at profile-
 // creation time.
