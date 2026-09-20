@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,12 @@ import (
 )
 
 const defaultBaseURL = "https://public-api.luma.com/v1"
+
+// lumaStatusNoMembership is Luma's own non-standard HTTP status for
+// "update-status was called for a user with no existing membership" — see
+// RemoveMember, the only caller that can hit this (there's no membership
+// to decline for someone never added to any tier).
+const lumaStatusNoMembership = 470
 
 // defaultHTTPClient is shared across calls (for connection reuse) unless a
 // LumaAPI overrides it. Bounded timeout so a hung Luma connection can't
@@ -139,7 +146,18 @@ func (api *LumaAPI) AddMemberToTier(ctx context.Context, email, tierID string) e
 // RemoveMember declines email's membership — Luma's only "remove from
 // tier" primitive; there's no hard-delete endpoint. This is a status
 // change, not a true delete: an admin can still see and re-approve the
-// membership from Luma's own dashboard.
+// membership from Luma's own dashboard. Treats lumaStatusNoMembership as
+// success, not a failure: it means email was never added to any Luma tier
+// in the first place (e.g. offboarded before sync-all or "Add to Luma
+// Members" ever ran for them) — the end state this call is trying to
+// reach (not an active Luma member) is already true either way, same
+// "nothing to do here is still success" reasoning as a Mattermost account
+// lookup 404 elsewhere in this codebase.
 func (api *LumaAPI) RemoveMember(ctx context.Context, email string) error {
-	return api.post(ctx, "/memberships/members/update-status", updateMemberStatusRequest{UserID: email, Status: "declined"})
+	err := api.post(ctx, "/memberships/members/update-status", updateMemberStatusRequest{UserID: email, Status: "declined"})
+	var lumaErr *LumaAPIError
+	if errors.As(err, &lumaErr) && lumaErr.Status == lumaStatusNoMembership {
+		return nil
+	}
+	return err
 }
