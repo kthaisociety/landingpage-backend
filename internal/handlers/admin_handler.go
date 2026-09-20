@@ -89,21 +89,27 @@ func (h *AdminHandler) ListAdmins(c *gin.Context) {
 // finished profile setup (matches how other admin actions already treat
 // "provisioned but never signed in" members).
 type AdminUserRow struct {
-	UserID    uuid.UUID      `json:"user_id"`
-	Email     string         `json:"email"`
-	Provider  string         `json:"provider"`
-	CreatedAt time.Time      `json:"created_at"`
-	Roles     pq.StringArray `json:"roles" gorm:"type:text[]"`
-	FirstName string         `json:"first_name"`
-	LastName  string         `json:"last_name"`
-	Team      string         `json:"team"`
-	BoardRole string         `json:"board_role"`
+	UserID        uuid.UUID      `json:"user_id"`
+	Email         string         `json:"email"`
+	Provider      string         `json:"provider"`
+	CreatedAt     time.Time      `json:"created_at"`
+	Roles         pq.StringArray `json:"roles" gorm:"type:text[]"`
+	FirstName     string         `json:"first_name"`
+	LastName      string         `json:"last_name"`
+	Team          string         `json:"team"`
+	BoardRole     string         `json:"board_role"`
+	DeactivatedAt *time.Time     `json:"deactivated_at,omitempty"`
 }
 
+// ListAllUsers returns every user regardless of DeactivatedAt — including
+// deactivated ones is deliberate, not an oversight: the frontend still
+// needs to find a deactivated member (e.g. to finish permanently deleting
+// them later), it just excludes them from its default counts/views. Only
+// DeactivatedAt itself tells the caller which is which.
 func (h *AdminHandler) ListAllUsers(c *gin.Context) {
 	var rows []AdminUserRow
 	err := h.db.Table("users").
-		Select("users.user_id, users.email, users.provider, users.created_at, users.roles, " +
+		Select("users.user_id, users.email, users.provider, users.created_at, users.roles, users.deactivated_at, " +
 			"COALESCE(profiles.first_name, '') AS first_name, COALESCE(profiles.last_name, '') AS last_name, " +
 			"COALESCE(profiles.team, '') AS team, COALESCE(profiles.board_role, '') AS board_role").
 		Joins("LEFT JOIN profiles ON profiles.user_uuid = users.user_id AND profiles.deleted_at IS NULL").
