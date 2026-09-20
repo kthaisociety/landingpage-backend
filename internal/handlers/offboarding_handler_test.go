@@ -102,6 +102,26 @@ func TestOffboardingHandler(t *testing.T) {
 		require.Equal(t, http.StatusOK, rec.Code)
 	})
 
+	// Regression guard for LumaHandler.SyncAll silently undoing a
+	// deactivation: DeactivatedAt is the only local signal that an account
+	// is deactivated, so it must actually get set.
+	t.Run("deactivate marks the local user record as deactivated", func(t *testing.T) {
+		email := "offboarding-deactivate-target@kthais.com"
+		require.NoError(t, db.Create(&models.User{
+			UserId: uuid.New(), Email: email, Provider: "test", Roles: pq.StringArray{"user", "member"},
+		}).Error)
+		t.Cleanup(func() {
+			db.Where("email = ?", email).Unscoped().Delete(&models.User{})
+		})
+
+		rec := post(t, "/api/v1/admin/offboarding/deactivate", map[string]any{"email": email}, headOfIT.cookie)
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		var user models.User
+		require.NoError(t, db.Where("email = ?", email).First(&user).Error)
+		require.NotNil(t, user.DeactivatedAt)
+	})
+
 	t.Run("delete requires the exact confirm phrase", func(t *testing.T) {
 		rec := post(t, "/api/v1/admin/offboarding/delete", map[string]any{"email": "test.user@kthais.com"}, headOfIT.cookie)
 		require.Equal(t, http.StatusBadRequest, rec.Code, "missing confirm phrase")
