@@ -270,6 +270,14 @@ type devTeamMemberSeed struct {
 	firstName string
 	lastName  string
 	adminTeam string
+	// team/boardRole are the Members-dashboard fields (Profile.Team /
+	// Profile.BoardRole) — distinct from adminTeam above, which only
+	// controls access to the Applications review UI. These three people
+	// already play "Head of X" in team_members below, so they double as
+	// three of the Members dashboard's nine board-role holders too,
+	// rather than inventing separate people for the same title.
+	team      string
+	boardRole string
 	entries   []devTeamMembershipSeed
 }
 
@@ -285,6 +293,8 @@ var devTeamMembers = []devTeamMemberSeed{
 		firstName: "Ludvig",
 		lastName:  "Ek",
 		adminTeam: "Development",
+		team:      "Development",
+		boardRole: models.BoardRoleHeadOfDevelopment,
 		entries: []devTeamMembershipSeed{
 			{department: "Development", role: "Head of Development", academicYear: "2025/2026"},
 			{department: "IT", role: "Member", academicYear: "2024/2025"},
@@ -295,6 +305,8 @@ var devTeamMembers = []devTeamMemberSeed{
 		firstName: "Sam",
 		lastName:  "Berg",
 		adminTeam: "Growth",
+		team:      "Growth",
+		boardRole: models.BoardRoleHeadOfGrowth,
 		entries: []devTeamMembershipSeed{
 			{department: "Growth", role: "Head of Growth", academicYear: "2025/2026"},
 		},
@@ -304,6 +316,8 @@ var devTeamMembers = []devTeamMemberSeed{
 		firstName: "Maja",
 		lastName:  "Sund",
 		adminTeam: "Business",
+		team:      "Business",
+		boardRole: models.BoardRoleHeadOfBusiness,
 		entries: []devTeamMembershipSeed{
 			{department: "Business", role: "Head of Business", academicYear: "2025/2026"},
 		},
@@ -380,10 +394,20 @@ func seedDevTeamMembers(db *gorm.DB) {
 			FirstName: person.firstName,
 			LastName:  person.lastName,
 			AdminTeam: person.adminTeam,
+			Team:      person.team,
+		}
+		updateColumns := []string{"first_name", "last_name", "user_uuid", "user_id", "admin_team", "team"}
+		// Only seed the board role if nobody currently holds it — same
+		// reasoning as the dev admin's own Head of IT seed in SeedDev below:
+		// don't stomp a role a developer has since transferred away while
+		// testing the transfer flow.
+		if boardRoleIsVacant(db, person.boardRole) {
+			profile.BoardRole = person.boardRole
+			updateColumns = append(updateColumns, "board_role")
 		}
 		if err := db.Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "email"}},
-			DoUpdates: clause.AssignmentColumns([]string{"first_name", "last_name", "user_uuid", "user_id", "admin_team"}),
+			DoUpdates: clause.AssignmentColumns(updateColumns),
 		}).Create(&profile).Error; err != nil {
 			log.Printf("[dev seed] failed to upsert team member profile %s: %v", person.email, err)
 			continue
@@ -396,6 +420,121 @@ func seedDevTeamMembers(db *gorm.DB) {
 
 	if created > 0 {
 		log.Printf("[dev seed] seeded %d team member row(s)", created)
+	}
+}
+
+// boardRoleIsVacant reports whether nobody currently holds role — "" is
+// never vacant (there's nothing to seed). Used to gate seeding any of the
+// eight exactly-one board roles, so restarting the backend never stomps a
+// role a developer has since transferred away while testing the transfer
+// flow; a DB error is treated as "not vacant" so a transient failure here
+// can't clobber an existing holder.
+func boardRoleIsVacant(db *gorm.DB, role string) bool {
+	if role == "" {
+		return false
+	}
+	var count int64
+	if err := db.Model(&models.Profile{}).Where("board_role = ?", role).Count(&count).Error; err != nil {
+		log.Printf("[dev seed] failed to check whether board role %q is vacant: %v", role, err)
+		return false
+	}
+	return count == 0
+}
+
+type devMemberSeed struct {
+	email     string
+	firstName string
+	lastName  string
+	team      string // recruitment team ("" = Unassigned)
+	boardRole string // one of models.BoardRole*, "" = none
+	isAdmin   bool
+}
+
+// devMembers seeds enough @kthais.com members to exercise every part of the
+// Members dashboard locally: every board role filled (Head of IT is seeded
+// separately onto the dev admin above, and Head of Business/Development/
+// Growth are seeded onto the three devTeamMembers admins above, so this
+// list covers the rest) and at least two rank-and-file members per
+// recruitment team, so each team's stat tile has something to show besides
+// its head.
+var devMembers = []devMemberSeed{
+	{email: "elin.dahl@kthais.local", firstName: "Elin", lastName: "Dahl", boardRole: models.BoardRoleChairperson, isAdmin: true},
+	{email: "noah.lindqvist@kthais.local", firstName: "Noah", lastName: "Lindqvist", boardRole: models.BoardRoleViceChairperson, isAdmin: true},
+	{email: "sara.ahmed@kthais.local", firstName: "Sara", lastName: "Ahmed", team: "Research", boardRole: models.BoardRoleHeadOfResearch, isAdmin: true},
+	{email: "oskar.berg@kthais.local", firstName: "Oskar", lastName: "Berg", boardRole: models.BoardRoleTreasurer, isAdmin: true},
+	{email: "freja.holm@kthais.local", firstName: "Freja", lastName: "Holm", boardRole: models.BoardRoleBoardAdvisor},
+	{email: "anton.svensson@kthais.local", firstName: "Anton", lastName: "Svensson", boardRole: models.BoardRoleBoardAdvisor},
+
+	{email: "isabelle.roth@kthais.local", firstName: "Isabelle", lastName: "Roth", team: "Business"},
+	{email: "marcus.lund@kthais.local", firstName: "Marcus", lastName: "Lund", team: "Business"},
+	{email: "hanna.eklund@kthais.local", firstName: "Hanna", lastName: "Eklund", team: "Development"},
+	{email: "wilhelm.ost@kthais.local", firstName: "Wilhelm", lastName: "Öst", team: "Development"},
+	{email: "linnea.forsberg@kthais.local", firstName: "Linnea", lastName: "Forsberg", team: "Research"},
+	{email: "gustav.aberg@kthais.local", firstName: "Gustav", lastName: "Åberg", team: "Research"},
+	{email: "amanda.nystrom@kthais.local", firstName: "Amanda", lastName: "Nyström", team: "Growth"},
+	{email: "felix.dahlgren@kthais.local", firstName: "Felix", lastName: "Dahlgren", team: "Growth"},
+	{email: "julia.sandberg@kthais.local", firstName: "Julia", lastName: "Sandberg", team: "IT"},
+	{email: "leo.wallin@kthais.local", firstName: "Leo", lastName: "Wallin", team: "IT"},
+}
+
+// seedDevMembers upserts every devMembers person as a user + profile with
+// Team/BoardRole set. Kept separate from seedDevTeamMembers above, which
+// seeds admins into the unrelated team_members table for the shared-notes
+// @mention directory — most people here are plain members, not admins.
+func seedDevMembers(db *gorm.DB) {
+	seeded := 0
+	for _, m := range devMembers {
+		userID := uuid.NewSHA1(uuid.NameSpaceURL, []byte(m.email))
+		roles := pq.StringArray{models.RoleUser, models.RoleMember}
+		if m.isAdmin {
+			roles = append(roles, models.RoleAdmin)
+		}
+		user := models.User{
+			UserId:   userID,
+			Email:    m.email,
+			Provider: "dev-seed",
+			Roles:    roles,
+		}
+		if err := db.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "email"}},
+			DoUpdates: clause.AssignmentColumns([]string{"roles", "provider"}),
+		}).Create(&user).Error; err != nil {
+			log.Printf("[dev seed] failed to upsert member user %s: %v", m.email, err)
+			continue
+		}
+		if err := db.Where("email = ?", m.email).First(&user).Error; err != nil {
+			log.Printf("[dev seed] failed to reload member user %s: %v", m.email, err)
+			continue
+		}
+
+		profile := models.Profile{
+			UserUUID:  userID,
+			UserId:    user.ID,
+			Email:     m.email,
+			FirstName: m.firstName,
+			LastName:  m.lastName,
+			Team:      m.team,
+		}
+		updateColumns := []string{"first_name", "last_name", "user_uuid", "user_id", "team"}
+		// Board Advisor has no single holder to protect, so it's always
+		// safe to (re-)assert; the exactly-one roles only seed if nobody
+		// currently holds them — see boardRoleIsVacant.
+		if m.boardRole == models.BoardRoleBoardAdvisor || boardRoleIsVacant(db, m.boardRole) {
+			profile.BoardRole = m.boardRole
+			updateColumns = append(updateColumns, "board_role")
+		}
+
+		if err := db.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "email"}},
+			DoUpdates: clause.AssignmentColumns(updateColumns),
+		}).Create(&profile).Error; err != nil {
+			log.Printf("[dev seed] failed to upsert member profile %s: %v", m.email, err)
+			continue
+		}
+		seeded++
+	}
+	if seeded > 0 {
+		log.Printf("[dev seed] seeded %d member(s) for the Members dashboard", seeded)
 	}
 }
 
@@ -442,18 +581,25 @@ func SeedDev(db *gorm.DB, cfg *config.Config) {
 		// IT so the seeded admin can exercise the IT-only Team Questions
 		// template editor locally without extra setup.
 		AdminTeam: "IT",
-		// Likewise, so offboarding (Head-of-IT-only) is exercisable locally
-		// without a manual DB update — see Profile.IsHeadOfIT's doc comment.
-		// Unconditional is fine: any number of admins can be Head of IT at
-		// once (the only real invariant is "at least one", not "at most
-		// one"), so re-asserting this on every restart never revokes
-		// anyone else's status.
-		IsHeadOfIT: true,
+	}
+
+	// Head of IT is one of the eight exactly-one board roles (see
+	// Profile.BoardRole's doc comment) — unlike the old IsHeadOfIT bool,
+	// unconditionally re-asserting it on every restart would be wrong now:
+	// if a dev has since transferred it away (e.g. to test the transfer
+	// flow), stomping it back here would leave two rows both claiming to
+	// be the sole holder. Only seed it if nobody currently holds it at
+	// all, same as how the very first Head of IT is bootstrapped in
+	// production.
+	updateColumns := []string{"first_name", "last_name", "user_uuid", "user_id", "admin_team"}
+	if boardRoleIsVacant(db, models.BoardRoleHeadOfIT) {
+		profile.BoardRole = models.BoardRoleHeadOfIT
+		updateColumns = append(updateColumns, "board_role")
 	}
 
 	if err := db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "email"}},
-		DoUpdates: clause.AssignmentColumns([]string{"first_name", "last_name", "user_uuid", "user_id", "admin_team", "is_head_of_it"}),
+		DoUpdates: clause.AssignmentColumns(updateColumns),
 	}).Create(&profile).Error; err != nil {
 		log.Printf("[dev seed] failed to upsert profile: %v", err)
 		return
@@ -485,6 +631,7 @@ func SeedDev(db *gorm.DB, cfg *config.Config) {
 	seedTeamQuestions(db)
 	seedApplications(db, cfg, devUserID)
 	seedDevTeamMembers(db)
+	seedDevMembers(db)
 }
 
 func seedApplications(db *gorm.DB, cfg *config.Config, devUserID uuid.UUID) {

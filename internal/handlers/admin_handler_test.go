@@ -17,16 +17,20 @@ import (
 	"gorm.io/gorm"
 )
 
-// TestDeleteUserProtectsLastHeadOfIT is a regression for a Greptile finding
-// on the offboarding PR: DeleteUser (the plain "Delete user" admin action,
-// unrelated to member offboarding) deleted a profile outright with no
-// awareness of Profile.IsHeadOfIT — deleting the sole remaining Head of
-// IT's profile would zero out the flag with no way to grant it back through
-// the app (GrantHeadOfIT requires already being a head), leaving offboarding
-// unusable until someone manually fixed the database. Needs a real Postgres
-// connection (the check locks and counts head-of-IT rows), so it follows
-// the same "skip if no .env" convention as TestOffboardingHandler.
-func TestDeleteUserProtectsLastHeadOfIT(t *testing.T) {
+// TestDeleteUserProtectsAccountsHoldingBoardRoles is a regression for a
+// Greptile finding on the offboarding PR, generalized for the exactly-one/
+// transfer-only board-role model (see Profile.BoardRole's doc comment):
+// DeleteUser (the plain "Delete user" admin action, unrelated to member
+// offboarding) deleted a profile outright with no awareness of whether it
+// held a board role — deleting the sole holder of one of the eight
+// exactly-one roles (Head of IT among them) would leave nobody able to
+// transfer it away through the app, leaving that role stuck until someone
+// manually fixed the database. Board Advisor is the deliberate exception:
+// any number of advisors, including zero, is valid, so deleting one is
+// never blocked. Needs a real Postgres connection (the check locks and
+// reads the target's own Profile row), so it follows the same "skip if no
+// .env" convention as TestOffboardingHandler.
+func TestDeleteUserProtectsAccountsHoldingBoardRoles(t *testing.T) {
 	envFile := "../../.env"
 	if _, err := os.Stat(envFile); err != nil {
 		t.Skip("skipping: no .env file present (this test needs local Postgres)")
@@ -44,11 +48,12 @@ func TestDeleteUserProtectsLastHeadOfIT(t *testing.T) {
 	}
 	require.NoError(t, db.AutoMigrate(&models.User{}, &models.Profile{}))
 
-	soleHead := mustCreateHeadOfIT(t, db, cfg, "delete-user-sole-head@example.com")
-	otherHead := mustCreateHeadOfIT(t, db, cfg, "delete-user-other-head@example.com")
+	headOfIT := mustCreateHeadOfIT(t, db, cfg, "delete-user-head-of-it@example.com")
+	treasurer := mustCreateBoardRoleHolder(t, db, cfg, "delete-user-treasurer@example.com", models.BoardRoleTreasurer)
+	advisor := mustCreateBoardRoleHolder(t, db, cfg, "delete-user-advisor@example.com", models.BoardRoleBoardAdvisor)
 	requester := mustCreateAdmin(t, db, cfg, "delete-user-requester@example.com")
 	t.Cleanup(func() {
-		for _, email := range []string{soleHead.email, otherHead.email, requester.email} {
+		for _, email := range []string{headOfIT.email, treasurer.email, advisor.email, requester.email} {
 			db.Where("email = ?", email).Unscoped().Delete(&models.Profile{})
 			db.Where("email = ?", email).Unscoped().Delete(&models.User{})
 		}
@@ -67,24 +72,29 @@ func TestDeleteUserProtectsLastHeadOfIT(t *testing.T) {
 		return rec
 	}
 
-	// Two heads exist right now — deleting one is fine, the other remains.
-	rec := del(t, otherHead.email)
-	require.Equal(t, http.StatusOK, rec.Code, "safe to delete a head of IT while another remains")
+	// Board Advisor, the multi-holder exception, is never blocked — even
+	// as the only advisor, deleting them threatens no invariant.
+	rec := del(t, advisor.email)
+	require.Equal(t, http.StatusOK, rec.Code, "deleting a board advisor is always allowed")
 
-	var otherStillExists int64
-	db.Model(&models.User{}).Where("email = ?", otherHead.email).Count(&otherStillExists)
-	require.Zero(t, otherStillExists, "the deleted user should actually be gone")
+	var advisorStillExists int64
+	db.Model(&models.User{}).Where("email = ?", advisor.email).Count(&advisorStillExists)
+	require.Zero(t, advisorStillExists, "the deleted user should actually be gone")
 
-	// Now soleHead is the only head of IT left — deleting them must be refused.
-	rec = del(t, soleHead.email)
-	require.Equal(t, http.StatusConflict, rec.Code)
+	// Any of the eight exactly-one roles blocks deletion — proven here for
+	// both Head of IT and a non-IT role, since the check must not be
+	// special-cased to just one.
+	for _, holder := range []testAdmin{headOfIT, treasurer} {
+		rec := del(t, holder.email)
+		require.Equal(t, http.StatusConflict, rec.Code, "deleting %s must be refused", holder.email)
 
-	var soleHeadStillExists int64
-	db.Model(&models.User{}).Where("email = ?", soleHead.email).Count(&soleHeadStillExists)
-	require.EqualValues(t, 1, soleHeadStillExists, "the refused delete must not have taken effect")
+		var stillExists int64
+		db.Model(&models.User{}).Where("email = ?", holder.email).Count(&stillExists)
+		require.EqualValues(t, 1, stillExists, "the refused delete must not have taken effect")
+	}
 
-	var stillHead bool
-	require.NoError(t, db.Model(&models.Profile{}).Select("is_head_of_it").
-		Where("email = ?", soleHead.email).Scan(&stillHead).Error)
-	require.True(t, stillHead, "the sole head's profile must be untouched")
+	var headOfITRoleIntact string
+	require.NoError(t, db.Model(&models.Profile{}).Select("board_role").
+		Where("email = ?", headOfIT.email).Scan(&headOfITRoleIntact).Error)
+	require.Equal(t, models.BoardRoleHeadOfIT, headOfITRoleIntact, "the head of IT's profile must be untouched")
 }

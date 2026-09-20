@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log"
 	"net/http"
-	"slices"
 	"strings"
 	"time"
 
@@ -16,7 +15,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 // deleteAccountConfirmPhrase must be typed exactly, byte-for-byte, to
@@ -57,20 +55,19 @@ func (h *OffboardingHandler) Register(r *gin.RouterGroup) {
 	headOfIT.Use(middleware.AuthRequiredJWT(h.cfg))
 	headOfIT.Use(middleware.RoleRequired(h.cfg, "admin"))
 	headOfIT.GET("", h.ListHeadsOfIT)
-	headOfIT.POST("/grant", h.GrantHeadOfIT)
-	headOfIT.POST("/revoke", h.RevokeHeadOfIT)
 }
 
-// requesterIsHeadOfIT checks Profile.IsHeadOfIT — deliberately not
-// requesterIsHeadOfTeam/AdminTeam, which any admin can set on themselves via
-// UpdateInterviewSettings. See the IsHeadOfIT field doc comment for why this
-// needs its own, non-self-editable flag.
+// requesterIsHeadOfIT checks Profile.BoardRole == BoardRoleHeadOfIT —
+// deliberately not requesterIsHeadOfTeam/AdminTeam, which any admin can set
+// on themselves via UpdateInterviewSettings. See Profile.BoardRole's doc
+// comment for why Head of IT specifically only ever moves via
+// BoardRoleHandler's transfer endpoint, never a self-editable field.
 func requesterIsHeadOfIT(db *gorm.DB, userID uuid.UUID) (bool, error) {
 	var profile models.Profile
 	if err := db.Where("user_uuid = ?", userID).First(&profile).Error; err != nil {
 		return false, err
 	}
-	return profile.IsHeadOfIT, nil
+	return profile.BoardRole == models.BoardRoleHeadOfIT, nil
 }
 
 // requireHeadOfIT is deliberately stricter than the rest of this admin
@@ -146,14 +143,13 @@ type offboardingDeleteRequest struct {
 // exists) FIRST, then permanently deletes the Google Workspace account and
 // attempts to permanently delete the Mattermost account. Local-first is
 // deliberate, not incidental: deleteUserAndProfile's row-locked transaction
-// is the only thing actually serializing this against a concurrent Delete
-// of a different Head of IT — running it before the irreversible external
-// call means two requests each targeting one of the last two heads can't
-// both slip past an unlocked check and both reach onboarding-service before
-// either commits. The loser is refused here, before any real account is
-// touched, rather than after. Deactivate leaves the local record alone
-// since it's meant to be reversible; Delete cannot be undone from this
-// system and requires typing deleteAccountConfirmPhrase exactly.
+// is what actually refuses to delete an account currently holding one of
+// the eight exactly-one board roles — running it before the irreversible
+// external call means a request targeting, say, the sole Head of IT is
+// refused here, before any real account is touched, rather than after.
+// Deactivate leaves the local record alone since it's meant to be
+// reversible; Delete cannot be undone from this system and requires typing
+// deleteAccountConfirmPhrase exactly.
 func (h *OffboardingHandler) Delete(c *gin.Context) {
 	_, adminEmail, ok := h.requireHeadOfIT(c)
 	if !ok {
@@ -188,8 +184,8 @@ func (h *OffboardingHandler) Delete(c *gin.Context) {
 	switch {
 	case lookupErr == nil:
 		if err := deleteUserAndProfile(h.db, targetUser.ID); err != nil {
-			if errors.Is(err, errCannotDeleteLastHeadOfIT) {
-				c.JSON(http.StatusConflict, gin.H{"error": "can't delete the only remaining head of IT — grant it to someone else first"})
+			if errors.Is(err, errCannotDeleteAccountHoldingBoardRole) {
+				c.JSON(http.StatusConflict, gin.H{"error": "can't delete an account that currently holds a board role — transfer it away first"})
 				return
 			}
 			log.Printf("offboarding: failed to delete local record for %s: %v", targetEmail, err)
@@ -229,154 +225,18 @@ func (h *OffboardingHandler) Delete(c *gin.Context) {
 }
 
 // ListHeadsOfIT returns the emails of every current Head of IT. Open to any
-// admin (not head-of-IT-gated) — who holds this power isn't sensitive, and
-// the admin panel needs it to decide whether to offer "Make Head of IT" or
-// "Remove Head of IT" for each admin row.
+// admin (not head-of-IT-gated) — who holds this power isn't sensitive.
+// Kept for backward compatibility; GET /admin/board-role (BoardRoleHandler)
+// supersedes it for new frontend code, covering all nine board roles in one
+// call instead of just this one.
 func (h *OffboardingHandler) ListHeadsOfIT(c *gin.Context) {
 	var emails []string
-	if err := h.db.Model(&models.Profile{}).Where("is_head_of_it = ?", true).Pluck("email", &emails).Error; err != nil {
+	if err := h.db.Model(&models.Profile{}).Where("board_role = ?", models.BoardRoleHeadOfIT).Pluck("email", &emails).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list heads of IT"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"emails": emails})
 }
-
-type headOfITTargetRequest struct {
-	Email string `json:"email" binding:"required"`
-}
-
-// resolveAdminTarget validates that email belongs to an existing admin,
-// shared by Grant and Revoke since both act on "some other admin, by
-// email."
-func (h *OffboardingHandler) resolveAdminTarget(c *gin.Context, rawEmail string) (target models.Profile, ok bool) {
-	targetEmail := strings.ToLower(strings.TrimSpace(rawEmail))
-	if targetEmail == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "email is required"})
-		return models.Profile{}, false
-	}
-	if err := h.db.Where("email = ?", targetEmail).First(&target).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "no profile found for that email"})
-		return models.Profile{}, false
-	}
-	var targetUser models.User
-	if err := h.db.Where("id = ?", target.UserId).First(&targetUser).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "no user found for that email"})
-		return models.Profile{}, false
-	}
-	if !slices.Contains([]string(targetUser.Roles), models.RoleAdmin) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "must already be an admin"})
-		return models.Profile{}, false
-	}
-	return target, true
-}
-
-// GrantHeadOfIT adds another admin as a Head of IT alongside every existing
-// one — there can be any number of heads at once, so granting never
-// threatens the "at least one" invariant and needs no transaction: it's a
-// pure addition. The very first Head of IT still has to be set with a
-// one-off manual database update, since granting itself requires already
-// being one.
-func (h *OffboardingHandler) GrantHeadOfIT(c *gin.Context) {
-	_, requesterEmail, ok := h.requireHeadOfIT(c)
-	if !ok {
-		return
-	}
-
-	var req headOfITTargetRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "email is required"})
-		return
-	}
-	target, ok := h.resolveAdminTarget(c, req.Email)
-	if !ok {
-		return
-	}
-
-	if err := h.db.Model(&models.Profile{}).Where("user_uuid = ?", target.UserUUID).
-		Update("is_head_of_it", true).Error; err != nil {
-		log.Printf("offboarding: granting head of IT to %s: %v", target.Email, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to grant head of IT"})
-		return
-	}
-
-	log.Printf("offboarding: %s made %s a head of IT", requesterEmail, target.Email)
-	c.JSON(http.StatusOK, gin.H{"email": target.Email})
-}
-
-// errCannotRevokeLastHeadOfIT signals RevokeHeadOfIT's lock-and-count check
-// found the target is the only remaining Head of IT — a 409, not a 500,
-// since nothing went wrong; the action is just refused to preserve the
-// invariant that there's always at least one.
-var errCannotRevokeLastHeadOfIT = errors.New("cannot revoke the only remaining head of IT")
-
-// RevokeHeadOfIT removes email as a Head of IT — themselves or another
-// current head, doesn't matter which — as long as at least one other admin
-// still holds it afterward. Locks every current head-of-IT row for the
-// duration of the check-and-update so two concurrent revokes (e.g. the last
-// two heads each trying to step down at once) can't both succeed and leave
-// zero: Postgres serializes them on that lock, and the loser re-evaluates
-// the count after the winner's commit is visible.
-func (h *OffboardingHandler) RevokeHeadOfIT(c *gin.Context) {
-	_, requesterEmail, ok := h.requireHeadOfIT(c)
-	if !ok {
-		return
-	}
-
-	var req headOfITTargetRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "email is required"})
-		return
-	}
-	targetEmail := strings.ToLower(strings.TrimSpace(req.Email))
-	if targetEmail == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "email is required"})
-		return
-	}
-
-	err := h.db.Transaction(func(tx *gorm.DB) error {
-		var heads []models.Profile
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("is_head_of_it = ?", true).Find(&heads).Error; err != nil {
-			return err
-		}
-		targetIsHead := false
-		for _, p := range heads {
-			if strings.EqualFold(p.Email, targetEmail) {
-				targetIsHead = true
-				break
-			}
-		}
-		if !targetIsHead {
-			return errHeadOfITTargetNotAHead
-		}
-		if len(heads) <= 1 {
-			return errCannotRevokeLastHeadOfIT
-		}
-		return tx.Model(&models.Profile{}).Where("email = ?", targetEmail).
-			Update("is_head_of_it", false).Error
-	})
-	if errors.Is(err, errCannotRevokeLastHeadOfIT) {
-		c.JSON(http.StatusConflict, gin.H{"error": "can't remove the only remaining head of IT — make someone else one first"})
-		return
-	}
-	if errors.Is(err, errHeadOfITTargetNotAHead) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "that admin isn't a head of IT"})
-		return
-	}
-	if err != nil {
-		log.Printf("offboarding: revoking head of IT from %s: %v", targetEmail, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to revoke head of IT"})
-		return
-	}
-
-	log.Printf("offboarding: %s removed %s as a head of IT", requesterEmail, targetEmail)
-	c.JSON(http.StatusOK, gin.H{"email": targetEmail})
-}
-
-// errHeadOfITTargetNotAHead signals Revoke was asked to remove someone who
-// doesn't currently hold the flag at all — a 400, not a no-op, so the
-// caller's mental model of who's a head stays accurate.
-var errHeadOfITTargetNotAHead = errors.New("target is not a head of IT")
 
 // proxy writes the response itself either way, but also returns the
 // upstream status code (0 if it never got that far) so a caller like

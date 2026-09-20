@@ -689,9 +689,9 @@ func requesterIsOnTeam(db *gorm.DB, userID uuid.UUID, team string) (bool, error)
 // this instead of requesterIsOnTeam for actions that must be restricted to
 // the team's head specifically (e.g. bulk-sending on the team's behalf).
 //
-// For team == "IT" specifically, a verified Profile.IsHeadOfIT also
-// satisfies this check, in addition to the self-declared field — an
-// administrator granted real Head-of-IT status (see OffboardingHandler)
+// For team == "IT" specifically, Profile.BoardRole == BoardRoleHeadOfIT
+// also satisfies this check, in addition to the self-declared field — an
+// administrator who holds Head of IT (see BoardRoleHandler.TransferBoardRole)
 // shouldn't have to separately self-declare "IT" to use these lower-stakes,
 // IT-only actions too. This only ever adds access relative to the
 // self-declared check alone, never removes it, so it can't regress anyone
@@ -701,7 +701,7 @@ func requesterIsHeadOfTeam(db *gorm.DB, userID uuid.UUID, team string) (bool, er
 	if err := db.Where("user_uuid = ?", userID).First(&profile).Error; err != nil {
 		return false, err
 	}
-	if team == "IT" && profile.IsHeadOfIT {
+	if team == "IT" && profile.BoardRole == models.BoardRoleHeadOfIT {
 		return true, nil
 	}
 	return profile.AdminTeam == team, nil

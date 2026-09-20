@@ -26,6 +26,31 @@ func NewProfileHandler(db *gorm.DB, mailchimp *mailchimp.MailchimpAPI, cfg *conf
 	return &ProfileHandler{db: db, mailchimp: mailchimp, cfg: cfg}
 }
 
+// resolveTeamFromAcceptedApplication best-effort looks up the most recent
+// accepted GeneralApplication whose KthaisEmail matches email and returns
+// its AssignedTeam, so a newly created Profile starts with the team the
+// member actually joined through instead of "" (Unassigned) — see
+// Profile.Team's doc comment. Matches on KthaisEmail (the @kthais.com
+// address onboarding-service provisioned for them), not EmailNormalized
+// (their original application email) — a real member's Profile is created
+// at first Google login with their new @kthais.com address (see
+// AuthHandler.GoogleCallback), which never equals the personal email they
+// originally applied with. Never errors: a lookup failure or no match just
+// means "no team found", same as never having applied at all — e.g. an
+// admin-onboarded member who never went through recruitment. Ordered by
+// ApplicationYear since the same email can have one accepted application
+// per year.
+func resolveTeamFromAcceptedApplication(db *gorm.DB, email string) string {
+	var application models.GeneralApplication
+	err := db.Where("LOWER(TRIM(kthais_email)) = ? AND status = ?", normalizeEmail(email), models.GeneralApplicationStatusAccepted).
+		Order("application_year DESC").
+		First(&application).Error
+	if err != nil {
+		return ""
+	}
+	return application.AssignedTeam
+}
+
 func (h *ProfileHandler) Register(r *gin.RouterGroup) {
 	profile := r.Group("/profile")
 
@@ -185,6 +210,7 @@ func (h *ProfileHandler) UpdateMyProfile(c *gin.Context) {
 		GitHubLink:     input.GitHubLink,
 		LinkedInLink:   input.LinkedInLink,
 		AboutMe:        input.AboutMe,
+		Team:           resolveTeamFromAcceptedApplication(h.db, input.Email),
 	}
 
 	if err := h.db.Create(&newProfile).Error; err != nil {
@@ -258,6 +284,7 @@ func (h *ProfileHandler) CreateMyProfile(c *gin.Context) {
 		GitHubLink:     input.GitHubLink,
 		LinkedInLink:   input.LinkedInLink,
 		AboutMe:        input.AboutMe,
+		Team:           resolveTeamFromAcceptedApplication(h.db, input.Email),
 	}
 
 	if err := h.db.Create(&newProfile).Error; err != nil {
@@ -575,7 +602,7 @@ func (h *ProfileHandler) GetInterviewSettings(c *gin.Context) {
 		"booking_page_url":         profile.BookingPageURL,
 		"interview_email_template": profile.InterviewEmailTemplate,
 		"admin_team":               profile.AdminTeam,
-		"is_head_of_it":            profile.IsHeadOfIT,
+		"is_head_of_it":            profile.BoardRole == models.BoardRoleHeadOfIT,
 	})
 }
 
@@ -618,7 +645,7 @@ func (h *ProfileHandler) UpdateInterviewSettings(c *gin.Context) {
 		"booking_page_url":         profile.BookingPageURL,
 		"interview_email_template": profile.InterviewEmailTemplate,
 		"admin_team":               profile.AdminTeam,
-		"is_head_of_it":            profile.IsHeadOfIT,
+		"is_head_of_it":            profile.BoardRole == models.BoardRoleHeadOfIT,
 	})
 }
 

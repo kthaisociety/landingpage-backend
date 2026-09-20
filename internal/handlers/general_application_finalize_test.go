@@ -276,14 +276,15 @@ func TestFinalizeRecruitmentPhase(t *testing.T) {
 	})
 
 	// requesterIsHeadOfTeam(db, userID, "IT") also accepts a verified
-	// Profile.IsHeadOfIT, on top of the self-declared AdminTeam == "IT" it
-	// already checked — a real head of IT (granted via OffboardingHandler)
-	// shouldn't have to separately self-declare "IT" to close this phase
-	// too. Declares "Marketing" specifically to prove this isn't just
-	// falling back to the self-declared check.
+	// Profile.BoardRole == BoardRoleHeadOfIT, on top of the self-declared
+	// AdminTeam == "IT" it already checked — a real head of IT (whose role
+	// only ever moves via BoardRoleHandler.TransferBoardRole) shouldn't
+	// have to separately self-declare "IT" to close this phase too.
+	// Declares "Marketing" specifically to prove this isn't just falling
+	// back to the self-declared check.
 	t.Run("a verified head of IT can close it even without self-declaring the IT team", func(t *testing.T) {
 		verifiedHead := mustCreateTeamAdmin(t, db, cfg, "finalize-admin-verified-head@seed.local", "Marketing")
-		require.NoError(t, db.Model(&models.Profile{}).Where("email = ?", verifiedHead.email).Update("is_head_of_it", true).Error)
+		require.NoError(t, db.Model(&models.Profile{}).Where("email = ?", verifiedHead.email).Update("board_role", models.BoardRoleHeadOfIT).Error)
 		t.Cleanup(func() {
 			db.Where("email = ?", verifiedHead.email).Unscoped().Delete(&models.Profile{})
 			db.Where("email = ?", verifiedHead.email).Unscoped().Delete(&models.User{})

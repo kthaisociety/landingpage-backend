@@ -84,13 +84,35 @@ func (h *AdminHandler) ListAdmins(c *gin.Context) {
 	c.JSON(http.StatusOK, admins)
 }
 
+// AdminUserRow is ListAllUsers' response shape — User's own fields plus a
+// left-joined Profile's name/Team/BoardRole, blank if the user has never
+// finished profile setup (matches how other admin actions already treat
+// "provisioned but never signed in" members).
+type AdminUserRow struct {
+	UserID    uuid.UUID      `json:"user_id"`
+	Email     string         `json:"email"`
+	Provider  string         `json:"provider"`
+	CreatedAt time.Time      `json:"created_at"`
+	Roles     pq.StringArray `json:"roles" gorm:"type:text[]"`
+	FirstName string         `json:"first_name"`
+	LastName  string         `json:"last_name"`
+	Team      string         `json:"team"`
+	BoardRole string         `json:"board_role"`
+}
+
 func (h *AdminHandler) ListAllUsers(c *gin.Context) {
-	var users []models.User
-	if err := h.db.Find(&users).Error; err != nil {
+	var rows []AdminUserRow
+	err := h.db.Table("users").
+		Select("users.user_id, users.email, users.provider, users.created_at, users.roles, "+
+			"COALESCE(profiles.first_name, '') AS first_name, COALESCE(profiles.last_name, '') AS last_name, "+
+			"COALESCE(profiles.team, '') AS team, COALESCE(profiles.board_role, '') AS board_role").
+		Joins("LEFT JOIN profiles ON profiles.user_uuid = users.user_id AND profiles.deleted_at IS NULL").
+		Scan(&rows).Error
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not retrieve users"})
 		return
 	}
-	c.JSON(http.StatusOK, users)
+	c.JSON(http.StatusOK, rows)
 }
 
 func (h *AdminHandler) GetUserByUUID(c *gin.Context) {
@@ -337,8 +359,8 @@ func (h *AdminHandler) DeleteUser(c *gin.Context) {
 	}
 
 	err = deleteUserAndProfile(h.db, user.ID)
-	if errors.Is(err, errCannotDeleteLastHeadOfIT) {
-		c.JSON(http.StatusConflict, gin.H{"error": "can't delete the only remaining head of IT — grant it to someone else first"})
+	if errors.Is(err, errCannotDeleteAccountHoldingBoardRole) {
+		c.JSON(http.StatusConflict, gin.H{"error": "can't delete an account that currently holds a board role — transfer it away first"})
 		return
 	}
 	if err != nil {
