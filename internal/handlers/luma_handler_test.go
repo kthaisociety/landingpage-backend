@@ -27,7 +27,7 @@ func TestLumaHandler(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
 	api := engine.Group("/api/v1")
-	NewLumaHandler(cfg, nil).Register(api)
+	NewLumaHandler(nil, cfg, nil).Register(api)
 
 	adminCookie := func(t *testing.T) *http.Cookie {
 		t.Helper()
@@ -116,7 +116,7 @@ func TestLumaHandlerAddMemberSuccess(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
 	api := engine.Group("/api/v1")
-	NewLumaHandler(cfg, lumaApi).Register(api)
+	NewLumaHandler(nil, cfg, lumaApi).Register(api)
 
 	token, err := utils.WriteJWT("admin@kthais.com", []string{"user", "member", "admin"}, uuid.New(), cfg.JwtSigningKey, 60)
 	require.NoError(t, err)

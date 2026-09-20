@@ -45,6 +45,7 @@ func (h *OnboardingHandler) Register(r *gin.RouterGroup) {
 		onboarding.POST("/send-email", h.SendEmail)
 		onboarding.POST("/record-account", h.RecordAccount)
 		onboarding.POST("/add-to-luma", h.AddToLuma)
+		onboarding.POST("/remove-from-luma", h.RemoveFromLuma)
 	}
 }
 
@@ -163,6 +164,30 @@ func (h *OnboardingHandler) AddToLuma(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "added"})
+}
+
+type removeFromLumaRequest struct {
+	Email string `json:"email" binding:"required"`
+}
+
+// RemoveFromLuma removes email from Luma's "Members" tier (declines their
+// membership — see luma.LumaAPI.RemoveMember). Called by onboarding-
+// service's offboarding.Service.Deactivate/Delete, attempted alongside
+// the Google/Mattermost steps there regardless of whether those succeed.
+func (h *OnboardingHandler) RemoveFromLuma(c *gin.Context) {
+	var req removeFromLumaRequest
+	if err := c.ShouldBindJSON(&req); err != nil || !isKthaisEmail(req.Email) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "a valid @kthais.com email is required"})
+		return
+	}
+
+	if err := h.luma.RemoveMember(c.Request.Context(), req.Email); err != nil {
+		log.Printf("onboarding remove-from-luma: failed to remove %s: %v", req.Email, err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to remove member from luma"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "removed"})
 }
 
 // onboardingNotifyRequest is the body sent to onboarding-service's own

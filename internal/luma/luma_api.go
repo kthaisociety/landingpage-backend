@@ -79,32 +79,30 @@ type addMemberRequest struct {
 	MembershipTierID string `json:"membership_tier_id"`
 }
 
-type addMemberResponse struct {
-	MembershipID string `json:"membership_id"`
-	Status       string `json:"status"`
+// updateMemberStatusRequest is RemoveMember's request body. user_id accepts
+// either a Luma user id ('usr-xxx') or, as used here, a plain email.
+type updateMemberStatusRequest struct {
+	UserID string `json:"user_id"`
+	Status string `json:"status"`
 }
 
-// AddMemberToTier adds email to tierID. Only requires an API key — safe to
-// call on a nil receiver (returns an error rather than panicking), since
-// main.go leaves the client nil when LUMA_API_KEY isn't set. ctx is wired
-// through to the outbound request so a caller (e.g. AddToLuma, run
-// synchronously inside an HTTP handler) that cancels or times out actually
-// stops waiting on Luma instead of leaking a blocked goroutine.
-func (api *LumaAPI) AddMemberToTier(ctx context.Context, email, tierID string) error {
+// post marshals body, POSTs it to api.baseURL()+path with the standard
+// headers, and treats a non-2xx response as an error — the shared shape
+// behind AddMemberToTier and RemoveMember. ctx is wired through to the
+// outbound request so a caller (e.g. AddToLuma, run synchronously inside
+// an HTTP handler) that cancels or times out actually stops waiting on
+// Luma instead of leaking a blocked goroutine.
+func (api *LumaAPI) post(ctx context.Context, path string, body any) error {
 	if api == nil || strings.TrimSpace(api.APIKey) == "" {
 		return fmt.Errorf("luma is not configured")
 	}
-	if strings.TrimSpace(tierID) == "" {
-		return fmt.Errorf("luma tier id is missing")
-	}
 
-	request := addMemberRequest{Email: email, MembershipTierID: tierID}
-	body, err := json.Marshal(request)
+	payload, err := json.Marshal(body)
 	if err != nil {
 		return err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, api.baseURL()+"/memberships/members/add", bytes.NewBuffer(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, api.baseURL()+path, bytes.NewBuffer(payload))
 	if err != nil {
 		return err
 	}
@@ -125,11 +123,23 @@ func (api *LumaAPI) AddMemberToTier(ctx context.Context, email, tierID string) e
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return &LumaAPIError{Status: resp.StatusCode, Body: string(data)}
 	}
+	return nil
+}
 
-	if len(data) == 0 {
-		return nil
+// AddMemberToTier adds email to tierID. Only requires an API key — safe to
+// call on a nil receiver (returns an error rather than panicking), since
+// main.go leaves the client nil when LUMA_API_KEY isn't set.
+func (api *LumaAPI) AddMemberToTier(ctx context.Context, email, tierID string) error {
+	if strings.TrimSpace(tierID) == "" {
+		return fmt.Errorf("luma tier id is missing")
 	}
+	return api.post(ctx, "/memberships/members/add", addMemberRequest{Email: email, MembershipTierID: tierID})
+}
 
-	var result addMemberResponse
-	return json.Unmarshal(data, &result)
+// RemoveMember declines email's membership — Luma's only "remove from
+// tier" primitive; there's no hard-delete endpoint. This is a status
+// change, not a true delete: an admin can still see and re-approve the
+// membership from Luma's own dashboard.
+func (api *LumaAPI) RemoveMember(ctx context.Context, email string) error {
+	return api.post(ctx, "/memberships/members/update-status", updateMemberStatusRequest{UserID: email, Status: "declined"})
 }
