@@ -210,7 +210,7 @@ func (h *ProfileHandler) UpdateMyProfile(c *gin.Context) {
 		GitHubLink:     input.GitHubLink,
 		LinkedInLink:   input.LinkedInLink,
 		AboutMe:        input.AboutMe,
-		Team:           resolveTeamFromAcceptedApplication(h.db, input.Email),
+		Team:           resolveTeamFromAcceptedApplication(h.db, user.Email),
 	}
 
 	if err := h.db.Create(&newProfile).Error; err != nil {
@@ -284,7 +284,7 @@ func (h *ProfileHandler) CreateMyProfile(c *gin.Context) {
 		GitHubLink:     input.GitHubLink,
 		LinkedInLink:   input.LinkedInLink,
 		AboutMe:        input.AboutMe,
-		Team:           resolveTeamFromAcceptedApplication(h.db, input.Email),
+		Team:           resolveTeamFromAcceptedApplication(h.db, user.Email),
 	}
 
 	if err := h.db.Create(&newProfile).Error; err != nil {
