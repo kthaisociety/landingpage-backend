@@ -41,7 +41,10 @@ func TestRemoveMemberSuccess(t *testing.T) {
 func TestRemoveMemberNoMembershipIsNotAFailure(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(lumaStatusNoMembership)
+		// The literal Luma actually returns, not lumaStatusNoMembership —
+		// asserting against the same constant RemoveMember checks would let
+		// this test stay green even if that constant's value were wrong.
+		w.WriteHeader(470)
 		_, _ = w.Write([]byte(`{"message":"We can't update the status of a member without a membership.","code":null}`))
 	}))
 	t.Cleanup(server.Close)
