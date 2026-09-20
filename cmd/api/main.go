@@ -151,6 +151,7 @@ func main() {
 	database.BackfillProfileSlugs(db)
 	database.BackfillSharedNoteEntries(db)
 	database.BackfillHeadOfITRole(db)
+	database.EnsureBoardRoleConstraints(db)
 
 	database.SeedDev(db, cfg)
 
