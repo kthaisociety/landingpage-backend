@@ -143,7 +143,6 @@ func main() {
 		&models.GeneralApplicationSettings{},
 		&models.FinalizeRecruitmentPhase{},
 		&models.TeamQuestionsDeliveryEvent{},
-		&models.OnboardingContractTemplate{},
 	)
 	if err != nil {
 		log.Fatal("Failed to migrate database:", err)
@@ -281,7 +280,7 @@ func setupRoutes(r *gin.Engine, db *gorm.DB, mailchimpApi *mailchimp.MailchimpAP
 		handlers.NewGeneralApplicationHandler(db, cfg),
 		teamQuestionsHandler,
 		handlers.NewOnboardingHandler(db, cfg, lumaApi),
-		handlers.NewManualOnboardingHandler(db, cfg),
+		handlers.NewManualOnboardingHandler(cfg),
 		handlers.NewOffboardingHandler(db, cfg),
 		handlers.NewLumaHandler(db, cfg, lumaApi),
 		handlers.NewBoardRoleHandler(db, cfg),
