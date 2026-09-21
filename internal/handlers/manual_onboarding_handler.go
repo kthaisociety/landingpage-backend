@@ -245,6 +245,10 @@ type onboardingEmailSettingsRequest struct {
 	ConfirmIntroText    string `json:"confirm_intro_text"`
 	AccountIntroText    string `json:"account_intro_text"`
 	MattermostIntroText string `json:"mattermost_intro_text"`
+	ContractIntroText   string `json:"contract_intro_text"`
+	ContractURL         string `json:"contract_url"`
+	BylawsURL           string `json:"bylaws_url"`
+	LumaKickoffURL      string `json:"luma_kickoff_url"`
 }
 
 // UpdateEmailSettings proxies to onboarding-service's own PUT
@@ -273,6 +277,10 @@ func (h *ManualOnboardingHandler) UpdateEmailSettings(c *gin.Context) {
 		"confirm_intro_text":    req.ConfirmIntroText,
 		"account_intro_text":    req.AccountIntroText,
 		"mattermost_intro_text": req.MattermostIntroText,
+		"contract_intro_text":   req.ContractIntroText,
+		"contract_url":          req.ContractURL,
+		"bylaws_url":            req.BylawsURL,
+		"luma_kickoff_url":      req.LumaKickoffURL,
 		"updated_by_email":      adminEmail,
 	})
 	if err != nil {
@@ -294,18 +302,26 @@ func (h *ManualOnboardingHandler) UpdateEmailSettings(c *gin.Context) {
 // booking URL when none is set yet — never a real link the admin panel
 // would let anyone click through to. Both the start and confirm emails'
 // real buttons are per-record portal token URLs that don't exist yet for a
-// preview; the account and Mattermost emails' buttons are fixed values, so
-// onboarding-service's preview response already carries the real thing —
-// see PreviewEmailSettings below.
+// preview; the account, Mattermost, and contract emails' buttons are all
+// fixed values once configured, so onboarding-service's preview response
+// already carries the real thing — see PreviewEmailSettings below.
 const previewSampleStartButtonURL = "https://kthais.com/onboarding/start"
 const previewSampleConfirmButtonURL = "https://kthais.com/onboarding/confirm"
 
 type previewOnboardingEmailRequest struct {
 	Kind      string `json:"kind"`
 	IntroText string `json:"intro_text"`
+	// ContractURL/BylawsURL/LumaKickoffURL are only meaningful for
+	// kind=contract — the admin panel's own live draft, forwarded straight
+	// through to onboarding-service rather than letting it fall back to
+	// saved settings, so previewing an edited-but-unsaved link shows that
+	// edit, not the stale saved value.
+	ContractURL    string `json:"contract_url"`
+	BylawsURL      string `json:"bylaws_url"`
+	LumaKickoffURL string `json:"luma_kickoff_url"`
 }
 
-// PreviewEmailSettings renders one of the three onboarding emails exactly
+// PreviewEmailSettings renders one of the five onboarding emails exactly
 // as it would be sent for the given (possibly unsaved) intro text: it asks
 // onboarding-service to build the same subject/body a real send would (see
 // that service's EmailSettingsHandler.Preview), then wraps it in this
@@ -317,8 +333,8 @@ func (h *ManualOnboardingHandler) PreviewEmailSettings(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
 	}
-	if req.Kind != "start" && req.Kind != "confirm" && req.Kind != "account" && req.Kind != "mattermost" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "kind must be one of: start, confirm, account, mattermost"})
+	if req.Kind != "start" && req.Kind != "confirm" && req.Kind != "account" && req.Kind != "mattermost" && req.Kind != "contract" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "kind must be one of: start, confirm, account, mattermost, contract"})
 		return
 	}
 	if h.cfg.OnboardingServiceURL == "" {
@@ -326,7 +342,13 @@ func (h *ManualOnboardingHandler) PreviewEmailSettings(c *gin.Context) {
 		return
 	}
 
-	payload, err := json.Marshal(map[string]string{"kind": req.Kind, "intro_text": req.IntroText})
+	payload, err := json.Marshal(map[string]string{
+		"kind":             req.Kind,
+		"intro_text":       req.IntroText,
+		"contract_url":     req.ContractURL,
+		"bylaws_url":       req.BylawsURL,
+		"luma_kickoff_url": req.LumaKickoffURL,
+	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to build request"})
 		return
@@ -358,10 +380,11 @@ func (h *ManualOnboardingHandler) PreviewEmailSettings(c *gin.Context) {
 		return
 	}
 
-	// account and mattermost have a fixed button — onboarding-service's
-	// response above already carries the real URL/text, used as-is. start
-	// and confirm both have a per-record portal token URL that doesn't
-	// exist for a preview, so only their button text is kept (falling back
+	// account, mattermost, and contract all have a fixed button —
+	// onboarding-service's response above already carries the real
+	// URL/text, used as-is. start and confirm both have a per-record portal
+	// token URL that doesn't exist for a preview, so only their button text
+	// is kept (falling back
 	// to a local default if talking to an older onboarding-service that
 	// predates it returning button_text at all — deploy ordering/rollback
 	// should never make the preview silently degrade to "Contact us") and

@@ -477,6 +477,17 @@ func TestOnboardingEmailSettings(t *testing.T) {
 				resp = map[string]string{"subject": "Your KTH AI Society account", "body": "Hi Alex,\n\nWelcome aboard!", "button_url": "https://accounts.google.com/", "button_text": "Sign in with Google"}
 			case "mattermost":
 				resp = map[string]string{"subject": "Getting started with Mattermost", "body": "Hi Alex,\n\nSay hi!", "button_url": "https://chat.aisociety.se", "button_text": "Open Mattermost"}
+			case "contract":
+				// Echoes back whatever contract/bylaws/Luma links the
+				// request sent — mirrors onboarding-service's own Preview,
+				// which renders the caller's live draft rather than its
+				// own saved settings (see that handler's doc comment).
+				resp = map[string]string{
+					"subject":     "Your KTH AI Society membership contract",
+					"body":        "Hi Alex,\n\nRead ahead.\n\nClub bylaws: " + body["bylaws_url"] + "\n\nKick-off event (RSVP on Luma): " + body["luma_kickoff_url"],
+					"button_url":  body["contract_url"],
+					"button_text": "View your contract",
+				}
 			}
 			payload, err := json.Marshal(resp)
 			require.NoError(t, err)
@@ -532,6 +543,31 @@ func TestOnboardingEmailSettings(t *testing.T) {
 		_, mattermostHTML := preview(t, engine, "mattermost")
 		require.Contains(t, mattermostHTML, "Open Mattermost")
 		require.Contains(t, mattermostHTML, "https://chat.aisociety.se")
+	})
+
+	t.Run("contract preview forwards the admin panel's own draft links, not saved settings", func(t *testing.T) {
+		cfg.OnboardingServiceURL = fakeEmailSettingsPreviewServer(t).URL
+		gin.SetMode(gin.TestMode)
+		engine := gin.New()
+		NewManualOnboardingHandler(cfg).Register(engine.Group("/api/v1"))
+
+		rec := do(t, engine, "POST", "/api/v1/admin/onboarding/email-settings/preview",
+			map[string]any{
+				"kind":             "contract",
+				"intro_text":       "whatever",
+				"contract_url":     "https://drive.google.com/file/d/draft-contract/view",
+				"bylaws_url":       "https://kthais.com/draft-bylaws.pdf",
+				"luma_kickoff_url": "https://lu.ma/draft-kickoff",
+			}, adminCookie(t))
+		require.Equal(t, http.StatusOK, rec.Code)
+		var resp struct {
+			Subject string `json:"subject"`
+			HTML    string `json:"html"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+		require.Contains(t, resp.HTML, "https://drive.google.com/file/d/draft-contract/view")
+		require.Contains(t, resp.HTML, "https://kthais.com/draft-bylaws.pdf")
+		require.Contains(t, resp.HTML, "https://lu.ma/draft-kickoff")
 	})
 
 	t.Run("start and confirm previews fall back to a local button label against an older onboarding-service that omits button_text", func(t *testing.T) {
