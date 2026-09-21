@@ -339,4 +339,3 @@ func TestBoardRoleHandler(t *testing.T) {
 		require.Equal(t, "", boardRoleOf(t, otherPlainAdmin.email))
 	})
 }
-
