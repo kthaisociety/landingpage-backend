@@ -1,11 +1,13 @@
 package handlers
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 
 	"backend/internal/config"
 	"backend/internal/models"
@@ -97,4 +99,65 @@ func TestDeleteUserProtectsAccountsHoldingBoardRoles(t *testing.T) {
 	require.NoError(t, db.Model(&models.Profile{}).Select("board_role").
 		Where("email = ?", headOfIT.email).Scan(&headOfITRoleIntact).Error)
 	require.Equal(t, models.BoardRoleHeadOfIT, headOfITRoleIntact, "the head of IT's profile must be untouched")
+}
+
+// TestListAllUsersIncludesDeactivatedWithTimestamp guards the deliberate
+// choice behind ListAllUsers: it must keep returning a deactivated user
+// (not silently drop them — the frontend still needs to find one, e.g. to
+// finish permanently deleting them later) but must expose DeactivatedAt so
+// the frontend can tell active and deactivated members apart itself.
+func TestListAllUsersIncludesDeactivatedWithTimestamp(t *testing.T) {
+	envFile := "../../.env"
+	if _, err := os.Stat(envFile); err != nil {
+		t.Skip("skipping: no .env file present (this test needs local Postgres)")
+	}
+	require.NoError(t, godotenv.Load(envFile))
+
+	cfg, err := config.LoadConfig()
+	require.NoError(t, err)
+
+	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=%s",
+		cfg.Database.Host, cfg.Database.User, cfg.Database.Password, cfg.Database.DBName, cfg.Database.Port, cfg.Database.SSLMode)
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Skipf("skipping: could not connect to Postgres: %v", err)
+	}
+	require.NoError(t, db.AutoMigrate(&models.User{}, &models.Profile{}))
+
+	active := mustCreateAdmin(t, db, cfg, "list-users-active@example.com")
+	deactivated := mustCreateAdmin(t, db, cfg, "list-users-deactivated@example.com")
+	require.NoError(t, db.Model(&models.User{}).Where("email = ?", deactivated.email).
+		Update("deactivated_at", time.Now()).Error)
+	t.Cleanup(func() {
+		for _, email := range []string{active.email, deactivated.email} {
+			db.Where("email = ?", email).Unscoped().Delete(&models.Profile{})
+			db.Where("email = ?", email).Unscoped().Delete(&models.User{})
+		}
+	})
+
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	NewAdminHandler(db, cfg).Register(engine.Group("/api/v1"))
+
+	req := httptest.NewRequest("GET", "/api/v1/admin/users", nil)
+	req.AddCookie(active.cookie)
+	rec := httptest.NewRecorder()
+	engine.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var rows []AdminUserRow
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &rows))
+
+	byEmail := map[string]AdminUserRow{}
+	for _, row := range rows {
+		byEmail[row.Email] = row
+	}
+
+	activeRow, ok := byEmail[active.email]
+	require.True(t, ok, "an active user must still be listed")
+	require.Nil(t, activeRow.DeactivatedAt)
+
+	deactivatedRow, ok := byEmail[deactivated.email]
+	require.True(t, ok, "a deactivated user must still be listed, not silently dropped")
+	require.NotNil(t, deactivatedRow.DeactivatedAt, "the frontend needs this to tell them apart")
 }
