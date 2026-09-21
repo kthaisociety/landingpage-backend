@@ -311,6 +311,14 @@ const previewSampleConfirmButtonURL = "https://kthais.com/onboarding/confirm"
 type previewOnboardingEmailRequest struct {
 	Kind      string `json:"kind"`
 	IntroText string `json:"intro_text"`
+	// ContractURL/BylawsURL/LumaKickoffURL are only meaningful for
+	// kind=contract — the admin panel's own live draft, forwarded straight
+	// through to onboarding-service rather than letting it fall back to
+	// saved settings, so previewing an edited-but-unsaved link shows that
+	// edit, not the stale saved value.
+	ContractURL    string `json:"contract_url"`
+	BylawsURL      string `json:"bylaws_url"`
+	LumaKickoffURL string `json:"luma_kickoff_url"`
 }
 
 // PreviewEmailSettings renders one of the five onboarding emails exactly
@@ -334,7 +342,13 @@ func (h *ManualOnboardingHandler) PreviewEmailSettings(c *gin.Context) {
 		return
 	}
 
-	payload, err := json.Marshal(map[string]string{"kind": req.Kind, "intro_text": req.IntroText})
+	payload, err := json.Marshal(map[string]string{
+		"kind":             req.Kind,
+		"intro_text":       req.IntroText,
+		"contract_url":     req.ContractURL,
+		"bylaws_url":       req.BylawsURL,
+		"luma_kickoff_url": req.LumaKickoffURL,
+	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to build request"})
 		return
