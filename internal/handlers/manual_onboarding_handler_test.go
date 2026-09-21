@@ -481,12 +481,14 @@ func TestOnboardingEmailSettings(t *testing.T) {
 				// Echoes back whatever contract/bylaws/Luma links the
 				// request sent — mirrors onboarding-service's own Preview,
 				// which renders the caller's live draft rather than its
-				// own saved settings (see that handler's doc comment).
+				// own saved settings (see that handler's doc comment). The
+				// button is the kick-off RSVP link; contract/bylaws travel
+				// as plain (linkified) URLs in the body.
 				resp = map[string]string{
 					"subject":     "Your KTH AI Society membership contract",
-					"body":        "Hi Alex,\n\nRead ahead.\n\nClub bylaws: " + body["bylaws_url"] + "\n\nKick-off event (RSVP on Luma): " + body["luma_kickoff_url"],
-					"button_url":  body["contract_url"],
-					"button_text": "View your contract",
+					"body":        "Hi Alex,\n\nRead ahead.\n\nContract: " + body["contract_url"] + "\n\nBylaws: " + body["bylaws_url"],
+					"button_url":  body["luma_kickoff_url"],
+					"button_text": "RSVP for the kick-off event",
 				}
 			}
 			payload, err := json.Marshal(resp)
@@ -565,9 +567,13 @@ func TestOnboardingEmailSettings(t *testing.T) {
 			HTML    string `json:"html"`
 		}
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-		require.Contains(t, resp.HTML, "https://drive.google.com/file/d/draft-contract/view")
-		require.Contains(t, resp.HTML, "https://kthais.com/draft-bylaws.pdf")
+		// Contract and bylaws are plain links in the body — linkified into
+		// real <a> tags, not left as inert text.
+		require.Contains(t, resp.HTML, `<a href="https://drive.google.com/file/d/draft-contract/view">`)
+		require.Contains(t, resp.HTML, `<a href="https://kthais.com/draft-bylaws.pdf">`)
+		// The kick-off RSVP link is the button, labeled accordingly.
 		require.Contains(t, resp.HTML, "https://lu.ma/draft-kickoff")
+		require.Contains(t, resp.HTML, "RSVP for the kick-off event")
 	})
 
 	t.Run("start and confirm previews fall back to a local button label against an older onboarding-service that omits button_text", func(t *testing.T) {
