@@ -45,7 +45,6 @@ func (h *BoardRoleHandler) Register(r *gin.RouterGroup) {
 	admin.POST("/board-role/board-advisor/add", h.AddBoardAdvisor)
 	admin.POST("/board-role/board-advisor/remove", h.RemoveBoardAdvisor)
 	admin.POST("/team/set", h.SetTeam)
-	admin.POST("/team/backfill", h.BackfillMemberTeams)
 }
 
 // exactlyOneBoardRoles is models.AllBoardRoles minus BoardRoleBoardAdvisor
@@ -323,60 +322,4 @@ func (h *BoardRoleHandler) SetTeam(c *gin.Context) {
 
 	log.Printf("board-role: %s set %s's team to %q", adminEmail, targetEmail, req.Team)
 	c.JSON(http.StatusOK, gin.H{"email": targetEmail, "team": req.Team})
-}
-
-// BackfillMemberTeams is a one-time-ish bulk fix for members whose Profile
-// predates Team existing (or predates auto-populating it at profile-
-// creation time — see resolveTeamFromAcceptedApplication): for every
-// Profile with an empty Team and no BoardRole, look up their most recent
-// accepted GeneralApplication by KthaisEmail and set Team from its
-// AssignedTeam. Board-role holders are deliberately excluded, not just
-// displayed differently: board roles aren't scoped to any of the five
-// recruitment teams (this includes the four Head-of-team roles too — a
-// Head of Business's authority comes from BoardRole, not Team, and their
-// original recruitment team, if any, is no longer their current one), so
-// assigning one a Team here would just be wrong, not merely redundant with
-// what the dashboard already shows for them. Same "reuse the one already-
-// tested lookup" approach as the auto-populate call sites in
-// profile_handler.go and AuthHandler.GoogleCallback — this is deliberately
-// not a raw SQL migration, so this is the single place that logic lives.
-// Idempotent and safe to call more than once: it only ever touches
-// profiles with an empty team and an empty board_role, and a member with no
-// matching application (never applied, or admin-onboarded outside
-// recruitment) is silently left as "" (Unassigned), same as at profile-
-// creation time.
-func (h *BoardRoleHandler) BackfillMemberTeams(c *gin.Context) {
-	_, adminEmail, ok := getAdminIdentity(c)
-	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-		return
-	}
-
-	var profiles []models.Profile
-	if err := h.db.Where("team = '' AND board_role = ''").Find(&profiles).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list members"})
-		return
-	}
-
-	updated := 0
-	for _, profile := range profiles {
-		team := resolveTeamFromAcceptedApplication(h.db, profile.Email)
-		if team == "" {
-			continue
-		}
-		// Update via the already-loaded struct (same pattern as
-		// AddBoardAdvisor/RemoveBoardAdvisor below) rather than
-		// re-specifying a WHERE clause by hand — Profile embeds gorm.Model
-		// (a uint ID) but also declares its own uuid.UUID Id as the actual
-		// primary key column, so a hand-built "id = ?" using profile.ID
-		// would bind the wrong (always-zero) field.
-		if err := h.db.Model(&profile).Update("team", team).Error; err != nil {
-			log.Printf("board-role: failed to backfill team for %s: %v", profile.Email, err)
-			continue
-		}
-		updated++
-	}
-
-	log.Printf("board-role: %s backfilled team for %d/%d member(s) with no team", adminEmail, updated, len(profiles))
-	c.JSON(http.StatusOK, gin.H{"checked": len(profiles), "updated": updated})
 }
