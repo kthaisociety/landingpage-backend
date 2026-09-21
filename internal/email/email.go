@@ -472,21 +472,63 @@ func SendGeneralApplicationRejection(application models.GeneralApplication, temp
 // real clickable links instead of inert text that merely looks like one.
 var onboardingBodyURLPattern = regexp.MustCompile(`https?://[^\s<]+`)
 
+// htmlEscapedURLBoundaries are HTML entities that mark the end of a URL
+// when they immediately follow it in already-escaped text: the original,
+// pre-escape text had a literal delimiter right after the URL — most
+// commonly the "<https://example.com>" wrapping convention — and by the
+// time linkifyOnboardingBodyURLs runs, that delimiter has already become
+// one of these entities. &amp; is deliberately not included here: it's a
+// legitimate part of many real URLs' own query strings (?a=1&b=2), not a
+// boundary marker.
+var htmlEscapedURLBoundaries = []string{"&lt;", "&gt;", "&#34;", "&#39;"}
+
 // linkifyOnboardingBodyURLs wraps bare URLs in escapedBody in real <a>
 // tags. Must only ever be called on text that has already been through
 // template.HTMLEscapeString: it operates purely on already-safe, already-
 // escaped text and can only ever add an <a> tag around a URL-shaped
 // substring, so admin-authored intro text is never re-interpreted as HTML
-// by this — it can gain a link, nothing else. Trailing punctuation
-// (sentence-ending periods, commas, closing parens/quotes) is trimmed out
-// of the href/link text so "see https://example.com." doesn't swallow the
-// period into the link.
+// by this — it can gain a link, nothing else.
 func linkifyOnboardingBodyURLs(escapedBody string) string {
 	return onboardingBodyURLPattern.ReplaceAllStringFunc(escapedBody, func(match string) string {
-		trimmed := strings.TrimRight(match, ".,;:!?)]\"'")
-		trailing := match[len(trimmed):]
-		return `<a href="` + trimmed + `">` + trimmed + `</a>` + trailing
+		end := len(match)
+		for _, boundary := range htmlEscapedURLBoundaries {
+			if i := strings.Index(match, boundary); i >= 0 && i < end {
+				end = i
+			}
+		}
+		url, rest := match[:end], match[end:]
+
+		url, trimmed := trimTrailingURLPunctuation(url)
+		rest = trimmed + rest
+
+		if url == "" {
+			return match
+		}
+		return `<a href="` + url + `">` + url + `</a>` + rest
 	})
+}
+
+// trimTrailingURLPunctuation trims common trailing punctuation
+// (sentence-ending periods, commas, closing brackets/quotes) off url —
+// almost always prose that follows the link, not part of it — so "see
+// https://example.com." doesn't swallow the period into the link. A
+// trailing ')' is the one exception: it's kept whenever it balances an
+// earlier '(' within url itself (e.g. Wikipedia's own
+// .../Function_(mathematics)), since trimming a URL's own closing paren
+// would point at a different, likely-nonexistent page.
+func trimTrailingURLPunctuation(url string) (trimmed, trailing string) {
+	trimmed = url
+	for len(trimmed) > 0 {
+		last := trimmed[len(trimmed)-1]
+		if last == ')' && strings.Count(trimmed, "(") >= strings.Count(trimmed, ")") {
+			break
+		}
+		if !strings.ContainsRune(".,;:!?)]\"'", rune(last)) {
+			break
+		}
+		trimmed = trimmed[:len(trimmed)-1]
+	}
+	return trimmed, url[len(trimmed):]
 }
 
 // RenderOnboardingEmail renders a single onboarding-flow email's HTML body

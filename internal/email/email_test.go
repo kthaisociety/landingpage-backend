@@ -275,6 +275,30 @@ func TestLinkifyOnboardingBodyURLs(t *testing.T) {
 			input: "no links here",
 			want:  "no links here",
 		},
+		{
+			// Pre-escape text "<https://example.com/doc>" — HTMLEscapeString
+			// has already turned the wrapping angle brackets into entities
+			// by the time this runs. The escaped '>' must not be swallowed
+			// into the href.
+			name:  "URL wrapped in already-escaped angle brackets stops at the boundary",
+			input: "&lt;https://example.com/doc&gt; see above",
+			want:  `&lt;<a href="https://example.com/doc">https://example.com/doc</a>&gt; see above`,
+		},
+		{
+			name:  "a URL's own balanced trailing parenthesis is kept",
+			input: "https://en.wikipedia.org/wiki/Function_(mathematics)",
+			want:  `<a href="https://en.wikipedia.org/wiki/Function_(mathematics)">https://en.wikipedia.org/wiki/Function_(mathematics)</a>`,
+		},
+		{
+			name:  "an unmatched trailing parenthesis from surrounding prose is excluded",
+			input: "(see https://example.com)",
+			want:  `(see <a href="https://example.com">https://example.com</a>)`,
+		},
+		{
+			name:  "a URL with a balanced paren followed by prose punctuation trims only the punctuation",
+			input: "https://en.wikipedia.org/wiki/Function_(mathematics).",
+			want:  `<a href="https://en.wikipedia.org/wiki/Function_(mathematics)">https://en.wikipedia.org/wiki/Function_(mathematics)</a>.`,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
