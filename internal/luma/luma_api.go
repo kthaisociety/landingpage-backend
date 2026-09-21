@@ -136,6 +136,18 @@ func (api *LumaAPI) post(ctx context.Context, path string, body any) error {
 // AddMemberToTier adds email to tierID. Only requires an API key — safe to
 // call on a nil receiver (returns an error rather than panicking), since
 // main.go leaves the client nil when LUMA_API_KEY isn't set.
+//
+// Known failure mode (diagnosed 2026-09-22, no code fix yet): a person
+// already holding an active membership in a *different* tier on this
+// calendar does not get added or moved here — the call returns success but
+// silently no-ops, leaving them out of tierID entirely. Hit in production
+// for three members who'd been placed in the "Community" tier by hand
+// before this integration existed; SyncAll reported no failures for them,
+// yet they never appeared in the Members tier. Luma's API has no
+// move-tier endpoint — the manual fix was declining their existing
+// membership (the same update-status call RemoveMember below makes) before
+// adding them here. Worth wiring that decline-then-add sequence into an
+// admin action if this recurs.
 func (api *LumaAPI) AddMemberToTier(ctx context.Context, email, tierID string) error {
 	if strings.TrimSpace(tierID) == "" {
 		return fmt.Errorf("luma tier id is missing")
