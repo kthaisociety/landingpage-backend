@@ -1,22 +1,30 @@
 package handlers
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
 	"backend/internal/config"
+	"backend/internal/models"
 	"backend/internal/utils"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/joho/godotenv"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 )
 
 // generateTestJWTKey returns a freshly generated RSA private key, PEM
@@ -45,7 +53,7 @@ func TestManualOnboardingHandler(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
 	api := engine.Group("/api/v1")
-	NewManualOnboardingHandler(cfg).Register(api)
+	NewManualOnboardingHandler(nil, cfg).Register(api)
 
 	adminCookie := func(t *testing.T) *http.Cookie {
 		t.Helper()
@@ -192,7 +200,7 @@ func TestManualOnboardingListRecords(t *testing.T) {
 
 		gin.SetMode(gin.TestMode)
 		engine := gin.New()
-		NewManualOnboardingHandler(cfg).Register(engine.Group("/api/v1"))
+		NewManualOnboardingHandler(nil, cfg).Register(engine.Group("/api/v1"))
 
 		rec := listRecords(t, engine, adminCookie(t))
 		require.Equal(t, http.StatusOK, rec.Code)
@@ -204,7 +212,7 @@ func TestManualOnboardingListRecords(t *testing.T) {
 
 		gin.SetMode(gin.TestMode)
 		engine := gin.New()
-		NewManualOnboardingHandler(cfg).Register(engine.Group("/api/v1"))
+		NewManualOnboardingHandler(nil, cfg).Register(engine.Group("/api/v1"))
 
 		rec := listRecords(t, engine, adminCookie(t))
 		require.Equal(t, http.StatusOK, rec.Code)
@@ -214,7 +222,7 @@ func TestManualOnboardingListRecords(t *testing.T) {
 	t.Run("non-admin is rejected", func(t *testing.T) {
 		gin.SetMode(gin.TestMode)
 		engine := gin.New()
-		NewManualOnboardingHandler(cfg).Register(engine.Group("/api/v1"))
+		NewManualOnboardingHandler(nil, cfg).Register(engine.Group("/api/v1"))
 
 		rec := listRecords(t, engine, nil)
 		require.Equal(t, http.StatusUnauthorized, rec.Code)
@@ -278,7 +286,7 @@ func TestOnboardingRecordActions(t *testing.T) {
 
 				gin.SetMode(gin.TestMode)
 				engine := gin.New()
-				NewManualOnboardingHandler(cfg).Register(engine.Group("/api/v1"))
+				NewManualOnboardingHandler(nil, cfg).Register(engine.Group("/api/v1"))
 
 				rec := postAction(t, engine, "/api/v1/admin/onboarding/"+action, map[string]any{"id": 5}, adminCookie(t))
 				require.Equal(t, http.StatusOK, rec.Code)
@@ -291,7 +299,7 @@ func TestOnboardingRecordActions(t *testing.T) {
 				cfg.OnboardingServiceURL = "http://example.invalid"
 				gin.SetMode(gin.TestMode)
 				engine := gin.New()
-				NewManualOnboardingHandler(cfg).Register(engine.Group("/api/v1"))
+				NewManualOnboardingHandler(nil, cfg).Register(engine.Group("/api/v1"))
 
 				rec := postAction(t, engine, "/api/v1/admin/onboarding/"+action, map[string]any{}, adminCookie(t))
 				require.Equal(t, http.StatusBadRequest, rec.Code)
@@ -301,7 +309,7 @@ func TestOnboardingRecordActions(t *testing.T) {
 				cfg.OnboardingServiceURL = ""
 				gin.SetMode(gin.TestMode)
 				engine := gin.New()
-				NewManualOnboardingHandler(cfg).Register(engine.Group("/api/v1"))
+				NewManualOnboardingHandler(nil, cfg).Register(engine.Group("/api/v1"))
 
 				rec := postAction(t, engine, "/api/v1/admin/onboarding/"+action, map[string]any{"id": 5}, adminCookie(t))
 				require.Equal(t, http.StatusServiceUnavailable, rec.Code)
@@ -310,7 +318,7 @@ func TestOnboardingRecordActions(t *testing.T) {
 			t.Run("non-admin is rejected", func(t *testing.T) {
 				gin.SetMode(gin.TestMode)
 				engine := gin.New()
-				NewManualOnboardingHandler(cfg).Register(engine.Group("/api/v1"))
+				NewManualOnboardingHandler(nil, cfg).Register(engine.Group("/api/v1"))
 
 				rec := postAction(t, engine, "/api/v1/admin/onboarding/"+action, map[string]any{"id": 5}, nil)
 				require.Equal(t, http.StatusUnauthorized, rec.Code)
@@ -368,7 +376,7 @@ func TestOnboardingEmailSettings(t *testing.T) {
 
 		gin.SetMode(gin.TestMode)
 		engine := gin.New()
-		NewManualOnboardingHandler(cfg).Register(engine.Group("/api/v1"))
+		NewManualOnboardingHandler(nil, cfg).Register(engine.Group("/api/v1"))
 
 		rec := do(t, engine, "GET", "/api/v1/admin/onboarding/email-settings", nil, adminCookie(t))
 		require.Equal(t, http.StatusOK, rec.Code)
@@ -381,7 +389,7 @@ func TestOnboardingEmailSettings(t *testing.T) {
 		cfg.OnboardingServiceURL = ""
 		gin.SetMode(gin.TestMode)
 		engine := gin.New()
-		NewManualOnboardingHandler(cfg).Register(engine.Group("/api/v1"))
+		NewManualOnboardingHandler(nil, cfg).Register(engine.Group("/api/v1"))
 
 		rec := do(t, engine, "GET", "/api/v1/admin/onboarding/email-settings", nil, adminCookie(t))
 		require.Equal(t, http.StatusServiceUnavailable, rec.Code)
@@ -390,7 +398,7 @@ func TestOnboardingEmailSettings(t *testing.T) {
 	t.Run("GET requires admin auth", func(t *testing.T) {
 		gin.SetMode(gin.TestMode)
 		engine := gin.New()
-		NewManualOnboardingHandler(cfg).Register(engine.Group("/api/v1"))
+		NewManualOnboardingHandler(nil, cfg).Register(engine.Group("/api/v1"))
 
 		rec := do(t, engine, "GET", "/api/v1/admin/onboarding/email-settings", nil, nil)
 		require.Equal(t, http.StatusUnauthorized, rec.Code)
@@ -409,7 +417,7 @@ func TestOnboardingEmailSettings(t *testing.T) {
 
 		gin.SetMode(gin.TestMode)
 		engine := gin.New()
-		NewManualOnboardingHandler(cfg).Register(engine.Group("/api/v1"))
+		NewManualOnboardingHandler(nil, cfg).Register(engine.Group("/api/v1"))
 
 		rec := do(t, engine, "PUT", "/api/v1/admin/onboarding/email-settings",
 			map[string]any{
@@ -429,7 +437,7 @@ func TestOnboardingEmailSettings(t *testing.T) {
 	t.Run("preview rejects an unknown kind", func(t *testing.T) {
 		gin.SetMode(gin.TestMode)
 		engine := gin.New()
-		NewManualOnboardingHandler(cfg).Register(engine.Group("/api/v1"))
+		NewManualOnboardingHandler(nil, cfg).Register(engine.Group("/api/v1"))
 
 		rec := do(t, engine, "POST", "/api/v1/admin/onboarding/email-settings/preview",
 			map[string]any{"kind": "bogus", "intro_text": "whatever"}, adminCookie(t))
@@ -447,7 +455,7 @@ func TestOnboardingEmailSettings(t *testing.T) {
 
 		gin.SetMode(gin.TestMode)
 		engine := gin.New()
-		NewManualOnboardingHandler(cfg).Register(engine.Group("/api/v1"))
+		NewManualOnboardingHandler(nil, cfg).Register(engine.Group("/api/v1"))
 
 		rec := do(t, engine, "POST", "/api/v1/admin/onboarding/email-settings/preview",
 			map[string]any{"kind": "start", "intro_text": "whatever"}, adminCookie(t))
@@ -505,7 +513,7 @@ func TestOnboardingEmailSettings(t *testing.T) {
 		cfg.OnboardingServiceURL = fakeEmailSettingsPreviewServer(t).URL
 		gin.SetMode(gin.TestMode)
 		engine := gin.New()
-		NewManualOnboardingHandler(cfg).Register(engine.Group("/api/v1"))
+		NewManualOnboardingHandler(nil, cfg).Register(engine.Group("/api/v1"))
 
 		startSubject, startHTML := preview(t, engine, "start")
 		require.Equal(t, "Welcome to KTH AI Society", startSubject)
@@ -522,7 +530,7 @@ func TestOnboardingEmailSettings(t *testing.T) {
 		cfg.OnboardingServiceURL = fakeEmailSettingsPreviewServer(t).URL
 		gin.SetMode(gin.TestMode)
 		engine := gin.New()
-		NewManualOnboardingHandler(cfg).Register(engine.Group("/api/v1"))
+		NewManualOnboardingHandler(nil, cfg).Register(engine.Group("/api/v1"))
 
 		_, accountHTML := preview(t, engine, "account")
 		require.Contains(t, accountHTML, "Sign in with Google")
@@ -545,10 +553,123 @@ func TestOnboardingEmailSettings(t *testing.T) {
 
 		gin.SetMode(gin.TestMode)
 		engine := gin.New()
-		NewManualOnboardingHandler(cfg).Register(engine.Group("/api/v1"))
+		NewManualOnboardingHandler(nil, cfg).Register(engine.Group("/api/v1"))
 
 		_, startHTML := preview(t, engine, "start")
 		require.Contains(t, startHTML, "Start onboarding")
 		require.NotContains(t, startHTML, "Contact us")
+	})
+}
+
+// TestOnboardingContractTemplate covers the admin upload/metadata endpoints
+// backing onboarding-service's contract email — the other end of this
+// (OnboardingHandler.GetContractTemplate, which onboarding-service actually
+// fetches from) lives in this same handler package but is exercised
+// implicitly through these same rows. Needs a real Postgres connection,
+// same "skip if no .env" convention as
+// TestAdminUpdateSettingsPreservesRecruitmentOpensAtWhenOmitted.
+func TestOnboardingContractTemplate(t *testing.T) {
+	envFile := "../../.env"
+	if _, err := os.Stat(envFile); err != nil {
+		t.Skip("skipping: no .env file present (this test needs local Postgres)")
+	}
+	require.NoError(t, godotenv.Load(envFile))
+
+	cfg, err := config.LoadConfig()
+	require.NoError(t, err)
+	// Keeps this test independent of real R2 credentials — see
+	// shouldStoreResumeInDatabase's own reasoning in
+	// general_application_handler.go.
+	cfg.DevelopmentMode = true
+	cfg.JwtSigningKey = generateTestJWTKey(t)
+	cfg.JwtValidatingKey = cfg.JwtSigningKey
+
+	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=%s",
+		cfg.Database.Host, cfg.Database.User, cfg.Database.Password, cfg.Database.DBName, cfg.Database.Port, cfg.Database.SSLMode)
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Skipf("skipping: could not connect to Postgres: %v", err)
+	}
+	require.NoError(t, db.AutoMigrate(&models.OnboardingContractTemplate{}, &models.BlobData{}))
+	require.NoError(t, db.Unscoped().Where("1 = 1").Delete(&models.OnboardingContractTemplate{}).Error)
+	t.Cleanup(func() {
+		db.Unscoped().Where("1 = 1").Delete(&models.OnboardingContractTemplate{})
+	})
+
+	adminCookie := func(t *testing.T) *http.Cookie {
+		t.Helper()
+		token, err := utils.WriteJWT("admin@kthais.com", []string{"user", "member", "admin"}, uuid.New(), cfg.JwtSigningKey, 60)
+		require.NoError(t, err)
+		return &http.Cookie{Name: "jwt", Value: token}
+	}
+
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	NewManualOnboardingHandler(db, cfg).Register(engine.Group("/api/v1"))
+
+	getMeta := func(t *testing.T) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest("GET", "/api/v1/admin/onboarding/contract-template", nil)
+		req.AddCookie(adminCookie(t))
+		rec := httptest.NewRecorder()
+		engine.ServeHTTP(rec, req)
+		return rec
+	}
+
+	upload := func(t *testing.T, filename, content string, cookie *http.Cookie) *httptest.ResponseRecorder {
+		t.Helper()
+		var buf bytes.Buffer
+		writer := multipart.NewWriter(&buf)
+		part, err := writer.CreateFormFile("file", filename)
+		require.NoError(t, err)
+		_, err = part.Write([]byte(content))
+		require.NoError(t, err)
+		require.NoError(t, writer.Close())
+
+		req := httptest.NewRequest("POST", "/api/v1/admin/onboarding/contract-template", &buf)
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+		if cookie != nil {
+			req.AddCookie(cookie)
+		}
+		rec := httptest.NewRecorder()
+		engine.ServeHTTP(rec, req)
+		return rec
+	}
+
+	t.Run("no file uploaded yet", func(t *testing.T) {
+		rec := getMeta(t)
+		require.Equal(t, http.StatusOK, rec.Code)
+		require.JSONEq(t, `{"uploaded":false}`, rec.Body.String())
+	})
+
+	t.Run("upload requires admin auth", func(t *testing.T) {
+		rec := upload(t, "contract.pdf", "%PDF-1.4 fake", nil)
+		require.Equal(t, http.StatusUnauthorized, rec.Code)
+	})
+
+	t.Run("uploading stores the file and metadata reflects it", func(t *testing.T) {
+		rec := upload(t, "contract-2026.pdf", "%PDF-1.4 fake contract bytes", adminCookie(t))
+		require.Equal(t, http.StatusOK, rec.Code)
+		var body map[string]any
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+		require.Equal(t, true, body["uploaded"])
+		require.Equal(t, "contract-2026.pdf", body["file_name"])
+		require.Equal(t, "admin@kthais.com", body["updated_by_email"])
+
+		metaRec := getMeta(t)
+		require.Contains(t, metaRec.Body.String(), "contract-2026.pdf")
+	})
+
+	t.Run("re-uploading replaces the stored file, not adds a second one", func(t *testing.T) {
+		rec := upload(t, "contract-v2.pdf", "%PDF-1.4 a newer version", adminCookie(t))
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		var count int64
+		require.NoError(t, db.Model(&models.OnboardingContractTemplate{}).Count(&count).Error)
+		require.Equal(t, int64(1), count, "the singleton row is updated in place, not duplicated")
+
+		metaRec := getMeta(t)
+		require.Contains(t, metaRec.Body.String(), "contract-v2.pdf")
+		require.NotContains(t, metaRec.Body.String(), "contract-2026.pdf")
 	})
 }

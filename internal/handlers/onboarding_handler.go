@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/subtle"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"backend/internal/email"
 	"backend/internal/luma"
 	"backend/internal/models"
+	"backend/internal/utils"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -46,6 +48,7 @@ func (h *OnboardingHandler) Register(r *gin.RouterGroup) {
 		onboarding.POST("/record-account", h.RecordAccount)
 		onboarding.POST("/add-to-luma", h.AddToLuma)
 		onboarding.POST("/remove-from-luma", h.RemoveFromLuma)
+		onboarding.GET("/contract-template", h.GetContractTemplate)
 	}
 }
 
@@ -188,6 +191,46 @@ func (h *OnboardingHandler) RemoveFromLuma(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "removed"})
+}
+
+// GetContractTemplate serves the currently uploaded membership-contract
+// file to onboarding-service, which relays it to a member clicking their
+// emailed contract link (see that service's PortalHandler.DownloadContract
+// and backendclient.GetContractTemplate) — this backend is the one place
+// the file itself lives, same reasoning as SendEmail above reusing this
+// backend's SES setup rather than onboarding-service holding its own
+// credentials. 404s if no admin has uploaded one yet.
+func (h *OnboardingHandler) GetContractTemplate(c *gin.Context) {
+	template, err := models.LoadOnboardingContractTemplate(h.db)
+	if err != nil {
+		log.Printf("onboarding contract-template: database error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
+		return
+	}
+	if template.ID == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "no contract template has been uploaded yet"})
+		return
+	}
+
+	r2, err := utils.InitS3SDK(h.cfg)
+	if err != nil {
+		log.Printf("onboarding contract-template: failed to initialize storage: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to initialize storage"})
+		return
+	}
+	data, err := template.GetData(r2)
+	if err != nil {
+		log.Printf("onboarding contract-template: failed to fetch data: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch contract template"})
+		return
+	}
+
+	contentType := template.ContentType
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, template.FileName))
+	c.Data(http.StatusOK, contentType, data)
 }
 
 // onboardingNotifyRequest is the body sent to onboarding-service's own

@@ -6,14 +6,19 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"backend/internal/config"
 	"backend/internal/email"
 	"backend/internal/middleware"
+	"backend/internal/models"
+	"backend/internal/utils"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
 // ManualOnboardingHandler owns the admin-facing /admin/onboarding/* routes:
@@ -28,11 +33,12 @@ import (
 // this backend never persists a copy of onboarding state, onboarding-service
 // stays the source of truth for all of it.
 type ManualOnboardingHandler struct {
+	db  *gorm.DB
 	cfg *config.Config
 }
 
-func NewManualOnboardingHandler(cfg *config.Config) *ManualOnboardingHandler {
-	return &ManualOnboardingHandler{cfg: cfg}
+func NewManualOnboardingHandler(db *gorm.DB, cfg *config.Config) *ManualOnboardingHandler {
+	return &ManualOnboardingHandler{db: db, cfg: cfg}
 }
 
 func (h *ManualOnboardingHandler) Register(r *gin.RouterGroup) {
@@ -48,6 +54,8 @@ func (h *ManualOnboardingHandler) Register(r *gin.RouterGroup) {
 	admin.GET("/email-settings", h.GetEmailSettings)
 	admin.PUT("/email-settings", h.UpdateEmailSettings)
 	admin.POST("/email-settings/preview", h.PreviewEmailSettings)
+	admin.GET("/contract-template", h.GetContractTemplateMeta)
+	admin.POST("/contract-template", h.UploadContractTemplate)
 }
 
 type manualOnboardingRequest struct {
@@ -245,6 +253,9 @@ type onboardingEmailSettingsRequest struct {
 	ConfirmIntroText    string `json:"confirm_intro_text"`
 	AccountIntroText    string `json:"account_intro_text"`
 	MattermostIntroText string `json:"mattermost_intro_text"`
+	ContractIntroText   string `json:"contract_intro_text"`
+	BylawsURL           string `json:"bylaws_url"`
+	LumaKickoffURL      string `json:"luma_kickoff_url"`
 }
 
 // UpdateEmailSettings proxies to onboarding-service's own PUT
@@ -273,6 +284,9 @@ func (h *ManualOnboardingHandler) UpdateEmailSettings(c *gin.Context) {
 		"confirm_intro_text":    req.ConfirmIntroText,
 		"account_intro_text":    req.AccountIntroText,
 		"mattermost_intro_text": req.MattermostIntroText,
+		"contract_intro_text":   req.ContractIntroText,
+		"bylaws_url":            req.BylawsURL,
+		"luma_kickoff_url":      req.LumaKickoffURL,
 		"updated_by_email":      adminEmail,
 	})
 	if err != nil {
@@ -299,13 +313,14 @@ func (h *ManualOnboardingHandler) UpdateEmailSettings(c *gin.Context) {
 // see PreviewEmailSettings below.
 const previewSampleStartButtonURL = "https://kthais.com/onboarding/start"
 const previewSampleConfirmButtonURL = "https://kthais.com/onboarding/confirm"
+const previewSampleContractButtonURL = "https://kthais.com/onboarding/contract"
 
 type previewOnboardingEmailRequest struct {
 	Kind      string `json:"kind"`
 	IntroText string `json:"intro_text"`
 }
 
-// PreviewEmailSettings renders one of the three onboarding emails exactly
+// PreviewEmailSettings renders one of the five onboarding emails exactly
 // as it would be sent for the given (possibly unsaved) intro text: it asks
 // onboarding-service to build the same subject/body a real send would (see
 // that service's EmailSettingsHandler.Preview), then wraps it in this
@@ -317,8 +332,8 @@ func (h *ManualOnboardingHandler) PreviewEmailSettings(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
 	}
-	if req.Kind != "start" && req.Kind != "confirm" && req.Kind != "account" && req.Kind != "mattermost" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "kind must be one of: start, confirm, account, mattermost"})
+	if req.Kind != "start" && req.Kind != "confirm" && req.Kind != "account" && req.Kind != "mattermost" && req.Kind != "contract" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "kind must be one of: start, confirm, account, mattermost, contract"})
 		return
 	}
 	if h.cfg.OnboardingServiceURL == "" {
@@ -378,6 +393,11 @@ func (h *ManualOnboardingHandler) PreviewEmailSettings(c *gin.Context) {
 		if buttonText == "" {
 			buttonText = "Continue to confirm"
 		}
+	case "contract":
+		buttonURL = previewSampleContractButtonURL
+		if buttonText == "" {
+			buttonText = "View your contract"
+		}
 	}
 
 	html, err := email.RenderOnboardingEmail(rendered.Subject, rendered.Body, buttonURL, buttonText)
@@ -387,4 +407,143 @@ func (h *ManualOnboardingHandler) PreviewEmailSettings(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"subject": rendered.Subject, "html": html})
+}
+
+// contractTemplateResponse mirrors what an admin needs to know about the
+// currently uploaded membership-contract file, without the bytes
+// themselves — Uploaded is false (and every other field blank) before an
+// admin has ever uploaded one.
+func contractTemplateResponse(t models.OnboardingContractTemplate) gin.H {
+	if t.ID == 0 {
+		return gin.H{"uploaded": false}
+	}
+	return gin.H{
+		"uploaded":         true,
+		"file_name":        t.FileName,
+		"content_type":     t.ContentType,
+		"updated_by_email": t.UpdatedByEmail,
+		"updated_at":       t.UpdatedAt,
+	}
+}
+
+// GetContractTemplateMeta lets the admin panel show which contract file is
+// currently live, without downloading its bytes.
+func (h *ManualOnboardingHandler) GetContractTemplateMeta(c *gin.Context) {
+	template, err := models.LoadOnboardingContractTemplate(h.db)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
+		return
+	}
+	c.JSON(http.StatusOK, contractTemplateResponse(template))
+}
+
+// maxContractTemplateSize bounds the upload — a signed-document template is
+// never expected to be more than a few pages.
+const maxContractTemplateSize = 10 << 20 // 10MB
+
+// UploadContractTemplate replaces the membership-contract file onboarding-
+// service's contract email links members to (see OnboardingHandler.
+// GetContractTemplate). Same dual-storage split as GeneralApplication's
+// resume upload: DevelopmentMode keeps the bytes in Postgres so local dev
+// never needs real R2 credentials, everywhere else they go to R2 via
+// BlobData. Any previous file (in either storage) is best-effort deleted
+// once the new one is safely stored, so this never leaves an orphaned R2
+// object or Postgres blob behind after repeated uploads.
+func (h *ManualOnboardingHandler) UploadContractTemplate(c *gin.Context) {
+	_, adminEmail, ok := getAdminIdentity(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file is required"})
+		return
+	}
+	if fileHeader.Size > maxContractTemplateSize {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file must be at most 10MB"})
+		return
+	}
+
+	file, err := fileHeader.Open()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read file"})
+		return
+	}
+	defer file.Close()
+	data, err := io.ReadAll(file)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read file"})
+		return
+	}
+
+	contentType := fileHeader.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = http.DetectContentType(data)
+	}
+	filename := filepath.Base(fileHeader.Filename)
+
+	template, err := models.LoadOnboardingContractTemplate(h.db)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
+		return
+	}
+	previousBlobID := template.BlobID
+
+	template.FileName = filename
+	template.ContentType = contentType
+	template.UpdatedByEmail = adminEmail
+
+	var r2 utils.R2Client
+	var r2Initialized bool
+	if shouldStoreResumeInDatabase(h.cfg) {
+		template.Data = data
+		template.BlobID = nil
+	} else {
+		r2, err = utils.InitS3SDK(h.cfg)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to initialize storage"})
+			return
+		}
+		r2Initialized = true
+
+		ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(filename)), ".")
+		name := strings.TrimSuffix(filename, filepath.Ext(filename))
+		blob, err := models.NewBlobData(name, ext, uuid.Nil, data, h.db, r2)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to store file"})
+			return
+		}
+		template.BlobID = &blob.BlobId
+		template.Data = nil
+	}
+
+	if template.ID == 0 {
+		err = h.db.Create(&template).Error
+	} else {
+		err = h.db.Save(&template).Error
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save contract template"})
+		return
+	}
+
+	if previousBlobID != nil {
+		if !r2Initialized {
+			r2, err = utils.InitS3SDK(h.cfg)
+			r2Initialized = err == nil
+		}
+		if r2Initialized {
+			if err := r2.DeleteObject(previousBlobID.String()); err != nil {
+				log.Printf("onboarding contract-template: failed to delete superseded blob %s: %v", previousBlobID, err)
+			}
+		}
+		if err := h.db.Where("blob_id = ?", previousBlobID).Delete(&models.BlobData{}).Error; err != nil {
+			log.Printf("onboarding contract-template: failed to delete superseded blob row %s: %v", previousBlobID, err)
+		}
+	}
+
+	log.Printf("onboarding contract-template: %q uploaded by %s (%d bytes)", filename, adminEmail, len(data))
+	c.JSON(http.StatusOK, contractTemplateResponse(template))
 }
