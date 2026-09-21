@@ -8,6 +8,7 @@ import (
 	"html/template"
 	"os"
 	"path"
+	"regexp"
 	"strings"
 	"time"
 
@@ -465,14 +466,39 @@ func SendGeneralApplicationRejection(application models.GeneralApplication, temp
 	return sendEmail(application.Email, subject, html)
 }
 
+// onboardingBodyURLPattern matches bare http(s) URLs in an onboarding
+// email's plain-text body (e.g. the contract email's "Contract: <url>" and
+// "Bylaws: <url>" lines) so linkifyOnboardingBodyURLs can turn them into
+// real clickable links instead of inert text that merely looks like one.
+var onboardingBodyURLPattern = regexp.MustCompile(`https?://[^\s<]+`)
+
+// linkifyOnboardingBodyURLs wraps bare URLs in escapedBody in real <a>
+// tags. Must only ever be called on text that has already been through
+// template.HTMLEscapeString: it operates purely on already-safe, already-
+// escaped text and can only ever add an <a> tag around a URL-shaped
+// substring, so admin-authored intro text is never re-interpreted as HTML
+// by this — it can gain a link, nothing else. Trailing punctuation
+// (sentence-ending periods, commas, closing parens/quotes) is trimmed out
+// of the href/link text so "see https://example.com." doesn't swallow the
+// period into the link.
+func linkifyOnboardingBodyURLs(escapedBody string) string {
+	return onboardingBodyURLPattern.ReplaceAllStringFunc(escapedBody, func(match string) string {
+		trimmed := strings.TrimRight(match, ".,;:!?)]\"'")
+		trailing := match[len(trimmed):]
+		return `<a href="` + trimmed + `">` + trimmed + `</a>` + trailing
+	})
+}
+
 // RenderOnboardingEmail renders a single onboarding-flow email's HTML body
 // without sending it, so a preview (see the admin onboarding email-settings
 // preview endpoint) can never drift from what SendOnboardingEmail actually
 // sends — both share this one implementation. body may contain plain text
 // with newlines; it is HTML-escaped and wrapped in <p>/<br> here, never
 // executed as a Go template, since it originates from another service's
-// request body. buttonURL/buttonText may both be empty, in which case the
-// email falls back to the base template's default "Contact us" mailto link.
+// request body — any bare URLs within it are then linkified (see
+// linkifyOnboardingBodyURLs) so they render as real links rather than plain
+// text. buttonURL/buttonText may both be empty, in which case the email
+// falls back to the base template's default "Contact us" mailto link.
 func RenderOnboardingEmail(subject, body, buttonURL, buttonText string) (string, error) {
 	tmpl, err := parseEmailTemplate("onboarding", "generic.html")
 	if err != nil {
@@ -480,6 +506,7 @@ func RenderOnboardingEmail(subject, body, buttonURL, buttonText string) (string,
 	}
 
 	rendered := strings.ReplaceAll(template.HTMLEscapeString(body), "\n", "<br>")
+	rendered = linkifyOnboardingBodyURLs(rendered)
 
 	type onboardingEmailData struct {
 		EmailData

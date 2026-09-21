@@ -221,3 +221,64 @@ func TestSendOnboardingEmailDoesNotDuplicateGreeting(t *testing.T) {
 	assert.NotContains(t, mailer.htmlBody, "Hello!", "base.html's default greeting should be suppressed, not duplicated")
 	assert.NotContains(t, mailer.htmlBody, "Hello,", "base.html's default greeting should be suppressed, not duplicated")
 }
+
+// TestSendOnboardingEmailLinkifiesBareURLs covers the contract email's
+// "Contract: <url>" / "Bylaws: <url>" lines (and any other onboarding email
+// body that happens to mention a URL): they must render as real clickable
+// links, not just text that looks like one.
+func TestSendOnboardingEmailLinkifiesBareURLs(t *testing.T) {
+	previousMailer := defaultMailer
+	mailer := &captureMailer{}
+	defaultMailer = mailer
+	t.Cleanup(func() {
+		defaultMailer = previousMailer
+	})
+
+	body := "Hi Test,\n\nRead ahead.\n\nContract: https://drive.google.com/file/d/abc/view\n\nBylaws: https://kthais.com/bylaws.pdf."
+	err := SendOnboardingEmail("test@example.com", "Your KTH AI Society membership contract", body, "https://lu.ma/kickoff", "RSVP for the kick-off event")
+
+	assert.Nil(t, err, "SendOnboardingEmail should not return an error")
+	assert.Contains(t, mailer.htmlBody, `<a href="https://drive.google.com/file/d/abc/view">https://drive.google.com/file/d/abc/view</a>`)
+	// The trailing sentence-ending period must land outside the link, not
+	// get swallowed into the href.
+	assert.Contains(t, mailer.htmlBody, `<a href="https://kthais.com/bylaws.pdf">https://kthais.com/bylaws.pdf</a>.`)
+}
+
+func TestLinkifyOnboardingBodyURLs(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "bare URL",
+			input: "See https://example.com for details",
+			want:  `See <a href="https://example.com">https://example.com</a> for details`,
+		},
+		{
+			name:  "trailing period is excluded from the link",
+			input: "See https://example.com.",
+			want:  `See <a href="https://example.com">https://example.com</a>.`,
+		},
+		{
+			name:  "trailing comma is excluded from the link",
+			input: "https://example.com, and more",
+			want:  `<a href="https://example.com">https://example.com</a>, and more`,
+		},
+		{
+			name:  "multiple URLs each get linkified",
+			input: "https://a.example.com and https://b.example.com",
+			want:  `<a href="https://a.example.com">https://a.example.com</a> and <a href="https://b.example.com">https://b.example.com</a>`,
+		},
+		{
+			name:  "no URL is left unchanged",
+			input: "no links here",
+			want:  "no links here",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, linkifyOnboardingBodyURLs(tc.input))
+		})
+	}
+}
