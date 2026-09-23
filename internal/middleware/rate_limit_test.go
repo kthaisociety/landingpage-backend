@@ -3,6 +3,8 @@ package middleware
 import (
 	"context"
 	"os"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -75,7 +77,11 @@ func TestAllowDoesNotCountRejectedRequests(t *testing.T) {
 	// Hammer the limiter while blocked. Before the fix each of these was
 	// recorded, so the lockout kept sliding forward.
 	for i := 0; i < 10; i++ {
-		if allowed, _ := rl.Allow(ctx, key); allowed {
+		allowed, err := rl.Allow(ctx, key)
+		if err != nil {
+			t.Fatalf("blocked request %d: Allow() error = %v", i+1, err)
+		}
+		if allowed {
 			t.Fatalf("blocked request %d: allowed = true, want false", i+1)
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -93,5 +99,43 @@ func TestAllowDoesNotCountRejectedRequests(t *testing.T) {
 	}
 	if !allowed {
 		t.Fatal("after window: allowed = false, want true")
+	}
+}
+
+// A burst of concurrent requests must let exactly maxRequests through, i.e.
+// the check-then-add is atomic.
+func TestAllowConcurrentBurstHonorsLimit(t *testing.T) {
+	const limit, burst = 5, 50
+	rl, key := newTestLimiter(t, limit, time.Minute)
+	ctx := context.Background()
+
+	var allowedCount atomic.Int32
+	var wg sync.WaitGroup
+	errs := make(chan error, burst)
+	for i := 0; i < burst; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			allowed, err := rl.Allow(ctx, key)
+			if err != nil {
+				errs <- err
+				return
+			}
+			if allowed {
+				allowedCount.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		t.Fatalf("Allow() error = %v", err)
+	}
+	if got := allowedCount.Load(); got != limit {
+		t.Fatalf("allowed = %d, want %d", got, limit)
+	}
+	if n := rl.client.ZCard(ctx, key).Val(); n != limit {
+		t.Fatalf("recorded requests = %d, want %d", n, limit)
 	}
 }

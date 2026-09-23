@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"fmt"
+	"math/rand/v2"
 	"time"
 
 	"backend/internal/config"
@@ -42,13 +43,15 @@ func NewRedisRateLimiter(cfg *config.Config, maxRequests int, window time.Durati
 // retrying while blocked doesn't push its own lockout further out. Running it
 // as one script keeps check-then-add atomic across concurrent requests.
 //
-// KEYS[1] = bucket key; ARGV = now (ns), window start (ns), max requests, window (ms)
+// KEYS[1] = bucket key; ARGV = now (ns), window start (ns), max requests,
+// window (ms), member. The member carries a random suffix so two requests
+// landing on the same timestamp are still recorded as two entries.
 var allowScript = redis.NewScript(`
 redis.call("ZREMRANGEBYSCORE", KEYS[1], "-inf", ARGV[2])
 if redis.call("ZCARD", KEYS[1]) >= tonumber(ARGV[3]) then
 	return 0
 end
-redis.call("ZADD", KEYS[1], ARGV[1], ARGV[1])
+redis.call("ZADD", KEYS[1], ARGV[1], ARGV[5])
 redis.call("PEXPIRE", KEYS[1], ARGV[4])
 return 1
 `)
@@ -56,9 +59,10 @@ return 1
 func (rl *RedisRateLimiter) Allow(ctx context.Context, key string) (bool, error) {
 	now := time.Now().UnixNano()
 	windowStart := now - rl.window.Nanoseconds()
+	member := fmt.Sprintf("%d-%d", now, rand.Uint64())
 
 	allowed, err := allowScript.Run(ctx, rl.client, []string{key},
-		now, windowStart, rl.maxRequests, rl.window.Milliseconds()).Int()
+		now, windowStart, rl.maxRequests, rl.window.Milliseconds(), member).Int()
 	if err != nil {
 		return false, err
 	}
