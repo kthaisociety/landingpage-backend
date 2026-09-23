@@ -58,7 +58,7 @@ func (h *AuthHandler) Register(r *gin.RouterGroup) {
 	{
 		// Apply rate limiting to OAuth routes
 		oauth := auth.Group("/")
-		oauth.Use(middleware.RateLimit())
+		oauth.Use(middleware.OAuthRateLimit())
 		{
 			oauth.GET("/google", h.BeginGoogleAuth)
 			oauth.GET("/google/callback", h.GoogleCallback)

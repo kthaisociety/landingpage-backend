@@ -4,12 +4,15 @@ import (
 	"log"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 )
 
 const (
 	defaultSESRegion = "eu-north-1"
 	defaultSESSender = "applications@kthais.com"
+
+	defaultOAuthRateLimitRequests = 5
 )
 
 type Config struct {
@@ -33,6 +36,9 @@ type Config struct {
 	OAuth struct {
 		GoogleClientID     string
 		GoogleClientSecret string
+		// RateLimitRequests is the per-IP requests-per-minute budget for the
+		// OAuth login routes. See middleware.OAuthRateLimit.
+		RateLimitRequests int
 	}
 	AllowedOrigins []string
 	BackendURL     string
@@ -146,6 +152,7 @@ func LoadConfig() (*Config, error) {
 	// OAuth config
 	cfg.OAuth.GoogleClientID = getEnv("GOOGLE_CLIENT_ID", "")
 	cfg.OAuth.GoogleClientSecret = getEnv("GOOGLE_CLIENT_SECRET", "")
+	cfg.OAuth.RateLimitRequests = getPositiveIntEnv("OAUTH_RATE_LIMIT_REQUESTS", defaultOAuthRateLimitRequests)
 
 	cfg.SessionKey = getEnv("SESSION_KEY", "")
 	// Development mode is on unless GIN_MODE is explicitly set to "release".
@@ -206,6 +213,21 @@ func getEnv(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+// getPositiveIntEnv falls back to defaultValue (with a log line) when the
+// variable is unset, unparseable, or not positive.
+func getPositiveIntEnv(key string, defaultValue int) int {
+	raw, exists := os.LookupEnv(key)
+	if !exists || strings.TrimSpace(raw) == "" {
+		return defaultValue
+	}
+	value, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || value <= 0 {
+		log.Printf("Invalid %s=%q, using default %d", key, raw, defaultValue)
+		return defaultValue
+	}
+	return value
 }
 
 func firstNonEmptyEnv(keys ...string) string {
