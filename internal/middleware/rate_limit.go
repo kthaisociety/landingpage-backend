@@ -37,33 +37,33 @@ func NewRedisRateLimiter(cfg *config.Config, maxRequests int, window time.Durati
 	}, nil
 }
 
-func (rl *RedisRateLimiter) Allow(ctx context.Context, key string) (bool, error) {
-	pipe := rl.client.Pipeline()
+// allowScript trims the window, then records the request only if it fits
+// under the limit. Rejected requests are not recorded, so a client that keeps
+// retrying while blocked doesn't push its own lockout further out. Running it
+// as one script keeps check-then-add atomic across concurrent requests.
+//
+// KEYS[1] = bucket key; ARGV = now (ns), window start (ns), max requests, window (ms)
+var allowScript = redis.NewScript(`
+redis.call("ZREMRANGEBYSCORE", KEYS[1], "-inf", ARGV[2])
+if redis.call("ZCARD", KEYS[1]) >= tonumber(ARGV[3]) then
+	return 0
+end
+redis.call("ZADD", KEYS[1], ARGV[1], ARGV[1])
+redis.call("PEXPIRE", KEYS[1], ARGV[4])
+return 1
+`)
 
+func (rl *RedisRateLimiter) Allow(ctx context.Context, key string) (bool, error) {
 	now := time.Now().UnixNano()
 	windowStart := now - rl.window.Nanoseconds()
 
-	// Remove old requests
-	pipe.ZRemRangeByScore(ctx, key, "0", fmt.Sprint(windowStart))
-
-	// Add current request
-	pipe.ZAdd(ctx, key, redis.Z{Score: float64(now), Member: now})
-
-	// Count requests in window
-	pipe.ZCard(ctx, key)
-
-	// Set key expiration
-	pipe.Expire(ctx, key, rl.window)
-
-	results, err := pipe.Exec(ctx)
+	allowed, err := allowScript.Run(ctx, rl.client, []string{key},
+		now, windowStart, rl.maxRequests, rl.window.Milliseconds()).Int()
 	if err != nil {
 		return false, err
 	}
 
-	// Get count from third command (ZCard)
-	count := results[2].(*redis.IntCmd).Val()
-
-	return count <= int64(rl.maxRequests), nil
+	return allowed == 1, nil
 }
 
 func RateLimit() gin.HandlerFunc {
