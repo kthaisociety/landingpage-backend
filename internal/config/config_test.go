@@ -68,3 +68,40 @@ func unsetEnvForTest(t *testing.T, key string) {
 		}
 	})
 }
+
+func TestLoadConfigOAuthRateLimitRequests(t *testing.T) {
+	t.Setenv("GOOGLE_CLIENT_ID", "client-id")
+	t.Setenv("GOOGLE_CLIENT_SECRET", "client-secret")
+
+	cases := []struct {
+		name string
+		env  *string
+		want int
+	}{
+		{"unset", nil, defaultOAuthRateLimitRequests},
+		{"valid", ptr("12"), 12},
+		{"not a number", ptr("lots"), defaultOAuthRateLimitRequests},
+		{"zero", ptr("0"), defaultOAuthRateLimitRequests},
+		{"negative", ptr("-3"), defaultOAuthRateLimitRequests},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.env == nil {
+				unsetEnvForTest(t, "OAUTH_RATE_LIMIT_REQUESTS")
+			} else {
+				t.Setenv("OAUTH_RATE_LIMIT_REQUESTS", *tc.env)
+			}
+
+			cfg, err := LoadConfig()
+			if err != nil {
+				t.Fatalf("LoadConfig() error = %v", err)
+			}
+			if cfg.OAuth.RateLimitRequests != tc.want {
+				t.Fatalf("OAuth.RateLimitRequests = %d, want %d", cfg.OAuth.RateLimitRequests, tc.want)
+			}
+		})
+	}
+}
+
+func ptr(s string) *string { return &s }

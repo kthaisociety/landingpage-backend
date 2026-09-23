@@ -132,3 +132,38 @@ func ClickRateLimit() gin.HandlerFunc {
 		c.Next()
 	}
 }
+
+// OAuthRateLimit guards the Google login routes. Its threshold comes from
+// OAUTH_RATE_LIMIT_REQUESTS (per minute) and it uses its own Redis key prefix,
+// so logins don't share a quota bucket with RateLimit's form submissions.
+func OAuthRateLimit() gin.HandlerFunc {
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		panic(fmt.Sprintf("Failed to load config: %v", err))
+	}
+
+	limiter, err := NewRedisRateLimiter(cfg, cfg.OAuth.RateLimitRequests, time.Minute)
+	if err != nil {
+		panic(fmt.Sprintf("Failed to create rate limiter: %v", err))
+	}
+
+	return func(c *gin.Context) {
+		ip := c.ClientIP()
+		key := fmt.Sprintf("oauth_rate_limit:%s", ip)
+
+		allowed, err := limiter.Allow(c.Request.Context(), key)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "Rate limiter error"})
+			c.Abort()
+			return
+		}
+
+		if !allowed {
+			c.JSON(429, gin.H{"error": "Too many requests"})
+			c.Abort()
+			return
+		}
+
+		c.Next()
+	}
+}

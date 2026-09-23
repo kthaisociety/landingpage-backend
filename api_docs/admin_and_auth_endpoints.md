@@ -62,12 +62,12 @@ Auth endpoints are grouped under `/auth`.
 
 ### GET /auth/google
 - **Description**: Initiates Google OAuth authentication flow.
-- **Rate Limited**: Yes
+- **Rate Limited**: Yes — `middleware.OAuthRateLimit()`, `OAUTH_RATE_LIMIT_REQUESTS` per minute per client IP (default 5)
 - **Response**: JSON with `url` for Google OAuth.
 
 ### GET /auth/google/callback
 - **Description**: Handles the callback from Google OAuth, processes authentication, and redirects to frontend.
-- **Rate Limited**: Yes
+- **Rate Limited**: Yes — `middleware.OAuthRateLimit()`, `OAUTH_RATE_LIMIT_REQUESTS` per minute per client IP (default 5)
 - **Response**: Redirect to frontend dashboard or registration page.
 
 ### GET /auth/status
