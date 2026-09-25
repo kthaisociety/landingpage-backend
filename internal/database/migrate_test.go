@@ -17,51 +17,42 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-// migrationTestDSN resolves a Postgres DSN from MIGRATION_TEST_DSN (how CI runs
-// this) or from a local .env (how the sibling handler tests run), and skips when
-// neither is available.
+// openMigrationTestDB connects to Postgres using MIGRATION_TEST_DSN (how CI runs
+// this) or a local .env (how the sibling handler tests run), and skips when
+// neither is available. It returns the DSN alongside the connection.
 //
-// The returned flag reports whether the DSN was configured explicitly. An
-// explicit DSN means someone asked for these assertions to run, so an
-// unreachable server has to fail the test: skipping there would let CI report
-// success without ever checking the schema, which is the regression this file
-// exists to catch.
-func migrationTestDSN(t *testing.T) (dsn string, explicit bool) {
+// An explicit MIGRATION_TEST_DSN means someone asked for these assertions to
+// run, so an unreachable server fails the test instead of skipping: skipping
+// there would let CI report success without ever checking the schema, which is
+// the regression this file exists to catch.
+func openMigrationTestDB(t *testing.T) (*gorm.DB, string) {
 	t.Helper()
 
-	if dsn := strings.TrimSpace(os.Getenv("MIGRATION_TEST_DSN")); dsn != "" {
-		return dsn, true
+	dsn := strings.TrimSpace(os.Getenv("MIGRATION_TEST_DSN"))
+	explicit := dsn != ""
+	if !explicit {
+		envFile := "../../.env"
+		if _, err := os.Stat(envFile); err != nil {
+			t.Skip("skipping: set MIGRATION_TEST_DSN or provide a .env file (this test needs Postgres)")
+		}
+		require.NoError(t, godotenv.Load(envFile))
+
+		cfg, err := config.LoadConfig()
+		require.NoError(t, err)
+		dsn = fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=%s",
+			cfg.Database.Host, cfg.Database.User, cfg.Database.Password,
+			cfg.Database.DBName, cfg.Database.Port, cfg.Database.SSLMode)
 	}
-
-	envFile := "../../.env"
-	if _, err := os.Stat(envFile); err != nil {
-		t.Skip("skipping: set MIGRATION_TEST_DSN or provide a .env file (this test needs Postgres)")
-	}
-	require.NoError(t, godotenv.Load(envFile))
-
-	cfg, err := config.LoadConfig()
-	require.NoError(t, err)
-
-	return fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=%s",
-		cfg.Database.Host, cfg.Database.User, cfg.Database.Password,
-		cfg.Database.DBName, cfg.Database.Port, cfg.Database.SSLMode), false
-}
-
-// connectOrSkip opens dsn, failing rather than skipping when the DSN was
-// configured explicitly.
-func connectOrSkip(t *testing.T, dsn string, explicit bool) *gorm.DB {
-	t.Helper()
 
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
-	if err == nil {
-		return db
+	if err != nil {
+		if explicit {
+			require.NoErrorf(t, err,
+				"MIGRATION_TEST_DSN is set, so Postgres must be reachable; refusing to skip and report success")
+		}
+		t.Skipf("skipping: could not connect to Postgres: %v", err)
 	}
-	if explicit {
-		require.NoErrorf(t, err,
-			"MIGRATION_TEST_DSN is set, so Postgres must be reachable; refusing to skip and report success")
-	}
-	t.Skipf("skipping: could not connect to Postgres: %v", err)
-	return nil
+	return db, dsn
 }
 
 // TestMigrateKeepsRegistrationUserForeignKey guards the startup migration path.
@@ -76,12 +67,11 @@ func connectOrSkip(t *testing.T, dsn string, explicit bool) *gorm.DB {
 // Dropping the tag, or a future gorm changing its inference again, has to fail
 // here rather than at boot on a deployed environment.
 func TestMigrateKeepsRegistrationUserForeignKey(t *testing.T) {
-	dsn, explicit := migrationTestDSN(t)
-	base := connectOrSkip(t, dsn, explicit)
+	base, dsn := openMigrationTestDB(t)
 
 	// Migrate into a throwaway schema so the test never touches whatever else
 	// lives in the target database.
-	schemaName := "migtest_" + strings.ReplaceAll(uuid.New().String()[:8], "-", "")
+	schemaName := "migtest_" + uuid.New().String()[:8]
 	require.NoError(t, base.Exec("CREATE SCHEMA "+schemaName).Error)
 	t.Cleanup(func() { base.Exec("DROP SCHEMA " + schemaName + " CASCADE") })
 
