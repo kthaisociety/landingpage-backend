@@ -4,7 +4,7 @@
 #
 #   backend .env:        SESSION_KEY, JWTSigningKey + JWTValidatingKey (RS256
 #                        pair), MCP_SERVICE_SECRET, ONBOARDING_SERVICE_SECRET
-#   frontend .env.local: JWTValidatingKey (the backend's public key, read by
+#   frontend .env.local: JWT_PUBLIC_KEY (the backend's public key, read by
 #                        src/proxy.ts), JWT_SECRET
 #
 # It also turns on DEVELOPMENT_MODE in the backend .env when it's unset,
@@ -150,9 +150,9 @@ if [[ -d "$frontend_dir" ]]; then
   # src/proxy.ts would reject every login outside `next dev` (which skips
   # auth), e.g. under `next start`.
   if [[ -n "$new_public_key" ]]; then
-    set_var "$frontend_env" JWTValidatingKey "$new_public_key"
-  elif needs_value "$frontend_env" JWTValidatingKey; then
-    set_var "$frontend_env" JWTValidatingKey "$(get_var "$backend_env" JWTValidatingKey)"
+    set_var "$frontend_env" JWT_PUBLIC_KEY "$new_public_key"
+  elif needs_value "$frontend_env" JWT_PUBLIC_KEY; then
+    set_var "$frontend_env" JWT_PUBLIC_KEY "$(get_var "$backend_env" JWTValidatingKey)"
   fi
   if needs_value "$frontend_env" JWT_SECRET; then
     set_var "$frontend_env" JWT_SECRET "$(openssl rand -base64 32)"
