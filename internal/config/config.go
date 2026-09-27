@@ -181,12 +181,10 @@ func LoadConfig() (*Config, error) {
 	cfg.CookieDomain = normalizeCookieDomain(getEnv("COOKIE_DOMAIN", ""))
 	cfg.JwtCookieSecure = strings.EqualFold(getEnv("SECURE_COOKIE", "false"), "true")
 
-	// RS256 key pair for the member jwt cookie. JWTSigningKey /
-	// JWTValidatingKey are the old names, still accepted as a fallback until
-	// every environment sets JWT_PRIVATE_KEY / JWT_PUBLIC_KEY. There is no
-	// default: ValidateJWTKeys rejects a missing or malformed pair at startup.
-	cfg.JwtSigningKey = firstNonEmptyEnv("JWT_PRIVATE_KEY", "JWTSigningKey")
-	cfg.JwtValidatingKey = firstNonEmptyEnv("JWT_PUBLIC_KEY", "JWTValidatingKey")
+	// RS256 key pair for the member jwt cookie. There is no default:
+	// ValidateJWTKeys rejects a missing or malformed pair at startup.
+	cfg.JwtSigningKey = strings.TrimSpace(os.Getenv("JWT_PRIVATE_KEY"))
+	cfg.JwtValidatingKey = strings.TrimSpace(os.Getenv("JWT_PUBLIC_KEY"))
 
 	cfg.MCPServiceSecret = getEnv("MCP_SERVICE_SECRET", "")
 	cfg.OnboardingServiceSecret = getEnv("ONBOARDING_SERVICE_SECRET", "")

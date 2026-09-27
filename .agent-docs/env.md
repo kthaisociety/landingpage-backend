@@ -17,7 +17,7 @@
 - `SESSION_KEY`
 - `DEV_ROLE_OVERRIDES`: local dev only, e.g. `you@kthais.com=user,member,admin`; roles are applied on each Google sign-in
 - `DEVELOPMENT`
-- `JWT_PRIVATE_KEY`, `JWT_PUBLIC_KEY`: RS256 key pair for the member jwt cookie (old names `JWTSigningKey` / `JWTValidatingKey` still read as a fallback)
+- `JWT_PRIVATE_KEY`, `JWT_PUBLIC_KEY`: RS256 key pair for the member jwt cookie
 - `MAILCHIMP_USER`, `MAILCHIMP_LIST_ID`
 - `SES_REGION`, `SES_REPLY_TO`
 - `R2_Bucket`, `R2_Secret_Access_Key`, `R2_Access_Key_Id`, `R2_Endpoint`, `R2_Account_Id`
