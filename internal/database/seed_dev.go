@@ -605,24 +605,10 @@ func SeedDev(db *gorm.DB, cfg *config.Config) {
 		return
 	}
 
-	// Mint a long-lived JWT (30 days) for local testing.
-	token, err := utils.WriteJWT(
-		DevAdminEmail,
-		[]string{models.RoleUser, models.RoleMember, models.RoleAdmin},
-		devUserID,
-		cfg.JwtSigningKey,
-		30*24*60, // 30 days in minutes
-	)
-	if err != nil {
-		log.Printf("[dev seed] failed to mint JWT: %v", err)
-		return
-	}
-
 	log.Println("=== [dev seed] admin user ready ===")
 	log.Printf("  email : %s", DevAdminEmail)
 	log.Printf("  userID: %s", devUserID)
-	log.Println("  JWT cookie — paste this in your browser devtools:")
-	log.Println("  document.cookie = `jwt=" + token + "; path=/`")
+	log.Println("  (seed data only — sign in with Google; see DEV_ROLE_OVERRIDES)")
 	log.Println("==========================================")
 
 	// No need to seed team_questions_settings — TeamQuestionsHandler.getSettings

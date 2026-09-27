@@ -15,6 +15,7 @@
 - `ALLOWED_ORIGINS`
 - `BACKEND_URL`
 - `SESSION_KEY`
+- `DEV_ROLE_OVERRIDES`: local dev only, e.g. `you@kthais.com=user,member,admin`; roles are applied on each Google sign-in
 - `DEVELOPMENT`
 - `JWTSigningKey`
 - `MAILCHIMP_USER`, `MAILCHIMP_LIST_ID`
@@ -26,4 +27,5 @@
 - `internal/config.LoadConfig()` fatals if Google OAuth credentials are missing.
 - `internal/email.InitEmailService()` fails if `SES_SENDER` is empty.
 - `internal/mailchimp.InitMailchimpApi()` fails if `MAILCHIMP_API_KEY` is empty.
+- `LoadConfig()` errors if `DEV_ROLE_OVERRIDES` is set without `DEVELOPMENT_MODE=true`, or if it names an unknown role.
 - Database settings alone are not enough to boot the API successfully.

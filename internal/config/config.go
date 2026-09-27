@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"os"
@@ -55,6 +56,12 @@ type Config struct {
 	}
 	SessionKey      string
 	DevelopmentMode bool
+	// DevRoleOverrides maps a lowercased email to the roles that account is
+	// given on every Google sign-in, so local devs can see the app as an
+	// admin, a member, or a plain user without a separate login bypass.
+	// Parsed from DEV_ROLE_OVERRIDES; LoadConfig refuses to start if it's
+	// set outside DevelopmentMode.
+	DevRoleOverrides map[string][]string
 	// CookieDomain is the Domain attribute for JWT cookies. Empty means omit Domain (host-only for the API host).
 	// Never include a port; see normalizeCookieDomain.
 	CookieDomain    string
@@ -159,6 +166,15 @@ func LoadConfig() (*Config, error) {
 	// Defaults to false
 	cfg.DevelopmentMode = strings.EqualFold(os.Getenv("DEVELOPMENT_MODE"), "true")
 
+	overrides, err := parseDevRoleOverrides(getEnv("DEV_ROLE_OVERRIDES", ""))
+	if err != nil {
+		return nil, err
+	}
+	if len(overrides) > 0 && !cfg.DevelopmentMode {
+		return nil, fmt.Errorf("DEV_ROLE_OVERRIDES is set but DEVELOPMENT_MODE is not true; it is for local development only")
+	}
+	cfg.DevRoleOverrides = overrides
+
 	cfg.CookieDomain = normalizeCookieDomain(getEnv("COOKIE_DOMAIN", ""))
 	cfg.JwtCookieSecure = strings.EqualFold(getEnv("SECURE_COOKIE", "false"), "true")
 
@@ -193,6 +209,41 @@ func LoadConfig() (*Config, error) {
 	cfg.SES.ReplyTo = getEnv("SES_REPLY_TO", cfg.SES.Sender)
 
 	return cfg, nil
+}
+
+// parseDevRoleOverrides parses "a@x.com=user,member,admin;b@x.com=user"
+// into a lowercased-email -> roles map. Unknown roles are rejected so a
+// typo fails loudly at startup instead of silently granting nothing.
+func parseDevRoleOverrides(raw string) (map[string][]string, error) {
+	valid := map[string]bool{"user": true, "member": true, "admin": true}
+	overrides := map[string][]string{}
+	for _, entry := range strings.Split(raw, ";") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		email, rolesStr, ok := strings.Cut(entry, "=")
+		email = strings.ToLower(strings.TrimSpace(email))
+		if !ok || email == "" {
+			return nil, fmt.Errorf("DEV_ROLE_OVERRIDES: invalid entry %q, want email=role1,role2", entry)
+		}
+		var roles []string
+		for _, role := range strings.Split(rolesStr, ",") {
+			role = strings.ToLower(strings.TrimSpace(role))
+			if role == "" {
+				continue
+			}
+			if !valid[role] {
+				return nil, fmt.Errorf("DEV_ROLE_OVERRIDES: unknown role %q for %s (want user, member, admin)", role, email)
+			}
+			roles = append(roles, role)
+		}
+		if len(roles) == 0 {
+			return nil, fmt.Errorf("DEV_ROLE_OVERRIDES: no roles given for %s", email)
+		}
+		overrides[email] = roles
+	}
+	return overrides, nil
 }
 
 // normalizeCookieDomain strips an accidental :port suffix. Cookie Domain attributes must not contain ports.
