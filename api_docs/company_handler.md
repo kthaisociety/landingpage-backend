@@ -20,6 +20,7 @@ It is registered under `/company` and exposes both public and admin-level endpoi
 ### `DELETE /company/admin/delete`
 
 - Purpose: Delete a company by ID.
+- Access: Intended for admin use.
 - Query parameters:
   - `id` (string): company ID to delete.
 - Response:
@@ -56,7 +57,7 @@ It is registered under `/company` and exposes both public and admin-level endpoi
   - `500 Internal Server Error` when the blob lookup or S3 initialization fails.
 
 ## Notes
-
-- The route registration currently creates an admin sub-group for `addCompany` and `delete`, but the authentication middleware is commented out.
+- Admin routes (`addCompany`, `delete`) are protected by JWT authentication and require the `admin` role.
+- The route registration creates an admin sub-group for `addCompany` and `delete`.
 - `GetCompany` and `GetAllCompanies` are exposed as public routes under `/company`.
 - `GetLogo` fetches the blob payload from the blob store and returns it directly as PNG image data.
