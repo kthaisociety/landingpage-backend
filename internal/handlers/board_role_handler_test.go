@@ -87,6 +87,16 @@ func mustCreateBoardRoleHolder(t *testing.T, db *gorm.DB, cfg *config.Config, em
 	return admin
 }
 
+// grantHeadOfIT makes an existing test admin the Head of IT, vacating any
+// current holder first (restored on cleanup). Call it before registering
+// the cleanup that deletes the admin, so the admin is gone by the time the
+// previous holder gets the role back.
+func grantHeadOfIT(t *testing.T, db *gorm.DB, email string) {
+	t.Helper()
+	vacateBoardRoleHolder(t, db, models.BoardRoleHeadOfIT)
+	require.NoError(t, db.Model(&models.Profile{}).Where("email = ?", email).Update("board_role", models.BoardRoleHeadOfIT).Error)
+}
+
 // TestBoardRoleHandler needs a real Postgres connection (every check reads
 // Profile), so it follows the same "skip if no .env" convention as
 // TestOffboardingHandler.

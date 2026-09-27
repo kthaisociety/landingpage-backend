@@ -60,6 +60,7 @@ func TestFinalizeRecruitmentPhase(t *testing.T) {
 
 	plainAdmin := mustCreateAdmin(t, db, cfg, "finalize-admin-plain@seed.local")
 	itAdmin := mustCreateTeamAdmin(t, db, cfg, "finalize-admin-it@seed.local", "IT")
+	grantHeadOfIT(t, db, itAdmin.email)
 	businessHead := mustCreateTeamAdmin(t, db, cfg, "finalize-admin-business@seed.local", "Business")
 
 	// On the IT team (so they can open the phase) but not its declared head
@@ -275,13 +276,26 @@ func TestFinalizeRecruitmentPhase(t *testing.T) {
 		require.Equal(t, http.StatusBadRequest, rec.Code)
 	})
 
-	// requesterIsHeadOfTeam(db, userID, "IT") also accepts a verified
-	// Profile.BoardRole == BoardRoleHeadOfIT, on top of the self-declared
-	// AdminTeam == "IT" it already checked — a real head of IT (whose role
-	// only ever moves via BoardRoleHandler.TransferBoardRole) shouldn't
-	// have to separately self-declare "IT" to close this phase too.
-	// Declares "Marketing" specifically to prove this isn't just falling
-	// back to the self-declared check.
+	// Head of IT is Profile.BoardRole only, which moves solely via
+	// BoardRoleHandler.TransferBoardRole. Profile.AdminTeam is self-editable,
+	// so declaring "IT" there must not open or close the phase.
+	t.Run("declaring the IT team without holding Head of IT is not enough", func(t *testing.T) {
+		selfDeclared := mustCreateTeamAdmin(t, db, cfg, "finalize-admin-self-declared-it@seed.local", "IT")
+		t.Cleanup(func() {
+			db.Where("email = ?", selfDeclared.email).Unscoped().Delete(&models.Profile{})
+			db.Where("email = ?", selfDeclared.email).Unscoped().Delete(&models.User{})
+		})
+
+		closeRec := doJSONRequest(t, engine, "POST", "/api/v1/applications/admin/finalize/phase/close",
+			map[string]string{"confirm": finalizePhaseCloseConfirmPhrase}, selfDeclared.cookie)
+		require.Equal(t, http.StatusForbidden, closeRec.Code)
+		openRec := doJSONRequest(t, engine, "POST", "/api/v1/applications/admin/finalize/phase/open",
+			map[string]string{"confirm": finalizePhaseOpenConfirmPhrase}, selfDeclared.cookie)
+		require.Equal(t, http.StatusForbidden, openRec.Code)
+	})
+
+	// The board role alone is enough; declaring "Marketing" proves this
+	// doesn't depend on AdminTeam at all.
 	t.Run("a verified head of IT can close it even without self-declaring the IT team", func(t *testing.T) {
 		verifiedHead := mustCreateTeamAdmin(t, db, cfg, "finalize-admin-verified-head@seed.local", "Marketing")
 		vacateBoardRoleHolder(t, db, models.BoardRoleHeadOfIT)
@@ -297,7 +311,7 @@ func TestFinalizeRecruitmentPhase(t *testing.T) {
 
 		// Reopen so the remaining subtests still see their expected state.
 		reopenRec := doJSONRequest(t, engine, "POST", "/api/v1/applications/admin/finalize/phase/open",
-			map[string]string{"confirm": finalizePhaseOpenConfirmPhrase}, itAdmin.cookie)
+			map[string]string{"confirm": finalizePhaseOpenConfirmPhrase}, verifiedHead.cookie)
 		require.Equal(t, http.StatusOK, reopenRec.Code)
 	})
 
@@ -358,9 +372,12 @@ func TestSendRejectionsBulk(t *testing.T) {
 	NewGeneralApplicationHandler(db, cfg).Register(api)
 
 	itAdmin := mustCreateTeamAdmin(t, db, cfg, "bulk-reject-admin-it@seed.local", "IT")
-	plainAdmin := mustCreateAdmin(t, db, cfg, "bulk-reject-admin-plain@seed.local")
+	grantHeadOfIT(t, db, itAdmin.email)
+	// Declares the IT team but doesn't hold Head of IT, so it must be
+	// refused exactly like any other admin.
+	selfDeclaredIT := mustCreateTeamAdmin(t, db, cfg, "bulk-reject-admin-self-declared-it@seed.local", "IT")
 	t.Cleanup(func() {
-		emails := []string{itAdmin.email, plainAdmin.email}
+		emails := []string{itAdmin.email, selfDeclaredIT.email}
 		db.Where("email IN ?", emails).Unscoped().Delete(&models.Profile{})
 		db.Where("email IN ?", emails).Unscoped().Delete(&models.User{})
 		db.Exec("DELETE FROM finalize_recruitment_phases")
@@ -446,17 +463,17 @@ func TestSendRejectionsBulk(t *testing.T) {
 		// pending and ineligible only — accepted/withdrawn/already-rejected excluded.
 		require.GreaterOrEqual(t, preview.Count, 2)
 
-		plainPreviewRec := doJSONRequest(t, engine, "GET", "/api/v1/applications/admin/finalize/rejections/preview", nil, plainAdmin.cookie)
-		require.Equal(t, http.StatusOK, plainPreviewRec.Code)
-		var plainPreview struct {
+		selfDeclaredPreviewRec := doJSONRequest(t, engine, "GET", "/api/v1/applications/admin/finalize/rejections/preview", nil, selfDeclaredIT.cookie)
+		require.Equal(t, http.StatusOK, selfDeclaredPreviewRec.Code)
+		var selfDeclaredPreview struct {
 			CanSend bool `json:"can_send"`
 		}
-		require.NoError(t, json.Unmarshal(plainPreviewRec.Body.Bytes(), &plainPreview))
-		require.False(t, plainPreview.CanSend)
+		require.NoError(t, json.Unmarshal(selfDeclaredPreviewRec.Body.Bytes(), &selfDeclaredPreview))
+		require.False(t, selfDeclaredPreview.CanSend)
 	})
 
-	t.Run("only the head of IT can trigger the send", func(t *testing.T) {
-		rec := doJSONRequest(t, engine, "POST", "/api/v1/applications/admin/finalize/rejections/send", nil, plainAdmin.cookie)
+	t.Run("only the head of IT can trigger the send, not an admin who declared the IT team", func(t *testing.T) {
+		rec := doJSONRequest(t, engine, "POST", "/api/v1/applications/admin/finalize/rejections/send", nil, selfDeclaredIT.cookie)
 		require.Equal(t, http.StatusForbidden, rec.Code)
 	})
 

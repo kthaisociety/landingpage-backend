@@ -597,7 +597,7 @@ func (h *TeamQuestionsHandler) AdminSendBulkPreview(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"count": 0, "can_send": false, "next_send_at": nil})
 		return
 	}
-	canSend, err := requesterIsHeadOfTeam(h.db, adminID, "IT")
+	canSend, err := requesterIsHeadOfIT(h.db, adminID)
 	if err != nil {
 		canSend = false
 	}
@@ -639,7 +639,7 @@ func (h *TeamQuestionsHandler) AdminSendBulk(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "could not determine admin identity"})
 		return
 	}
-	isHead, err := requesterIsHeadOfTeam(h.db, adminID, "IT")
+	isHead, err := requesterIsHeadOfIT(h.db, adminID)
 	if err != nil || !isHead {
 		c.JSON(http.StatusForbidden, gin.H{"error": "only the head of IT can send team questions invites in bulk"})
 		return

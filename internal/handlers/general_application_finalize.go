@@ -79,7 +79,7 @@ func (h *GeneralApplicationHandler) AdminOpenFinalizePhase(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
-	isHeadOfIT, err := requesterIsHeadOfTeam(h.db, userID, "IT")
+	isHeadOfIT, err := requesterIsHeadOfIT(h.db, userID)
 	if err != nil || !isHeadOfIT {
 		c.JSON(http.StatusForbidden, gin.H{"error": "only the head of IT can open the finalize phase"})
 		return
@@ -140,7 +140,7 @@ func (h *GeneralApplicationHandler) AdminCloseFinalizePhase(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
-	isHeadOfIT, err := requesterIsHeadOfTeam(h.db, userID, "IT")
+	isHeadOfIT, err := requesterIsHeadOfIT(h.db, userID)
 	if err != nil || !isHeadOfIT {
 		c.JSON(http.StatusForbidden, gin.H{"error": "only the head of IT can close the finalize phase"})
 		return
@@ -486,7 +486,7 @@ func (h *GeneralApplicationHandler) AdminSendRejectionsBulkPreview(c *gin.Contex
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load finalize phase"})
 		return
 	}
-	canSend, err := requesterIsHeadOfTeam(h.db, userID, "IT")
+	canSend, err := requesterIsHeadOfIT(h.db, userID)
 	if err != nil {
 		canSend = false
 	}
@@ -517,7 +517,7 @@ func (h *GeneralApplicationHandler) AdminSendRejectionsBulk(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
-	isHeadOfIT, err := requesterIsHeadOfTeam(h.db, userID, "IT")
+	isHeadOfIT, err := requesterIsHeadOfIT(h.db, userID)
 	if err != nil || !isHeadOfIT {
 		c.JSON(http.StatusForbidden, gin.H{"error": "only the head of IT can bulk-send rejection emails"})
 		return

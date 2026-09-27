@@ -58,8 +58,10 @@ func (h *OffboardingHandler) Register(r *gin.RouterGroup) {
 }
 
 // requesterIsHeadOfIT checks Profile.BoardRole == BoardRoleHeadOfIT —
-// deliberately not requesterIsHeadOfTeam/AdminTeam, which any admin can set
-// on themselves via UpdateInterviewSettings. See Profile.BoardRole's doc
+// deliberately not Profile.AdminTeam, which any admin can set on themselves
+// via UpdateInterviewSettings. Every Head-of-IT-only action (offboarding,
+// the finalize phase, bulk rejections, Team Questions bulk-send) goes
+// through this. See Profile.BoardRole's doc
 // comment for why Head of IT specifically only ever moves via
 // BoardRoleHandler's transfer endpoint, never a self-editable field.
 func requesterIsHeadOfIT(db *gorm.DB, userID uuid.UUID) (bool, error) {
