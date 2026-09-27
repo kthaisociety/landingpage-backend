@@ -148,9 +148,6 @@ func main() {
 		log.Fatal("Failed to migrate database:", err)
 	}
 
-	database.BackfillProfileSlugs(db)
-	database.BackfillSharedNoteEntries(db)
-	database.BackfillHeadOfITRole(db)
 	database.EnsureBoardRoleConstraints(db)
 
 	database.SeedDev(db, cfg)

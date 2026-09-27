@@ -40,9 +40,8 @@ type Profile struct {
 	// Slug is the public, human-readable identifier used in profile URLs
 	// (e.g. /members/timothy-lindblom) instead of Id. It's nullable at the DB
 	// level — despite the uniqueIndex, Postgres allows any number of NULLs in
-	// a unique column — so existing rows stay valid until
-	// database.BackfillProfileSlugs assigns one on the next boot; every new
-	// profile gets one immediately via BeforeCreate below.
+	// a unique column. Every new profile gets one immediately via
+	// BeforeCreate below.
 	Slug                   string         `gorm:"uniqueIndex" json:"slug,omitempty"`
 	UserUUID               uuid.UUID      `gorm:"not null" json:"user_id"`
 	UserId                 uint           `gorm:"not null" json:"-"`
