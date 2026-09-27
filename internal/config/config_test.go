@@ -136,3 +136,39 @@ func TestLoadConfigRejectsDevRoleOverridesOutsideDevelopmentMode(t *testing.T) {
 		t.Fatal("LoadConfig() = nil error, want error for DEV_ROLE_OVERRIDES outside development mode")
 	}
 }
+
+func TestLoadConfigDevelopmentMode(t *testing.T) {
+	tests := []struct {
+		name  string
+		value *string
+		want  bool
+	}{
+		{"unset", nil, false},
+		{"empty", ptr(""), false},
+		{"false", ptr("false"), false},
+		{"non-boolean", ptr("yes"), false},
+		{"GIN_MODE-style value", ptr("debug"), false},
+		{"true", ptr("true"), true},
+		{"mixed-case true", ptr("TRUE"), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("GOOGLE_CLIENT_ID", "client-id")
+			t.Setenv("GOOGLE_CLIENT_SECRET", "client-secret")
+			unsetEnvForTest(t, "DEV_ROLE_OVERRIDES")
+			if tt.value == nil {
+				unsetEnvForTest(t, "DEVELOPMENT_MODE")
+			} else {
+				t.Setenv("DEVELOPMENT_MODE", *tt.value)
+			}
+
+			cfg, err := LoadConfig()
+			if err != nil {
+				t.Fatalf("LoadConfig() error = %v", err)
+			}
+			if cfg.DevelopmentMode != tt.want {
+				t.Fatalf("DevelopmentMode = %v, want %v", cfg.DevelopmentMode, tt.want)
+			}
+		})
+	}
+}
