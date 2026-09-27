@@ -201,7 +201,6 @@ func testRSAKeyPEMs(t *testing.T) (string, string) {
 
 func TestLoadConfigJWTKeyNames(t *testing.T) {
 	priv, pub := testRSAKeyPEMs(t)
-	otherPriv, otherPub := testRSAKeyPEMs(t)
 
 	setup := func(t *testing.T) {
 		t.Setenv("GOOGLE_CLIENT_ID", "client-id")
@@ -224,7 +223,7 @@ func TestLoadConfigJWTKeyNames(t *testing.T) {
 		}
 	})
 
-	t.Run("old names still work as a fallback", func(t *testing.T) {
+	t.Run("old names are no longer read", func(t *testing.T) {
 		setup(t)
 		t.Setenv("JWTSigningKey", priv)
 		t.Setenv("JWTValidatingKey", pub)
@@ -232,23 +231,11 @@ func TestLoadConfigJWTKeyNames(t *testing.T) {
 		if err != nil {
 			t.Fatalf("LoadConfig() error = %v", err)
 		}
-		if err := ValidateJWTKeys(cfg); err != nil {
-			t.Fatalf("ValidateJWTKeys() error = %v", err)
+		if cfg.JwtSigningKey != "" || cfg.JwtValidatingKey != "" {
+			t.Fatal("LoadConfig() read the old key names")
 		}
-	})
-
-	t.Run("new names win over old ones", func(t *testing.T) {
-		setup(t)
-		t.Setenv("JWT_PRIVATE_KEY", priv)
-		t.Setenv("JWT_PUBLIC_KEY", pub)
-		t.Setenv("JWTSigningKey", otherPriv)
-		t.Setenv("JWTValidatingKey", otherPub)
-		cfg, err := LoadConfig()
-		if err != nil {
-			t.Fatalf("LoadConfig() error = %v", err)
-		}
-		if strings.TrimSpace(cfg.JwtSigningKey) != strings.TrimSpace(priv) || strings.TrimSpace(cfg.JwtValidatingKey) != strings.TrimSpace(pub) {
-			t.Fatal("LoadConfig() used the old key names although the new ones are set")
+		if err := ValidateJWTKeys(cfg); err == nil {
+			t.Fatal("ValidateJWTKeys() accepted a config with only the old key names set")
 		}
 	})
 }

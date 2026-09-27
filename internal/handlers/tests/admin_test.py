@@ -6,13 +6,13 @@ import uuid
 import jwt
 from dotenv import load_dotenv
 
-# Load JWTSigningKey from .env (three levels up from this file)
+# Load JWT_PRIVATE_KEY from .env (three levels up from this file)
 load_dotenv(os.path.join(os.path.dirname(__file__), "../../../.env"))
 
 BASE_URL = "http://localhost:8080/api/v1"
 
 def generate_admin_token():
-    signing_key = os.getenv("JWTSigningKey", "test123456")
+    signing_key = os.getenv("JWT_PRIVATE_KEY", "").replace("\\n", "\n")
     now = datetime.datetime.now(datetime.timezone.utc)
     payload = {
         "email": "testadmin@example.com",
@@ -23,7 +23,7 @@ def generate_admin_token():
         "nbf": now,
         "exp": now + datetime.timedelta(minutes=60),
     }
-    return jwt.encode(payload, signing_key, algorithm="HS256")
+    return jwt.encode(payload, signing_key, algorithm="RS256")
 
 session = requests.Session()
 session.cookies.set("jwt", generate_admin_token())

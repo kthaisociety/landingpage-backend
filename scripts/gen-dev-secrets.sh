@@ -4,9 +4,9 @@
 #
 #   backend .env:        SESSION_KEY, JWT_PRIVATE_KEY + JWT_PUBLIC_KEY (RS256
 #                        pair), MCP_SERVICE_SECRET, ONBOARDING_SERVICE_SECRET
-#                        (an existing pair under the old names JWTSigningKey /
-#                        JWTValidatingKey counts as set; the backend still
-#                        reads them as a fallback)
+#                        (a pair under the old names JWTSigningKey /
+#                        JWTValidatingKey, which the backend no longer
+#                        reads, is moved to the new names)
 #   frontend .env.local: JWT_PUBLIC_KEY (the backend's public key, read by
 #                        src/proxy.ts), JWT_SECRET
 #
@@ -95,15 +95,17 @@ unset_var() {
   rm -f "$tmp"
 }
 
-# needs_jwt_key FILE NEW OLD — like needs_value, but a value under either
-# the new or the old (fallback) name counts as set.
-needs_jwt_key() {
-  needs_value "$1" "$2" && needs_value "$1" "$3"
-}
-
-# jwt_key_raw FILE NEW OLD — the raw value under the new name, else the old.
-jwt_key_raw() {
-  if needs_value "$1" "$2"; then get_var "$1" "$3"; else get_var "$1" "$2"; fi
+# rename_var FILE OLD NEW — moves OLD's value to NEW if OLD has a real value
+# and NEW is missing, empty, or a <PLACEHOLDER>, then removes every OLD=
+# line. Under --force nothing is moved, since the value is regenerated.
+rename_var() {
+  if ! needs_value "$1" "$2" && needs_value "$1" "$3"; then
+    set_var "$1" "$3" "$(get_var "$1" "$2")"
+  fi
+  if grep -q "^$2=" "$1"; then
+    unset_var "$1" "$2"
+    echo "  removed old $2"
+  fi
 }
 
 # ensure_env_file FILE EXAMPLE — creates FILE from EXAMPLE if it's missing,
@@ -147,10 +149,13 @@ elif [[ "$(value_of "$backend_env" DEVELOPMENT_MODE | tr '[:upper:]' '[:lower:]'
   echo "  note: DEVELOPMENT_MODE is not true; seed data and DEV_ROLE_OVERRIDES are off"
 fi
 
+rename_var "$backend_env" JWTSigningKey JWT_PRIVATE_KEY
+rename_var "$backend_env" JWTValidatingKey JWT_PUBLIC_KEY
+
 new_public_key=""
 need_priv=false; need_pub=false
-needs_jwt_key "$backend_env" JWT_PRIVATE_KEY JWTSigningKey && need_priv=true
-needs_jwt_key "$backend_env" JWT_PUBLIC_KEY JWTValidatingKey && need_pub=true
+needs_value "$backend_env" JWT_PRIVATE_KEY && need_priv=true
+needs_value "$backend_env" JWT_PUBLIC_KEY && need_pub=true
 if $need_priv && $need_pub; then
   keydir="$(mktemp -d)"
   trap 'rm -rf "$keydir"' EXIT
@@ -159,9 +164,6 @@ if $need_priv && $need_pub; then
   set_var "$backend_env" JWT_PRIVATE_KEY "$(pem_one_line "$keydir/private.pem")"
   new_public_key="$(pem_one_line "$keydir/public.pem")"
   set_var "$backend_env" JWT_PUBLIC_KEY "$new_public_key"
-  # Drop any old-name pair so a stale fallback can't linger.
-  unset_var "$backend_env" JWTSigningKey
-  unset_var "$backend_env" JWTValidatingKey
 elif $need_priv || $need_pub; then
   echo "  skipped JWT keys: only one of JWT_PRIVATE_KEY/JWT_PUBLIC_KEY is set;" >&2
   echo "  clear both (or pass --force) to generate a matching pair" >&2
@@ -175,10 +177,11 @@ if [[ -d "$frontend_dir" ]]; then
   # A freshly generated pair must replace the frontend's key, or
   # src/proxy.ts would reject every login outside `next dev` (which skips
   # auth), e.g. under `next start`.
+  rename_var "$frontend_env" JWTValidatingKey JWT_PUBLIC_KEY
   if [[ -n "$new_public_key" ]]; then
     set_var "$frontend_env" JWT_PUBLIC_KEY "$new_public_key"
   elif needs_value "$frontend_env" JWT_PUBLIC_KEY; then
-    set_var "$frontend_env" JWT_PUBLIC_KEY "$(jwt_key_raw "$backend_env" JWT_PUBLIC_KEY JWTValidatingKey)"
+    set_var "$frontend_env" JWT_PUBLIC_KEY "$(get_var "$backend_env" JWT_PUBLIC_KEY)"
   fi
   if needs_value "$frontend_env" JWT_SECRET; then
     set_var "$frontend_env" JWT_SECRET "$(openssl rand -base64 32)"
