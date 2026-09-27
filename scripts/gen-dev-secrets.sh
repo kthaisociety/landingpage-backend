@@ -95,10 +95,11 @@ unset_var() {
   rm -f "$tmp"
 }
 
-# rename_var FILE OLD NEW — moves OLD's value to NEW if NEW has none, then
-# removes every OLD= line.
+# rename_var FILE OLD NEW — moves OLD's value to NEW if OLD has a real value
+# and NEW is missing, empty, or a <PLACEHOLDER>, then removes every OLD=
+# line. Under --force nothing is moved, since the value is regenerated.
 rename_var() {
-  if [[ -n "$(value_of "$1" "$2")" && -z "$(value_of "$1" "$3")" ]]; then
+  if ! needs_value "$1" "$2" && needs_value "$1" "$3"; then
     set_var "$1" "$3" "$(get_var "$1" "$2")"
   fi
   if grep -q "^$2=" "$1"; then
