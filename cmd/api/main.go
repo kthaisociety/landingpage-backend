@@ -107,6 +107,9 @@ func main() {
 	if err != nil {
 		log.Fatal("Failed to load config:", err)
 	}
+	if err := config.ValidateJWTKeys(cfg); err != nil {
+		log.Fatal("Invalid JWT keys: ", err)
+	}
 
 	// Initialize DB
 	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=%s",
