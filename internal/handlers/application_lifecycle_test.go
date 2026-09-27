@@ -102,6 +102,7 @@ func TestApplicationAndInterviewLifecycle(t *testing.T) {
 	adminA := mustCreateAdmin(t, db, cfg, "lifecycle-admin-a@example.com")
 	adminB := mustCreateAdmin(t, db, cfg, "lifecycle-admin-b@example.com")
 	adminIT := mustCreateTeamAdmin(t, db, cfg, "lifecycle-admin-it@example.com", "IT")
+	grantHeadOfIT(t, db, adminIT.email)
 
 	// Team questions are admin-configured data now (no hardcoded fallback),
 	// so this test seeds exactly the questions it needs directly.

@@ -23,7 +23,7 @@ import (
 // initiated by the current holder (TransferBoardRole) — no admin grant/
 // revoke/set-for-anyone, deliberately, since BoardRoleHeadOfIT is one of
 // the eight and gates real permissions (requesterIsHeadOfIT,
-// requesterIsHeadOfTeam, deleteUserAndProfile). BoardRoleBoardAdvisor is
+// deleteUserAndProfile). BoardRoleBoardAdvisor is
 // the one multi-holder exception, managed by plain admin add/remove. See
 // Profile.BoardRole's doc comment for the full reasoning.
 type BoardRoleHandler struct {

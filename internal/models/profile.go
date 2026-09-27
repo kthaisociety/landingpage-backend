@@ -75,7 +75,7 @@ type Profile struct {
 	// (POST /admin/board-role/transfer) — there is no admin grant/revoke/
 	// set-for-anyone, deliberately, since BoardRoleHeadOfIT is one of the
 	// eight and gates real permissions (see requesterIsHeadOfIT,
-	// requesterIsHeadOfTeam, deleteUserAndProfile). A transfer is one
+	// deleteUserAndProfile). A transfer is one
 	// atomic operation that clears the sender's BoardRole and sets the
 	// recipient's, so holding a non-empty value here structurally *means*
 	// "I am the sole holder" — there's no separate headcount invariant to
