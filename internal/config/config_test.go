@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"slices"
 	"testing"
 )
 
@@ -105,3 +106,71 @@ func TestLoadConfigOAuthRateLimitRequests(t *testing.T) {
 }
 
 func ptr(s string) *string { return &s }
+
+func TestParseDevRoleOverrides(t *testing.T) {
+	got, err := parseDevRoleOverrides(" Sam@KTHAIS.com = user, member,Admin ; b@x.com=user; ")
+	if err != nil {
+		t.Fatalf("parseDevRoleOverrides() error = %v", err)
+	}
+	if want := []string{"user", "member", "admin"}; !slices.Equal(got["sam@kthais.com"], want) {
+		t.Fatalf("sam roles = %v, want %v", got["sam@kthais.com"], want)
+	}
+	if want := []string{"user"}; !slices.Equal(got["b@x.com"], want) {
+		t.Fatalf("b roles = %v, want %v", got["b@x.com"], want)
+	}
+
+	for _, bad := range []string{"a@x.com=superuser", "a@x.com", "a@x.com=", "=admin", ";;;", " ; "} {
+		if _, err := parseDevRoleOverrides(bad); err == nil {
+			t.Errorf("parseDevRoleOverrides(%q) = nil error, want error", bad)
+		}
+	}
+}
+
+func TestLoadConfigRejectsDevRoleOverridesOutsideDevelopmentMode(t *testing.T) {
+	t.Setenv("GOOGLE_CLIENT_ID", "client-id")
+	t.Setenv("GOOGLE_CLIENT_SECRET", "client-secret")
+	t.Setenv("DEVELOPMENT_MODE", "false")
+
+	for _, raw := range []string{"a@x.com=admin", ";;;"} {
+		t.Setenv("DEV_ROLE_OVERRIDES", raw)
+		if _, err := LoadConfig(); err == nil {
+			t.Fatalf("LoadConfig() with DEV_ROLE_OVERRIDES=%q = nil error, want error outside development mode", raw)
+		}
+	}
+}
+
+func TestLoadConfigDevelopmentMode(t *testing.T) {
+	tests := []struct {
+		name  string
+		value *string
+		want  bool
+	}{
+		{"unset", nil, false},
+		{"empty", ptr(""), false},
+		{"false", ptr("false"), false},
+		{"non-boolean", ptr("yes"), false},
+		{"GIN_MODE-style value", ptr("debug"), false},
+		{"true", ptr("true"), true},
+		{"mixed-case true", ptr("TRUE"), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("GOOGLE_CLIENT_ID", "client-id")
+			t.Setenv("GOOGLE_CLIENT_SECRET", "client-secret")
+			unsetEnvForTest(t, "DEV_ROLE_OVERRIDES")
+			if tt.value == nil {
+				unsetEnvForTest(t, "DEVELOPMENT_MODE")
+			} else {
+				t.Setenv("DEVELOPMENT_MODE", *tt.value)
+			}
+
+			cfg, err := LoadConfig()
+			if err != nil {
+				t.Fatalf("LoadConfig() error = %v", err)
+			}
+			if cfg.DevelopmentMode != tt.want {
+				t.Fatalf("DevelopmentMode = %v, want %v", cfg.DevelopmentMode, tt.want)
+			}
+		})
+	}
+}
