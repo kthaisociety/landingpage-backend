@@ -7,6 +7,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/golang-jwt/jwt/v5"
 )
 
 const (
@@ -179,9 +181,12 @@ func LoadConfig() (*Config, error) {
 	cfg.CookieDomain = normalizeCookieDomain(getEnv("COOKIE_DOMAIN", ""))
 	cfg.JwtCookieSecure = strings.EqualFold(getEnv("SECURE_COOKIE", "false"), "true")
 
-	// Asymetric key (priate/public) is used for jwt
-	cfg.JwtSigningKey = getEnv("JWTSigningKey", "test123456")
-	cfg.JwtValidatingKey = getEnv("JWTValidatingKey", "test123456")
+	// RS256 key pair for the member jwt cookie. JWTSigningKey /
+	// JWTValidatingKey are the old names, still accepted as a fallback until
+	// every environment sets JWT_PRIVATE_KEY / JWT_PUBLIC_KEY. There is no
+	// default: ValidateJWTKeys rejects a missing or malformed pair at startup.
+	cfg.JwtSigningKey = firstNonEmptyEnv("JWT_PRIVATE_KEY", "JWTSigningKey")
+	cfg.JwtValidatingKey = firstNonEmptyEnv("JWT_PUBLIC_KEY", "JWTValidatingKey")
 
 	cfg.MCPServiceSecret = getEnv("MCP_SERVICE_SECRET", "")
 	cfg.OnboardingServiceSecret = getEnv("ONBOARDING_SERVICE_SECRET", "")
@@ -248,6 +253,31 @@ func parseDevRoleOverrides(raw string) (map[string][]string, error) {
 		return nil, fmt.Errorf("DEV_ROLE_OVERRIDES is set but has no entries, want email=role1,role2")
 	}
 	return overrides, nil
+}
+
+// ValidateJWTKeys checks that the JWT signing key is a PEM RSA private key,
+// the validating key is a PEM RSA public key, and that they form a pair.
+// Called at startup so a missing or wrong key fails the deploy instead of
+// every sign-in.
+func ValidateJWTKeys(cfg *Config) error {
+	if cfg.JwtSigningKey == "" {
+		return fmt.Errorf("JWT_PRIVATE_KEY is not set")
+	}
+	if cfg.JwtValidatingKey == "" {
+		return fmt.Errorf("JWT_PUBLIC_KEY is not set")
+	}
+	privateKey, err := jwt.ParseRSAPrivateKeyFromPEM([]byte(cfg.JwtSigningKey))
+	if err != nil {
+		return fmt.Errorf("JWT_PRIVATE_KEY is not a PEM-encoded RSA private key: %w", err)
+	}
+	publicKey, err := jwt.ParseRSAPublicKeyFromPEM([]byte(cfg.JwtValidatingKey))
+	if err != nil {
+		return fmt.Errorf("JWT_PUBLIC_KEY is not a PEM-encoded RSA public key: %w", err)
+	}
+	if !privateKey.PublicKey.Equal(publicKey) {
+		return fmt.Errorf("JWT_PUBLIC_KEY does not match JWT_PRIVATE_KEY")
+	}
+	return nil
 }
 
 // normalizeCookieDomain strips an accidental :port suffix. Cookie Domain attributes must not contain ports.
