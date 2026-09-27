@@ -2,8 +2,11 @@
 # Generates the local-dev secrets that don't need to be shared across the
 # team — they only have to be random and consistent on one machine:
 #
-#   backend .env:        SESSION_KEY, JWTSigningKey + JWTValidatingKey (RS256
+#   backend .env:        SESSION_KEY, JWT_PRIVATE_KEY + JWT_PUBLIC_KEY (RS256
 #                        pair), MCP_SERVICE_SECRET, ONBOARDING_SERVICE_SECRET
+#                        (an existing pair under the old names JWTSigningKey /
+#                        JWTValidatingKey counts as set; the backend still
+#                        reads them as a fallback)
 #   frontend .env.local: JWT_PUBLIC_KEY (the backend's public key, read by
 #                        src/proxy.ts), JWT_SECRET
 #
@@ -83,6 +86,26 @@ set_var() {
   echo "  set $2"
 }
 
+# unset_var FILE KEY — removes every KEY= line.
+unset_var() {
+  local tmp
+  tmp="$(mktemp)"
+  K="$2" awk 'index($0, ENVIRON["K"] "=") != 1' "$1" > "$tmp"
+  cat "$tmp" > "$1"
+  rm -f "$tmp"
+}
+
+# needs_jwt_key FILE NEW OLD — like needs_value, but a value under either
+# the new or the old (fallback) name counts as set.
+needs_jwt_key() {
+  needs_value "$1" "$2" && needs_value "$1" "$3"
+}
+
+# jwt_key_raw FILE NEW OLD — the raw value under the new name, else the old.
+jwt_key_raw() {
+  if needs_value "$1" "$2"; then get_var "$1" "$3"; else get_var "$1" "$2"; fi
+}
+
 # ensure_env_file FILE EXAMPLE — creates FILE from EXAMPLE if it's missing,
 # and makes it readable only by you either way, since it holds private keys.
 # Returns 0 if it had to create the file.
@@ -126,18 +149,21 @@ fi
 
 new_public_key=""
 need_priv=false; need_pub=false
-needs_value "$backend_env" JWTSigningKey && need_priv=true
-needs_value "$backend_env" JWTValidatingKey && need_pub=true
+needs_jwt_key "$backend_env" JWT_PRIVATE_KEY JWTSigningKey && need_priv=true
+needs_jwt_key "$backend_env" JWT_PUBLIC_KEY JWTValidatingKey && need_pub=true
 if $need_priv && $need_pub; then
   keydir="$(mktemp -d)"
   trap 'rm -rf "$keydir"' EXIT
   openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$keydir/private.pem" 2>/dev/null
   openssl pkey -in "$keydir/private.pem" -pubout -out "$keydir/public.pem"
-  set_var "$backend_env" JWTSigningKey "$(pem_one_line "$keydir/private.pem")"
+  set_var "$backend_env" JWT_PRIVATE_KEY "$(pem_one_line "$keydir/private.pem")"
   new_public_key="$(pem_one_line "$keydir/public.pem")"
-  set_var "$backend_env" JWTValidatingKey "$new_public_key"
+  set_var "$backend_env" JWT_PUBLIC_KEY "$new_public_key"
+  # Drop any old-name pair so a stale fallback can't linger.
+  unset_var "$backend_env" JWTSigningKey
+  unset_var "$backend_env" JWTValidatingKey
 elif $need_priv || $need_pub; then
-  echo "  skipped JWT keys: only one of JWTSigningKey/JWTValidatingKey is set;" >&2
+  echo "  skipped JWT keys: only one of JWT_PRIVATE_KEY/JWT_PUBLIC_KEY is set;" >&2
   echo "  clear both (or pass --force) to generate a matching pair" >&2
 fi
 
@@ -152,7 +178,7 @@ if [[ -d "$frontend_dir" ]]; then
   if [[ -n "$new_public_key" ]]; then
     set_var "$frontend_env" JWT_PUBLIC_KEY "$new_public_key"
   elif needs_value "$frontend_env" JWT_PUBLIC_KEY; then
-    set_var "$frontend_env" JWT_PUBLIC_KEY "$(get_var "$backend_env" JWTValidatingKey)"
+    set_var "$frontend_env" JWT_PUBLIC_KEY "$(jwt_key_raw "$backend_env" JWT_PUBLIC_KEY JWTValidatingKey)"
   fi
   if needs_value "$frontend_env" JWT_SECRET; then
     set_var "$frontend_env" JWT_SECRET "$(openssl rand -base64 32)"
