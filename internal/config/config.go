@@ -166,11 +166,12 @@ func LoadConfig() (*Config, error) {
 	// Defaults to false
 	cfg.DevelopmentMode = strings.EqualFold(os.Getenv("DEVELOPMENT_MODE"), "true")
 
-	overrides, err := parseDevRoleOverrides(getEnv("DEV_ROLE_OVERRIDES", ""))
+	rawOverrides := getEnv("DEV_ROLE_OVERRIDES", "")
+	overrides, err := parseDevRoleOverrides(rawOverrides)
 	if err != nil {
 		return nil, err
 	}
-	if len(overrides) > 0 && !cfg.DevelopmentMode {
+	if strings.TrimSpace(rawOverrides) != "" && !cfg.DevelopmentMode {
 		return nil, fmt.Errorf("DEV_ROLE_OVERRIDES is set but DEVELOPMENT_MODE is not true; it is for local development only")
 	}
 	cfg.DevRoleOverrides = overrides
@@ -242,6 +243,9 @@ func parseDevRoleOverrides(raw string) (map[string][]string, error) {
 			return nil, fmt.Errorf("DEV_ROLE_OVERRIDES: no roles given for %s", email)
 		}
 		overrides[email] = roles
+	}
+	if len(overrides) == 0 && strings.TrimSpace(raw) != "" {
+		return nil, fmt.Errorf("DEV_ROLE_OVERRIDES is set but has no entries, want email=role1,role2")
 	}
 	return overrides, nil
 }

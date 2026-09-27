@@ -119,7 +119,7 @@ func TestParseDevRoleOverrides(t *testing.T) {
 		t.Fatalf("b roles = %v, want %v", got["b@x.com"], want)
 	}
 
-	for _, bad := range []string{"a@x.com=superuser", "a@x.com", "a@x.com=", "=admin"} {
+	for _, bad := range []string{"a@x.com=superuser", "a@x.com", "a@x.com=", "=admin", ";;;", " ; "} {
 		if _, err := parseDevRoleOverrides(bad); err == nil {
 			t.Errorf("parseDevRoleOverrides(%q) = nil error, want error", bad)
 		}
@@ -130,10 +130,12 @@ func TestLoadConfigRejectsDevRoleOverridesOutsideDevelopmentMode(t *testing.T) {
 	t.Setenv("GOOGLE_CLIENT_ID", "client-id")
 	t.Setenv("GOOGLE_CLIENT_SECRET", "client-secret")
 	t.Setenv("DEVELOPMENT_MODE", "false")
-	t.Setenv("DEV_ROLE_OVERRIDES", "a@x.com=admin")
 
-	if _, err := LoadConfig(); err == nil {
-		t.Fatal("LoadConfig() = nil error, want error for DEV_ROLE_OVERRIDES outside development mode")
+	for _, raw := range []string{"a@x.com=admin", ";;;"} {
+		t.Setenv("DEV_ROLE_OVERRIDES", raw)
+		if _, err := LoadConfig(); err == nil {
+			t.Fatalf("LoadConfig() with DEV_ROLE_OVERRIDES=%q = nil error, want error outside development mode", raw)
+		}
 	}
 }
 
