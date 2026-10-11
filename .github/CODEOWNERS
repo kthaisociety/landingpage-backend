@@ -1,6 +1,3 @@
 # Code owners must approve every PR (ruleset: require code owner review).
 # The last matching pattern wins.
 * @kthaisociety/software-engineers
-
-# CI/CD workflows run with repo secrets, so Platform reviews them.
-/.github/workflows/ @kthaisociety/platform-engineers
