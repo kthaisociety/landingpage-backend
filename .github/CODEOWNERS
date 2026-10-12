@@ -1,0 +1,3 @@
+# Code owners must approve every PR (ruleset: require code owner review).
+# The last matching pattern wins.
+* @kthaisociety/software-engineers
