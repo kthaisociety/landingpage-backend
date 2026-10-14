@@ -1,0 +1,108 @@
+name: CI & Dev Deployment
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: kthais
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Check formatting
+        run: |
+          if [ -n "$(gofmt -d -s .)" ]; then
+            gofmt -d -s .
+            exit 1
+          fi
+
+      - name: Build
+        run: go build -v ./...
+
+      - name: Run Tests
+        env:
+          MIGRATION_TEST_DSN: host=localhost user=postgres password=postgres dbname=kthais port=5432 sslmode=disable
+        run: go test -v ./...
+
+  deploy-dev:
+    needs: test
+    # Only deploy to dev if this is a push to main (and NOT a release-please commit)
+    if: >
+      github.event_name == 'push' &&
+      !contains(github.event.head_commit.message, 'chore(main): release') &&
+      !contains(github.event.head_commit.message, 'release-please')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set lower-case image name
+        run: echo "IMAGE_NAME=${REGISTRY}/${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Staging image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:staging
+            ${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
+
+      - name: Deploy to Dokploy Dev Environment
+        run: |
+          curl --fail-with-body -X POST "${{ secrets.DOKPLOY_URL }}/api/application.deploy" \
+            -H "x-api-key: ${{ secrets.DOKPLOY_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"applicationId\": \"${{ secrets.DOKPLOY_DEV_APP_ID }}\"}"
+
