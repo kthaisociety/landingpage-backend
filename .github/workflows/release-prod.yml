@@ -67,16 +67,42 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push Production image (Tagged + Latest)
+      # Push only the immutable version tag here; :latest is promoted separately below.
+      - name: Build and push Production image (version tag)
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           tags: |
             ${{ env.IMAGE_NAME }}:${{ needs.release-please.outputs.tag_name }}
-            ${{ env.IMAGE_NAME }}:latest
+
+      # Reject stale attempts (e.g. a re-run of an older release job) so they
+      # cannot move :latest backwards or overwrite a newer release.
+      - name: Check release is still the newest
+        id: fresh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          newest=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName)
+          if [ "$newest" != "$TAG_NAME" ]; then
+            echo "::warning::Newest release is $newest; not promoting stale $TAG_NAME to :latest"
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Promote version to :latest
+        if: steps.fresh.outputs.stale == 'false'
+        env:
+          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          docker buildx imagetools create \
+            -t "${IMAGE_NAME}:latest" \
+            "${IMAGE_NAME}:${TAG_NAME}"
 
       - name: Deploy to Dokploy Prod Environment
+        if: steps.fresh.outputs.stale == 'false'
         run: |
           curl --fail-with-body -X POST "${{ secrets.DOKPLOY_URL }}/api/application.deploy" \
             -H "x-api-key: ${{ secrets.DOKPLOY_API_KEY }}" \

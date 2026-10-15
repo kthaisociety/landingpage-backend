@@ -18,11 +18,11 @@ jobs:
 
   deploy-dev:
     needs: test
-    # Only deploy to dev if this is a push to main (and NOT a release-please commit)
-    if: >
-      github.event_name == 'push' &&
-      !contains(github.event.head_commit.message, 'chore(main): release') &&
-      !contains(github.event.head_commit.message, 'release-please')
+    # Deploy every tested push to main, including release-please commits. Release
+    # commits only bump version/CHANGELOG, and excluding them would let the
+    # head-of-main freshness check below skip the previous commit with nothing
+    # replacing it, leaving dev on older code.
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     # Serialize dev publishing/deploys so out-of-order runs cannot leave :staging on an older commit.
     concurrency:
@@ -34,42 +34,49 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Skip stale deployment
-        id: fresh
-        run: |
-          latest=$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" refs/heads/main | cut -f1)
-          if [ "$latest" != "$GITHUB_SHA" ]; then
-            echo "main moved to $latest; skipping stale deploy of $GITHUB_SHA"
-            echo "stale=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "stale=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Set lower-case image name
-        if: steps.fresh.outputs.stale == 'false'
         run: echo "IMAGE_NAME=${REGISTRY}/${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
 
       - name: Set up Docker Buildx
-        if: steps.fresh.outputs.stale == 'false'
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
-        if: steps.fresh.outputs.stale == 'false'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push Staging image
-        if: steps.fresh.outputs.stale == 'false'
+      # Push only the immutable per-commit tag; :staging is promoted separately below.
+      - name: Build and push image (sha tag)
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           tags: |
-            ${{ env.IMAGE_NAME }}:staging
             ${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
+
+      # Checked after the build so a newer push to main during the build is detected.
+      # Prevents older runs (or re-runs) from moving :staging backwards.
+      - name: Check commit is still the head of main
+        id: fresh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          head=$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" -q .sha)
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            echo "::warning::main moved to $head; skipping stale deploy of $GITHUB_SHA"
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Promote sha image to :staging
+        if: steps.fresh.outputs.stale == 'false'
+        run: |
+          docker buildx imagetools create \
+            -t "${IMAGE_NAME}:staging" \
+            "${IMAGE_NAME}:sha-${GITHUB_SHA}"
 
       - name: Deploy to Dokploy Dev Environment
         if: steps.fresh.outputs.stale == 'false'
