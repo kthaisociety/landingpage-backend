@@ -9,59 +9,12 @@ on:
 env:
   REGISTRY: ghcr.io
 
+permissions:
+  contents: read
+
 jobs:
   test:
-    runs-on: ubuntu-latest
-    services:
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
-      postgres:
-        image: postgres:17-alpine
-        env:
-          POSTGRES_DB: kthais
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.27'
-          cache: true
-
-      - name: Download dependencies
-        run: go mod download
-
-      - name: Check formatting
-        run: |
-          if [ -n "$(gofmt -d -s .)" ]; then
-            gofmt -d -s .
-            exit 1
-          fi
-
-      - name: Build
-        run: go build -v ./...
-
-      - name: Run Tests
-        env:
-          MIGRATION_TEST_DSN: host=localhost user=postgres password=postgres dbname=kthais port=5432 sslmode=disable
-        run: go test -v ./...
+    uses: ./.github/workflows/test.yml
 
   deploy-dev:
     needs: test
@@ -71,19 +24,37 @@ jobs:
       !contains(github.event.head_commit.message, 'chore(main): release') &&
       !contains(github.event.head_commit.message, 'release-please')
     runs-on: ubuntu-latest
+    # Serialize dev publishing/deploys so out-of-order runs cannot leave :staging on an older commit.
+    concurrency:
+      group: deploy-dev
+      cancel-in-progress: false
     permissions:
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@v4
 
+      - name: Skip stale deployment
+        id: fresh
+        run: |
+          latest=$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" refs/heads/main | cut -f1)
+          if [ "$latest" != "$GITHUB_SHA" ]; then
+            echo "main moved to $latest; skipping stale deploy of $GITHUB_SHA"
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Set lower-case image name
+        if: steps.fresh.outputs.stale == 'false'
         run: echo "IMAGE_NAME=${REGISTRY}/${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
 
       - name: Set up Docker Buildx
+        if: steps.fresh.outputs.stale == 'false'
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
+        if: steps.fresh.outputs.stale == 'false'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -91,6 +62,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push Staging image
+        if: steps.fresh.outputs.stale == 'false'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -100,9 +72,9 @@ jobs:
             ${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
 
       - name: Deploy to Dokploy Dev Environment
+        if: steps.fresh.outputs.stale == 'false'
         run: |
           curl --fail-with-body -X POST "${{ secrets.DOKPLOY_URL }}/api/application.deploy" \
             -H "x-api-key: ${{ secrets.DOKPLOY_API_KEY }}" \
             -H "Content-Type: application/json" \
             -d "{\"applicationId\": \"${{ secrets.DOKPLOY_DEV_APP_ID }}\"}"
-

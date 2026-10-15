@@ -30,10 +30,22 @@ jobs:
         with:
           release-type: go
 
-  deploy-prod:
+  # Run the full test suite against the release tag before anything is published.
+  test-release:
     needs: release-please
     if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    uses: ./.github/workflows/test.yml
+    with:
+      ref: ${{ needs.release-please.outputs.tag_name }}
+
+  deploy-prod:
+    needs: [release-please, test-release]
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
+    # Shared with rollback-prod so releases and rollbacks never run concurrently.
+    concurrency:
+      group: deploy-prod
+      cancel-in-progress: false
     permissions:
       contents: read
       packages: write
@@ -75,10 +87,22 @@ jobs:
   rollback-prod:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-prod
+      cancel-in-progress: false
     permissions:
       contents: read
       packages: write
     steps:
+      - name: Validate rollback version
+        env:
+          ROLLBACK_VERSION: ${{ inputs.rollback_version }}
+        run: |
+          if ! printf '%s' "$ROLLBACK_VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "Invalid version tag; expected e.g. v1.2.3" >&2
+            exit 1
+          fi
+
       - name: Set lower-case image name
         run: echo "IMAGE_NAME=${REGISTRY}/${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
 
@@ -93,10 +117,12 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Retag previous version as :latest in GHCR
+        env:
+          ROLLBACK_VERSION: ${{ inputs.rollback_version }}
         run: |
           docker buildx imagetools create \
-            -t ${{ env.IMAGE_NAME }}:latest \
-            ${{ env.IMAGE_NAME }}:${{ inputs.rollback_version }}
+            -t "${IMAGE_NAME}:latest" \
+            "${IMAGE_NAME}:${ROLLBACK_VERSION}"
 
       - name: Redeploy Dokploy Prod Environment
         run: |
@@ -104,4 +130,3 @@ jobs:
             -H "x-api-key: ${{ secrets.DOKPLOY_API_KEY }}" \
             -H "Content-Type: application/json" \
             -d "{\"applicationId\": \"${{ secrets.DOKPLOY_PROD_APP_ID }}\"}"
-
