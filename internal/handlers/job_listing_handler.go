@@ -118,6 +118,13 @@ func (h *JobListingHandler) GetJobListing(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Company not found"})
 		return
 	}
+
+	n := time.Now()
+	today := time.Date(n.Year(), n.Month(), n.Day(), 0, 0, 0, 0, n.Location())
+	if jl.EndDate.Before(today) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Job Listing not found"})
+		return
+	}
 	c.JSON(http.StatusOK, jl)
 }
 
@@ -142,6 +149,7 @@ func jobListingSummaryQuery(db *gorm.DB) *gorm.DB {
 		"job_listings.company_id",
 		"job_listings.apply_click_count",
 	).Joins("left join companies on companies.id = job_listings.company_id").
+		Where("job_listings.end_date >= ?", time.Date(time.Now().Year(), time.Now().Month(), time.Now().Day(), 0, 0, 0, 0, time.Now().Location())).
 		Order("job_listings.created_at DESC, job_listings.id DESC")
 }
 
