@@ -15,6 +15,14 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
+// BlobStore is the object-storage surface BlobData needs. R2Client is the
+// real implementation; tests can substitute an in-memory one.
+type BlobStore interface {
+	GetObject(key string) ([]byte, error)
+	PutObject(key string, obj []byte) error
+	DeleteObject(key string) error
+}
+
 type R2Client struct {
 	R2_client  *s3.Client
 	BucketName string
@@ -35,6 +43,7 @@ func InitS3SDK(server_cfg *cfg.Config) (R2Client, error) {
 
 	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
 		o.BaseEndpoint = aws.String(r2_endpoint)
+		o.UsePathStyle = server_cfg.R2_use_path_style
 	})
 	return R2Client{
 		R2_client:  client,
@@ -67,9 +76,10 @@ func (r2 R2Client) GetObject(object_key string) ([]byte, error) {
 	if err != nil {
 		return []byte{}, err
 	}
+	defer response.Body.Close()
 	data, err := io.ReadAll(response.Body)
 	if err != nil {
-		return []byte{}, nil
+		return []byte{}, err
 	}
 	return data, nil
 }

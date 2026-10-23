@@ -21,13 +21,13 @@ type BlobData struct {
 }
 
 // Get the bd from the database, then call this to get a bytearray that represents the data.
-func (bd BlobData) GetData(r2 utils.R2Client) ([]byte, error) {
+func (bd BlobData) GetData(r2 utils.BlobStore) ([]byte, error) {
 	///fetch bd.uri from bucket
 	return r2.GetObject(bd.BlobId.String())
 }
 
 // input name, type, and association id (who it belongs to), actual data as a byte array, the db client and the r2 client
-func NewBlobData(name string, ftype string, association_id uuid.UUID, blob []byte, db *gorm.DB, r2 utils.R2Client) (BlobData, error) {
+func NewBlobData(name string, ftype string, association_id uuid.UUID, blob []byte, db *gorm.DB, r2 utils.BlobStore) (BlobData, error) {
 	// create struct
 	id, _ := uuid.NewUUID()
 	bd := BlobData{
@@ -48,7 +48,7 @@ func NewBlobData(name string, ftype string, association_id uuid.UUID, blob []byt
 	return bd, nil
 }
 
-func (bd BlobData) DeleteData(blobId *uuid.UUID, db *gorm.DB, r2 utils.R2Client) error {
+func (bd BlobData) DeleteData(blobId *uuid.UUID, db *gorm.DB, r2 utils.BlobStore) error {
 	if err := r2.DeleteObject(bd.BlobId.String()); err != nil {
 		log.Printf("Warning: Failed to delete physical file from R2: %s\n", err)
 	}

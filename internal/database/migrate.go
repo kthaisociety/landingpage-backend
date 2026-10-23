@@ -39,5 +39,6 @@ func Migrate(db *gorm.DB) error {
 		&models.GeneralApplicationSettings{},
 		&models.FinalizeRecruitmentPhase{},
 		&models.TeamQuestionsDeliveryEvent{},
+		&models.Sponsor{},
 	)
 }
