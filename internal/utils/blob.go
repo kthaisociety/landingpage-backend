@@ -35,6 +35,7 @@ func InitS3SDK(server_cfg *cfg.Config) (R2Client, error) {
 
 	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
 		o.BaseEndpoint = aws.String(r2_endpoint)
+		o.UsePathStyle = server_cfg.R2_use_path_style
 	})
 	return R2Client{
 		R2_client:  client,
