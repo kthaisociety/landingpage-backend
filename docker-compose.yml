@@ -15,23 +15,5 @@ services:
     ports:
       - "127.0.0.1:6379:6379"
 
-  # Local stand-in for Cloudflare R2 (uploaded logos and other blobs). It only
-  # understands path-style requests, so .env needs R2_Use_Path_Style=true; see
-  # .env.example for the matching R2_* values.
-  s3:
-    image: adobe/s3mock:5.2.3
-    # The image runs as an unprivileged user that can't write to a fresh,
-    # root-owned named volume; root is fine for this local-only service.
-    user: root
-    environment:
-      COM_ADOBE_TESTING_S3MOCK_STORE_INITIAL_BUCKETS: kthais-dev
-      COM_ADOBE_TESTING_S3MOCK_STORE_ROOT: /data
-      COM_ADOBE_TESTING_S3MOCK_STORE_RETAIN_FILES_ON_EXIT: "true"
-    ports:
-      - "127.0.0.1:9090:9090"
-    volumes:
-      - s3_data:/data
-
 volumes:
   postgres_data:
-  s3_data:

@@ -180,44 +180,6 @@ func TestLoadConfigDevelopmentMode(t *testing.T) {
 	}
 }
 
-// R2_Use_Path_Style must stay off unless explicitly "true": deployed
-// environments talk to Cloudflare R2 with virtual-hosted addressing and
-// never set it.
-func TestLoadConfigR2UsePathStyle(t *testing.T) {
-	tests := []struct {
-		name  string
-		value *string
-		want  bool
-	}{
-		{"unset", nil, false},
-		{"empty", ptr(""), false},
-		{"false", ptr("false"), false},
-		{"non-boolean", ptr("yes"), false},
-		{"true", ptr("true"), true},
-		{"mixed-case true", ptr("True"), true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("GOOGLE_CLIENT_ID", "client-id")
-			t.Setenv("GOOGLE_CLIENT_SECRET", "client-secret")
-			unsetEnvForTest(t, "DEV_ROLE_OVERRIDES")
-			if tt.value == nil {
-				unsetEnvForTest(t, "R2_Use_Path_Style")
-			} else {
-				t.Setenv("R2_Use_Path_Style", *tt.value)
-			}
-
-			cfg, err := LoadConfig()
-			if err != nil {
-				t.Fatalf("LoadConfig() error = %v", err)
-			}
-			if cfg.R2_use_path_style != tt.want {
-				t.Fatalf("R2_use_path_style = %v, want %v", cfg.R2_use_path_style, tt.want)
-			}
-		})
-	}
-}
-
 // testRSAKeyPEMs returns a fresh PEM-encoded RSA private/public key pair.
 func testRSAKeyPEMs(t *testing.T) (string, string) {
 	t.Helper()

@@ -21,7 +21,6 @@
 - `MAILCHIMP_USER`, `MAILCHIMP_LIST_ID`
 - `SES_REGION`, `SES_REPLY_TO`
 - `R2_Bucket`, `R2_Secret_Access_Key`, `R2_Access_Key_Id`, `R2_Endpoint`, `R2_Account_Id`
-- `R2_Use_Path_Style`: `true` addresses objects as `endpoint/bucket/key`; required for the local S3Mock in `docker-compose.yml`, left unset for Cloudflare R2. `.env.example` ships the local values.
 
 ## Startup Gotchas
 

@@ -105,10 +105,6 @@ type Config struct {
 	R2_access_key_id     string
 	R2_endpoint          string
 	R2_Account_Id        string // might not be needed
-	// R2_use_path_style addresses objects as endpoint/bucket/key instead of
-	// bucket.endpoint/key. Off for Cloudflare R2; on for the local S3Mock in
-	// docker-compose.yml, which only understands path-style requests.
-	R2_use_path_style bool
 
 	SES struct {
 		Region  string
@@ -200,7 +196,6 @@ func LoadConfig() (*Config, error) {
 	cfg.R2_access_key_id = getEnv("R2_Access_Key_Id", "")
 	cfg.R2_endpoint = getEnv("R2_Endpoint", "")
 	cfg.R2_Account_Id = getEnv("R2_Account_Id", "")
-	cfg.R2_use_path_style = strings.EqualFold(getEnv("R2_Use_Path_Style", "false"), "true")
 
 	// Debug OAuth configuration
 	// fmt.Printf("Google Client ID: %s\n", maskString(cfg.OAuth.GoogleClientID))
