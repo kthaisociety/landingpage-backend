@@ -2,3 +2,9 @@
 # The last matching pattern wins.
 # Sam until a maintainer is picked for the website (frontend and backend); then the maintainer, with a backup.
 * @sammosios
+
+# Workflows pass the deploy and release app keys to kthaisociety/workflows,
+# so Platform reviews them. Platform also owns this file, so the rule can't be
+# removed without Platform: GitHub applies CODEOWNERS from the base branch.
+/.github/workflows/ @kthaisociety/platform-engineers
+/.github/CODEOWNERS @kthaisociety/platform-engineers
