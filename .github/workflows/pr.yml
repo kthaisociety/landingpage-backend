@@ -1,0 +1,60 @@
+# Checks on every PR. Both jobs are required checks on main.
+name: pr
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions: {}
+
+jobs:
+  # PRs are squash-merged, so the title becomes the commit release-please reads.
+  title:
+    uses: kthaisociety/workflows/.github/workflows/semantic-pr.yml@v0.2.0
+    permissions:
+      pull-requests: read
+
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: kthais
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Check formatting
+        run: |
+          if [ -n "$(gofmt -d -s .)" ]; then
+            gofmt -d -s .
+            exit 1
+          fi
+      - run: go vet ./...
+      - env:
+          MIGRATION_TEST_DSN: host=localhost user=postgres password=postgres dbname=kthais port=5432 sslmode=disable
+        run: go test -race ./...

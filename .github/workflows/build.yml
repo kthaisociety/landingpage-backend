@@ -1,0 +1,74 @@
+# Every push to main: test, build and push ghcr.io/kthaisociety/landingpage-backend:sha-<7>, then deploy
+# it to staging through kthaisociety/deployments, and wait until it runs there. release.yml waits for this
+# workflow's run of a release commit (so a release is promoted only after it ran on staging): the two stay
+# separate files.
+name: build
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: kthais
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Check formatting
+        run: |
+          if [ -n "$(gofmt -d -s .)" ]; then
+            gofmt -d -s .
+            exit 1
+          fi
+      - run: go vet ./...
+      - env:
+          MIGRATION_TEST_DSN: host=localhost user=postgres password=postgres dbname=kthais port=5432 sslmode=disable
+        run: go test -race ./...
+
+  build:
+    needs: test
+    uses: kthaisociety/workflows/.github/workflows/build.yml@v0.2.0
+    permissions:
+      contents: read
+      packages: write
+
+  deploy-staging:
+    needs: build
+    uses: kthaisociety/workflows/.github/workflows/request-deploy.yml@v0.2.0
+    with:
+      environment: staging
+      tag: ${{ needs.build.outputs.tag }}
+    secrets:
+      dispatch-app-client-id: ${{ secrets.DISPATCH_APP_CLIENT_ID }}
+      dispatch-app-private-key: ${{ secrets.DISPATCH_APP_PRIVATE_KEY }}
