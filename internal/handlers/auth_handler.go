@@ -543,5 +543,5 @@ func (h *AuthHandler) ExchangeMCPToken(c *gin.Context) {
 
 func (h *AuthHandler) setJWTCookie(c *gin.Context, value string, maxAge int) {
 	c.SetSameSite(http.SameSiteLaxMode)
-	c.SetCookie("jwt", value, maxAge, "/", h.cfg.CookieDomain, h.cfg.JwtCookieSecure, false)
+	c.SetCookie(h.cfg.JWTCookieName(), value, maxAge, "/", h.cfg.CookieDomain, h.cfg.JwtCookieSecure, false)
 }

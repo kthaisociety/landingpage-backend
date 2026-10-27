@@ -16,6 +16,7 @@ import (
 	"backend/internal/handlers"
 	"backend/internal/luma"
 	"backend/internal/mailchimp"
+	"backend/internal/utils"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-contrib/sessions"
@@ -110,9 +111,13 @@ func main() {
 		log.Fatal("Invalid JWT keys: ", err)
 	}
 
+	utils.SetJWTCookieName(cfg.JWTCookieName())
+
 	// Initialize DB
-	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=%s",
-		cfg.Database.Host, cfg.Database.User, cfg.Database.Password, cfg.Database.DBName, cfg.Database.Port, cfg.Database.SSLMode)
+	dsn, err := cfg.DSN()
+	if err != nil {
+		log.Fatal("Invalid database config: ", err)
+	}
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	if err != nil {
 		log.Fatal("Failed to connect to database:", err)
