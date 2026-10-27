@@ -113,9 +113,21 @@ func ParseAndVerify(jwtIn string, pemKey string) (bool, *jwt.Token) {
 	return token.Valid, token
 }
 
+// jwtCookieName is the member JWT cookie's name, set once at startup from
+// config.JWTCookieName (JWT_COOKIE_NAME).
+var jwtCookieName = "jwt"
+
+// SetJWTCookieName sets the cookie name GetJWT and GetJWTString read. Call it
+// once at startup, before serving requests.
+func SetJWTCookieName(name string) {
+	if name != "" {
+		jwtCookieName = name
+	}
+}
+
 func GetJWTString(c *gin.Context) string {
 	for _, cookie := range c.Request.Cookies() {
-		if cookie.Name == "jwt" {
+		if cookie.Name == jwtCookieName {
 			return cookie.Value
 		}
 	}
@@ -124,7 +136,7 @@ func GetJWTString(c *gin.Context) string {
 
 func GetJWT(c *gin.Context) *jwt.Token {
 	for _, cookie := range c.Request.Cookies() {
-		if cookie.Name == "jwt" {
+		if cookie.Name == jwtCookieName {
 			token, _ := ParseJWT(cookie.Value)
 			return token
 		}
