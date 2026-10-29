@@ -17,8 +17,6 @@ const (
 	defaultSESSender = "applications@kthais.com"
 
 	defaultOAuthRateLimitRequests = 5
-
-	defaultJWTCookieName = "jwt"
 )
 
 type Config struct {
@@ -74,10 +72,6 @@ type Config struct {
 	// Never include a port; see normalizeCookieDomain.
 	CookieDomain    string
 	JwtCookieSecure bool
-	// JwtCookieName is the member JWT cookie's name. Staging and production
-	// share COOKIE_DOMAIN (.kthais.com), so each uses its own name to keep
-	// their sessions apart. Read it through JWTCookieName.
-	JwtCookieName string
 
 	Mailchimp struct {
 		APIKey string
@@ -191,7 +185,6 @@ func LoadConfig() (*Config, error) {
 
 	cfg.CookieDomain = normalizeCookieDomain(getEnv("COOKIE_DOMAIN", ""))
 	cfg.JwtCookieSecure = strings.EqualFold(getEnv("SECURE_COOKIE", "false"), "true")
-	cfg.JwtCookieName = strings.TrimSpace(getEnv("JWT_COOKIE_NAME", defaultJWTCookieName))
 
 	// RS256 key pair for the member jwt cookie. There is no default:
 	// ValidateJWTKeys rejects a missing or malformed pair at startup.
@@ -311,12 +304,16 @@ func (c *Config) DSN() (string, error) {
 	return u.String(), nil
 }
 
-// JWTCookieName is the member JWT cookie's name: JWT_COOKIE_NAME, or "jwt".
+// JWTCookieName is the member JWT cookie's name. "__Host-jwt" when the cookie
+// meets that prefix's rules (Secure, Path=/, no Domain), so the browser keeps
+// it on the exact host that set it and staging and production never see each
+// other's sessions. Otherwise "jwt": local http, or a deployment that still
+// sets COOKIE_DOMAIN to share the cookie with another host.
 func (c *Config) JWTCookieName() string {
-	if c.JwtCookieName == "" {
-		return defaultJWTCookieName
+	if c.JwtCookieSecure && c.CookieDomain == "" {
+		return "__Host-jwt"
 	}
-	return c.JwtCookieName
+	return "jwt"
 }
 
 // normalizePEM trims a PEM value and turns literal "\n" sequences into

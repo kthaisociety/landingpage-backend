@@ -334,29 +334,24 @@ func TestDSN(t *testing.T) {
 	}
 }
 
-func TestLoadConfigJWTCookieName(t *testing.T) {
-	t.Setenv("GOOGLE_CLIENT_ID", "client-id")
-	t.Setenv("GOOGLE_CLIENT_SECRET", "client-secret")
-
-	unsetEnvForTest(t, "JWT_COOKIE_NAME")
-	cfg, err := LoadConfig()
-	if err != nil {
-		t.Fatalf("LoadConfig() error = %v", err)
+func TestJWTCookieName(t *testing.T) {
+	tests := []struct {
+		name         string
+		secure       bool
+		cookieDomain string
+		want         string
+	}{
+		{"secure, host-only", true, "", "__Host-jwt"},
+		{"secure, shared domain", true, ".kthais.com", "jwt"},
+		{"not secure", false, "", "jwt"},
+		{"not secure, shared domain", false, ".kthais.com", "jwt"},
 	}
-	if got := cfg.JWTCookieName(); got != "jwt" {
-		t.Fatalf("JWTCookieName() = %q by default, want jwt", got)
-	}
-
-	t.Setenv("JWT_COOKIE_NAME", "jwt_staging")
-	cfg, err = LoadConfig()
-	if err != nil {
-		t.Fatalf("LoadConfig() error = %v", err)
-	}
-	if got := cfg.JWTCookieName(); got != "jwt_staging" {
-		t.Fatalf("JWTCookieName() = %q, want jwt_staging", got)
-	}
-
-	if got := (&Config{}).JWTCookieName(); got != "jwt" {
-		t.Fatalf("JWTCookieName() on an empty Config = %q, want jwt", got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{JwtCookieSecure: tt.secure, CookieDomain: tt.cookieDomain}
+			if got := cfg.JWTCookieName(); got != tt.want {
+				t.Fatalf("JWTCookieName() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
