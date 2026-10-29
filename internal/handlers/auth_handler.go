@@ -65,7 +65,6 @@ func (h *AuthHandler) Register(r *gin.RouterGroup) {
 
 		// Keep only these essential routes
 		auth.GET("/status", h.Status)
-		auth.GET("/refresh_token", h.RefreshToken)
 		auth.GET("/logout", h.Logout)
 
 		// Server-to-server token exchange for the landingpage-mcp service.
@@ -98,30 +97,6 @@ func isOriginAllowed(origin, allowedOrigin string) bool {
 
 	// Exact match if no wildcard
 	return origin == allowedOrigin
-}
-
-// viv - usually a separate refresh token is used but I don't know why that is necessary
-func (h *AuthHandler) RefreshToken(c *gin.Context) {
-	old_token := utils.GetJWT(c)
-	claims := utils.GetClaims(old_token)
-	userId, err := uuid.Parse(claims["user_id"].(string))
-	if err != nil {
-		log.Printf("Refresh failed\n")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to parse user id"})
-		return
-	}
-	var user models.User
-	result := h.db.Where("user_id = ?", userId).First(&user)
-	if result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not retreive user info"})
-	}
-	newToken, err := utils.WriteJWT(user.Email, user.Roles, user.UserId, h.jwtSigningKey, sessionDurationHours)
-	if err != nil {
-		log.Printf("Refresh failed: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not refresh token"})
-		return
-	}
-	h.setJWTCookie(c, newToken, sessionCookieMaxAgeSeconds)
 }
 
 func InitAuth(cfg *config.Config) error {
