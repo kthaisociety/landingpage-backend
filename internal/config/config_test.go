@@ -223,6 +223,19 @@ func TestLoadConfigJWTKeyNames(t *testing.T) {
 		}
 	})
 
+	t.Run("one-line keys with literal \\n", func(t *testing.T) {
+		setup(t)
+		t.Setenv("JWT_PRIVATE_KEY", strings.ReplaceAll(priv, "\n", `\n`))
+		t.Setenv("JWT_PUBLIC_KEY", strings.ReplaceAll(pub, "\n", `\n`))
+		cfg, err := LoadConfig()
+		if err != nil {
+			t.Fatalf("LoadConfig() error = %v", err)
+		}
+		if err := ValidateJWTKeys(cfg); err != nil {
+			t.Fatalf("ValidateJWTKeys() error = %v", err)
+		}
+	})
+
 	t.Run("old names are no longer read", func(t *testing.T) {
 		setup(t)
 		t.Setenv("JWTSigningKey", priv)
@@ -269,6 +282,75 @@ func TestValidateJWTKeys(t *testing.T) {
 			}
 			if err == nil || !strings.Contains(err.Error(), tt.wantErrText) {
 				t.Fatalf("ValidateJWTKeys() error = %v, want it to contain %q", err, tt.wantErrText)
+			}
+		})
+	}
+}
+
+func TestDSN(t *testing.T) {
+	parts := func() *Config {
+		c := &Config{}
+		c.Database.Host, c.Database.Port, c.Database.User = "db", "5432", "u"
+		c.Database.Password, c.Database.DBName, c.Database.SSLMode = "p", "kthais", "disable"
+		return c
+	}
+
+	tests := []struct {
+		name    string
+		url     string
+		sslmode string
+		want    string
+		wantErr bool
+	}{
+		{name: "DB_* parts without DATABASE_URL", want: "host=db user=u password=p dbname=kthais port=5432 sslmode=disable"},
+		{name: "pipeline URL gets DB_SSLMODE", url: "postgresql://landingpage_backend:secret@pg-abc:5432/landingpage_backend", sslmode: "disable",
+			want: "postgresql://landingpage_backend:secret@pg-abc:5432/landingpage_backend?sslmode=disable"},
+		{name: "URL's own sslmode wins", url: "postgres://u:p@h:5432/d?sslmode=require", sslmode: "disable",
+			want: "postgres://u:p@h:5432/d?sslmode=require"},
+		{name: "no DB_SSLMODE leaves the URL alone", url: "postgres://u:p@h:5432/d", sslmode: "",
+			want: "postgres://u:p@h:5432/d"},
+		{name: "not a postgres URL", url: "host=h user=u", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := parts()
+			if tt.url != "" {
+				c.Database.URL, c.Database.SSLMode = tt.url, tt.sslmode
+			}
+			got, err := c.DSN()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("DSN() = %q, want an error", got)
+				}
+				if strings.Contains(err.Error(), tt.url) {
+					t.Fatalf("DSN() error %q echoes DATABASE_URL", err)
+				}
+				return
+			}
+			if err != nil || got != tt.want {
+				t.Fatalf("DSN() = %q, %v; want %q", got, err, tt.want)
+			}
+		})
+	}
+}
+
+func TestJWTCookieName(t *testing.T) {
+	tests := []struct {
+		name         string
+		secure       bool
+		cookieDomain string
+		want         string
+	}{
+		{"secure, host-only", true, "", "__Host-jwt"},
+		{"secure, shared domain", true, ".kthais.com", "jwt"},
+		{"not secure", false, "", "jwt"},
+		{"not secure, shared domain", false, ".kthais.com", "jwt"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{JwtCookieSecure: tt.secure, CookieDomain: tt.cookieDomain}
+			if got := cfg.JWTCookieName(); got != tt.want {
+				t.Fatalf("JWTCookieName() = %q, want %q", got, tt.want)
 			}
 		})
 	}

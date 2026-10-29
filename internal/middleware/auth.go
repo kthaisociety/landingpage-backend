@@ -16,7 +16,7 @@ import (
 func AuthRequiredJWT(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		for _, cookie := range c.Request.Cookies() {
-			if cookie.Name == "jwt" {
+			if cookie.Name == cfg.JWTCookieName() {
 				// valid, _ := utils.ParseAndVerify(cookie.Value, cfg.JwtSigningKey)
 				valid, _ := utils.ParseAndVerify(cookie.Value, cfg.JwtValidatingKey)
 				if valid {
@@ -41,7 +41,7 @@ func RoleRequired(cfg *config.Config, role string) gin.HandlerFunc {
 			c.Abort()
 		}
 		for _, cookie := range c.Request.Cookies() {
-			if cookie.Name == "jwt" {
+			if cookie.Name == cfg.JWTCookieName() {
 				// valid, token := utils.ParseAndVerify(cookie.Value, cfg.JwtSigningKey)
 				valid, token := utils.ParseAndVerify(cookie.Value, cfg.JwtValidatingKey)
 				if !valid {
