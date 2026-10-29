@@ -74,10 +74,6 @@ Auth endpoints are grouped under `/auth`.
 - **Description**: Checks if the current JWT token is valid.
 - **Response**: JSON with `authenticate` boolean.
 
-### GET /auth/refresh_token
-- **Description**: Refreshes the JWT token for the authenticated user.
-- **Response**: Sets a new JWT cookie.
-
 ### GET /auth/logout
 - **Description**: Logs out the user by clearing the session.
 - **Response**: JSON confirmation message.</content>
