@@ -15,7 +15,7 @@
 - `SERVER_PORT`, `SERVER_HOST`
 - `BACKEND_URL` (OAuth callback base), `FRONTEND_URL` (links in emails), `ALLOWED_ORIGINS`, `TRUSTED_PROXY_HOST`
 - `SESSION_KEY`
-- `SECURE_COOKIE`, `COOKIE_DOMAIN`, `JWT_COOKIE_NAME` (default `jwt`; staging uses `jwt_staging`)
+- `SECURE_COOKIE`, `COOKIE_DOMAIN`: the jwt cookie is `__Host-jwt` when `SECURE_COOKIE=true` and `COOKIE_DOMAIN` is unset (staging, production), else `jwt`
 - `DEVELOPMENT_MODE`; `DEV_ROLE_OVERRIDES`: local dev only, e.g. `you@kthais.com=user,member,admin`; roles are applied on each Google sign-in
 - `OAUTH_RATE_LIMIT_REQUESTS`
 - `MAILCHIMP_API_KEY`, `MAILCHIMP_USER`, `MAILCHIMP_LIST_ID`
