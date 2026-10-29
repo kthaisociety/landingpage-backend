@@ -1,3 +1,4 @@
 # Code owners must approve every PR (ruleset: require code owner review).
 # The last matching pattern wins.
-* @kthaisociety/software-engineers
+# Sam until a maintainer is picked for the website (frontend and backend); then the maintainer, with a backup.
+* @sammosios
