@@ -10,8 +10,9 @@
 
 Docker compose starts:
 
-- PostgreSQL on `localhost:5432`
+- PostgreSQL on `localhost:5433`
 - Redis on `localhost:6379`
+- S3Mock (local stand-in for Cloudflare R2) on `localhost:9090`, with a `kthais-dev` bucket; uploads persist in the `s3_data` volume
 
 ## Code Conventions
 
