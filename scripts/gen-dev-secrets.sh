@@ -21,7 +21,7 @@
 # Usage:
 #   scripts/gen-dev-secrets.sh [--force] [--frontend PATH_TO_FRONTEND_REPO]
 #
-# The frontend repo defaults to ../landingpage-frontend and is skipped if it
+# The frontend repo defaults to ../kthais-frontend and is skipped if it
 # doesn't exist. Secret values are never printed.
 set -euo pipefail
 umask 077
@@ -29,7 +29,7 @@ umask 077
 cd "$(dirname "$0")/.."
 
 force=false
-frontend_dir="../landingpage-frontend"
+frontend_dir="../kthais-frontend"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --force) force=true; shift ;;

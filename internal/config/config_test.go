@@ -303,8 +303,8 @@ func TestDSN(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "DB_* parts without DATABASE_URL", want: "host=db user=u password=p dbname=kthais port=5432 sslmode=disable"},
-		{name: "pipeline URL gets DB_SSLMODE", url: "postgresql://landingpage_backend:secret@pg-abc:5432/landingpage_backend", sslmode: "disable",
-			want: "postgresql://landingpage_backend:secret@pg-abc:5432/landingpage_backend?sslmode=disable"},
+		{name: "pipeline URL gets DB_SSLMODE", url: "postgresql://kthais_backend:secret@pg-abc:5432/kthais_backend", sslmode: "disable",
+			want: "postgresql://kthais_backend:secret@pg-abc:5432/kthais_backend?sslmode=disable"},
 		{name: "URL's own sslmode wins", url: "postgres://u:p@h:5432/d?sslmode=require", sslmode: "disable",
 			want: "postgres://u:p@h:5432/d?sslmode=require"},
 		{name: "no DB_SSLMODE leaves the URL alone", url: "postgres://u:p@h:5432/d", sslmode: "",

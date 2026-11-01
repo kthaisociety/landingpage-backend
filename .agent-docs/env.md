@@ -1,7 +1,7 @@
 # Backend Environment
 
 `.env.example` lists every variable with comments. Staging and production set the same names from
-`kthaisociety/deployments` (`projects/landingpage-backend/project.yaml`); see the header of `.env.example`.
+`kthaisociety/deployments` (`projects/kthais-backend/project.yaml`); see the header of `.env.example`.
 
 ## Effectively Required For Normal Startup
 
