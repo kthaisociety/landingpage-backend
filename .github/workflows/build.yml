@@ -1,4 +1,4 @@
-# Every push to main: test, build and push ghcr.io/kthaisociety/landingpage-backend:sha-<7>, then deploy
+# Every push to main: test, build and push ghcr.io/kthaisociety/kthais-backend:sha-<7>, then deploy
 # it to staging through kthaisociety/deployments, and wait until it runs there. release.yml waits for this
 # workflow's run of a release commit (so a release is promoted only after it ran on staging): the two stay
 # separate files.

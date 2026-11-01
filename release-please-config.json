@@ -4,7 +4,7 @@
   "packages": {
     ".": {
       "release-type": "go",
-      "package-name": "landingpage-backend",
+      "package-name": "kthais-backend",
       "changelog-path": "CHANGELOG.md",
       "include-component-in-tag": false
     }
