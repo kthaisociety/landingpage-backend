@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -20,6 +21,9 @@ const (
 
 type Config struct {
 	Database struct {
+		// URL is DATABASE_URL, which the delivery pipeline sets from its
+		// Postgres. When set it wins over the DB_* parts below; see DSN.
+		URL      string
 		Host     string
 		Port     string
 		User     string
@@ -117,6 +121,7 @@ func LoadConfig() (*Config, error) {
 	cfg := &Config{}
 
 	// Database config
+	cfg.Database.URL = strings.TrimSpace(getEnv("DATABASE_URL", ""))
 	cfg.Database.Host = getEnv("DB_HOST", "localhost")
 	cfg.Database.Port = getEnv("DB_PORT", "5432")
 	cfg.Database.User = getEnv("DB_USER", "postgres")
@@ -183,8 +188,8 @@ func LoadConfig() (*Config, error) {
 
 	// RS256 key pair for the member jwt cookie. There is no default:
 	// ValidateJWTKeys rejects a missing or malformed pair at startup.
-	cfg.JwtSigningKey = strings.TrimSpace(os.Getenv("JWT_PRIVATE_KEY"))
-	cfg.JwtValidatingKey = strings.TrimSpace(os.Getenv("JWT_PUBLIC_KEY"))
+	cfg.JwtSigningKey = normalizePEM(os.Getenv("JWT_PRIVATE_KEY"))
+	cfg.JwtValidatingKey = normalizePEM(os.Getenv("JWT_PUBLIC_KEY"))
 
 	cfg.MCPServiceSecret = getEnv("MCP_SERVICE_SECRET", "")
 	cfg.OnboardingServiceSecret = getEnv("ONBOARDING_SERVICE_SECRET", "")
@@ -276,6 +281,46 @@ func ValidateJWTKeys(cfg *Config) error {
 		return fmt.Errorf("JWT_PUBLIC_KEY does not match JWT_PRIVATE_KEY")
 	}
 	return nil
+}
+
+// DSN is the Postgres connection string: DATABASE_URL when set, with
+// sslmode=DB_SSLMODE added if the URL names none (the pipeline's URL has no
+// sslmode), otherwise a key=value DSN built from the DB_* parts.
+func (c *Config) DSN() (string, error) {
+	if c.Database.URL == "" {
+		return fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=%s",
+			c.Database.Host, c.Database.User, c.Database.Password, c.Database.DBName, c.Database.Port, c.Database.SSLMode), nil
+	}
+	u, err := url.Parse(c.Database.URL)
+	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") {
+		// Don't echo the value: it holds the password.
+		return "", fmt.Errorf("DATABASE_URL is not a postgres:// or postgresql:// URL")
+	}
+	q := u.Query()
+	if q.Get("sslmode") == "" && c.Database.SSLMode != "" {
+		q.Set("sslmode", c.Database.SSLMode)
+		u.RawQuery = q.Encode()
+	}
+	return u.String(), nil
+}
+
+// JWTCookieName is the member JWT cookie's name. "__Host-jwt" when the cookie
+// meets that prefix's rules (Secure, Path=/, no Domain), so the browser keeps
+// it on the exact host that set it and staging and production never see each
+// other's sessions. Otherwise "jwt": local http, or a deployment that still
+// sets COOKIE_DOMAIN to share the cookie with another host.
+func (c *Config) JWTCookieName() string {
+	if c.JwtCookieSecure && c.CookieDomain == "" {
+		return "__Host-jwt"
+	}
+	return "jwt"
+}
+
+// normalizePEM trims a PEM value and turns literal "\n" sequences into
+// newlines, so a key works whether it was stored with real newlines or on
+// one line (as the frontend's src/proxy.ts also accepts).
+func normalizePEM(raw string) string {
+	return strings.TrimSpace(strings.ReplaceAll(raw, `\n`, "\n"))
 }
 
 // normalizeCookieDomain strips an accidental :port suffix. Cookie Domain attributes must not contain ports.
