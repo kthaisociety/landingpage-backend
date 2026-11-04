@@ -65,8 +65,8 @@ type Profile struct {
 	CurrentlyLearning      string         `gorm:"type:text;default:''" json:"currently_learning,omitempty"`
 	CurrentlyReading       string         `gorm:"type:text;default:''" json:"currently_reading,omitempty"`
 	SongID                 string         `gorm:"default:''" json:"song_id,omitempty"`
-	SongTitle              string         `gorm:"default:''" json:"song_title,omitempty"`
-	SongArtist             string         `gorm:"default:''" json:"song_artist,omitempty"`
+	SongTitle              string         `gorm:"type:text;default:''" json:"song_title,omitempty"`
+	SongArtist             string         `gorm:"type:text;default:''" json:"song_artist,omitempty"`
 	SongImage              string         `gorm:"type:text;default:''" json:"song_image,omitempty"`
 	SongHref               string         `gorm:"type:text;default:''" json:"song_href,omitempty"`
 	Skills                 pq.StringArray `gorm:"type:text[]" json:"skills,omitempty"`
