@@ -107,19 +107,29 @@ func (h *ProfileHandler) GetMyProfile(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"userId":         userID,
-		"exists":         true,
-		"roles":          roles,
-		"email":          profile.Email,
-		"firstName":      profile.FirstName,
-		"lastName":       profile.LastName,
-		"university":     profile.University,
-		"programme":      profile.Programme,
-		"graduationYear": profile.GraduationYear,
-		"githubLink":     profile.GitHubLink,
-		"linkedInLink":   profile.LinkedInLink,
-		"aboutMe":        profile.AboutMe,
-		"profilePicture": profile.ProfilePicture,
+		"userId":            userID,
+		"exists":            true,
+		"roles":             roles,
+		"email":             profile.Email,
+		"firstName":         profile.FirstName,
+		"lastName":          profile.LastName,
+		"university":        profile.University,
+		"programme":         profile.Programme,
+		"graduationYear":    profile.GraduationYear,
+		"githubLink":        profile.GitHubLink,
+		"linkedInLink":      profile.LinkedInLink,
+		"aboutMe":           profile.AboutMe,
+		"profilePicture":    profile.ProfilePicture,
+		"askMeAbout":        profile.AskMeAbout,
+		"outsideStudies":    profile.OutsideStudies,
+		"currentlyBuilding": profile.CurrentlyBuilding,
+		"currentlyLearning": profile.CurrentlyLearning,
+		"currentlyReading":  profile.CurrentlyReading,
+		"songId":            profile.SongID,
+		"songTitle":         profile.SongTitle,
+		"songArtist":        profile.SongArtist,
+		"songImage":         profile.SongImage,
+		"songHref":          profile.SongHref,
 	})
 }
 
@@ -137,15 +147,25 @@ func (h *ProfileHandler) UpdateMyProfile(c *gin.Context) {
 	result := h.db.Where("user_uuid = ?", userID).First(&existingProfile)
 	// Parse input
 	var input struct {
-		FirstName      string              `json:"firstName" binding:"required"`
-		LastName       string              `json:"lastName" binding:"required"`
-		Email          string              `json:"email" binding:"required,email"`
-		University     string              `json:"university"`
-		Programme      models.StudyProgram `json:"programme"`
-		GraduationYear int                 `json:"graduationYear"`
-		GitHubLink     string              `json:"githubLink"`
-		LinkedInLink   string              `json:"linkedinLink"`
-		AboutMe        string              `json:"aboutMe"`
+		FirstName         string              `json:"firstName" binding:"required"`
+		LastName          string              `json:"lastName" binding:"required"`
+		Email             string              `json:"email" binding:"required,email"`
+		University        string              `json:"university"`
+		Programme         models.StudyProgram `json:"programme"`
+		GraduationYear    int                 `json:"graduationYear"`
+		GitHubLink        string              `json:"githubLink"`
+		LinkedInLink      string              `json:"linkedinLink"`
+		AboutMe           string              `json:"aboutMe"`
+		AskMeAbout        string              `json:"askMeAbout"`
+		OutsideStudies    string              `json:"outsideStudies"`
+		CurrentlyBuilding string              `json:"currentlyBuilding"`
+		CurrentlyLearning string              `json:"currentlyLearning"`
+		CurrentlyReading  string              `json:"currentlyReading"`
+		SongID            string              `json:"songId"`
+		SongTitle         string              `json:"songTitle"`
+		SongArtist        string              `json:"songArtist"`
+		SongImage         string              `json:"songImage"`
+		SongHref          string              `json:"songHref"`
 	}
 
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -164,6 +184,16 @@ func (h *ProfileHandler) UpdateMyProfile(c *gin.Context) {
 		existingProfile.GitHubLink = input.GitHubLink
 		existingProfile.LinkedInLink = input.LinkedInLink
 		existingProfile.AboutMe = input.AboutMe
+		existingProfile.AskMeAbout = input.AskMeAbout
+		existingProfile.OutsideStudies = input.OutsideStudies
+		existingProfile.CurrentlyBuilding = input.CurrentlyBuilding
+		existingProfile.CurrentlyLearning = input.CurrentlyLearning
+		existingProfile.CurrentlyReading = input.CurrentlyReading
+		existingProfile.SongID = input.SongID
+		existingProfile.SongTitle = input.SongTitle
+		existingProfile.SongArtist = input.SongArtist
+		existingProfile.SongImage = input.SongImage
+		existingProfile.SongHref = input.SongHref
 
 		if err := h.db.Save(&existingProfile).Error; err != nil {
 			log.Printf("Exist profile error")
@@ -199,18 +229,28 @@ func (h *ProfileHandler) UpdateMyProfile(c *gin.Context) {
 	}
 
 	newProfile := models.Profile{
-		UserUUID:       userID,
-		UserId:         user.ID,
-		FirstName:      input.FirstName,
-		LastName:       input.LastName,
-		Email:          input.Email,
-		University:     input.University,
-		Programme:      input.Programme,
-		GraduationYear: input.GraduationYear,
-		GitHubLink:     input.GitHubLink,
-		LinkedInLink:   input.LinkedInLink,
-		AboutMe:        input.AboutMe,
-		Team:           resolveTeamFromAcceptedApplication(h.db, user.Email),
+		UserUUID:          userID,
+		UserId:            user.ID,
+		FirstName:         input.FirstName,
+		LastName:          input.LastName,
+		Email:             input.Email,
+		University:        input.University,
+		Programme:         input.Programme,
+		GraduationYear:    input.GraduationYear,
+		GitHubLink:        input.GitHubLink,
+		LinkedInLink:      input.LinkedInLink,
+		AboutMe:           input.AboutMe,
+		AskMeAbout:        input.AskMeAbout,
+		OutsideStudies:    input.OutsideStudies,
+		CurrentlyBuilding: input.CurrentlyBuilding,
+		CurrentlyLearning: input.CurrentlyLearning,
+		CurrentlyReading:  input.CurrentlyReading,
+		SongID:            input.SongID,
+		SongTitle:         input.SongTitle,
+		SongArtist:        input.SongArtist,
+		SongImage:         input.SongImage,
+		SongHref:          input.SongHref,
+		Team:              resolveTeamFromAcceptedApplication(h.db, user.Email),
 	}
 
 	if err := h.db.Create(&newProfile).Error; err != nil {
@@ -565,19 +605,29 @@ func (h *ProfileHandler) GetPublicProfile(c *gin.Context) {
 		Scan(&projects)
 
 	c.JSON(http.StatusOK, gin.H{
-		"id":             profile.Id,
-		"slug":           profile.Slug,
-		"firstName":      profile.FirstName,
-		"lastName":       profile.LastName,
-		"profilePicture": profile.ProfilePicture,
-		"university":     profile.University,
-		"programme":      profile.Programme,
-		"graduationYear": profile.GraduationYear,
-		"githubLink":     profile.GitHubLink,
-		"linkedinLink":   profile.LinkedInLink,
-		"aboutMe":        profile.AboutMe,
-		"teamHistory":    teamHistory,
-		"projects":       projects,
+		"id":                profile.Id,
+		"slug":              profile.Slug,
+		"firstName":         profile.FirstName,
+		"lastName":          profile.LastName,
+		"profilePicture":    profile.ProfilePicture,
+		"university":        profile.University,
+		"programme":         profile.Programme,
+		"graduationYear":    profile.GraduationYear,
+		"githubLink":        profile.GitHubLink,
+		"linkedinLink":      profile.LinkedInLink,
+		"aboutMe":           profile.AboutMe,
+		"askMeAbout":        profile.AskMeAbout,
+		"outsideStudies":    profile.OutsideStudies,
+		"currentlyBuilding": profile.CurrentlyBuilding,
+		"currentlyLearning": profile.CurrentlyLearning,
+		"currentlyReading":  profile.CurrentlyReading,
+		"songId":            profile.SongID,
+		"songTitle":         profile.SongTitle,
+		"songArtist":        profile.SongArtist,
+		"songImage":         profile.SongImage,
+		"songHref":          profile.SongHref,
+		"teamHistory":       teamHistory,
+		"projects":          projects,
 	})
 }
 

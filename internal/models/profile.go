@@ -42,21 +42,33 @@ type Profile struct {
 	// level — despite the uniqueIndex, Postgres allows any number of NULLs in
 	// a unique column. Every new profile gets one immediately via
 	// BeforeCreate below.
-	Slug                   string         `gorm:"uniqueIndex" json:"slug,omitempty"`
-	UserUUID               uuid.UUID      `gorm:"not null" json:"user_id"`
-	UserId                 uint           `gorm:"not null" json:"-"`
-	User                   User           `json:"user,omitempty"`
-	Email                  string         `gorm:"uniqueIndex;not null" json:"email"`
-	FirstName              string         `gorm:"not null" json:"first_name"`
-	LastName               string         `gorm:"not null" json:"last_name"`
-	Registered             bool           `gorm:"default:false;not null" json:"registered"`
-	University             string         `gorm:"not null" json:"university"`
-	Programme              StudyProgram   `gorm:"not null" json:"programme"`
-	GraduationYear         int            `gorm:"not null" json:"graduation_year"`
-	GitHubLink             string         `json:"github_link,omitempty"`
-	LinkedInLink           string         `json:"linkedin_link,omitempty"`
-	ProfilePicture         string         `json:"profile_picture,omitempty"`
-	AboutMe                string         `json:"about_me,omitempty"`
+	Slug           string       `gorm:"uniqueIndex" json:"slug,omitempty"`
+	UserUUID       uuid.UUID    `gorm:"not null" json:"user_id"`
+	UserId         uint         `gorm:"not null" json:"-"`
+	User           User         `json:"user,omitempty"`
+	Email          string       `gorm:"uniqueIndex;not null" json:"email"`
+	FirstName      string       `gorm:"not null" json:"first_name"`
+	LastName       string       `gorm:"not null" json:"last_name"`
+	Registered     bool         `gorm:"default:false;not null" json:"registered"`
+	University     string       `gorm:"not null" json:"university"`
+	Programme      StudyProgram `gorm:"not null" json:"programme"`
+	GraduationYear int          `gorm:"not null" json:"graduation_year"`
+	GitHubLink     string       `json:"github_link,omitempty"`
+	LinkedInLink   string       `json:"linkedin_link,omitempty"`
+	ProfilePicture string       `json:"profile_picture,omitempty"`
+	AboutMe        string       `json:"about_me,omitempty"`
+	// Personal details shown on the public member profile. Empty for profiles
+	// created before these columns existed.
+	AskMeAbout             string         `gorm:"type:text;default:''" json:"ask_me_about,omitempty"`
+	OutsideStudies         string         `gorm:"type:text;default:''" json:"outside_studies,omitempty"`
+	CurrentlyBuilding      string         `gorm:"type:text;default:''" json:"currently_building,omitempty"`
+	CurrentlyLearning      string         `gorm:"type:text;default:''" json:"currently_learning,omitempty"`
+	CurrentlyReading       string         `gorm:"type:text;default:''" json:"currently_reading,omitempty"`
+	SongID                 string         `gorm:"default:''" json:"song_id,omitempty"`
+	SongTitle              string         `gorm:"default:''" json:"song_title,omitempty"`
+	SongArtist             string         `gorm:"default:''" json:"song_artist,omitempty"`
+	SongImage              string         `gorm:"type:text;default:''" json:"song_image,omitempty"`
+	SongHref               string         `gorm:"type:text;default:''" json:"song_href,omitempty"`
 	Skills                 pq.StringArray `gorm:"type:text[]" json:"skills,omitempty"`
 	BookingPageURL         string         `gorm:"default:''" json:"booking_page_url,omitempty"`
 	InterviewEmailTemplate string         `gorm:"type:text;default:''" json:"interview_email_template,omitempty"`
