@@ -30,6 +30,15 @@ type SmallJobListing struct {
 	ApplyClickCount int64     `json:"applyClickCount"`
 }
 
+func startOfTodayStockholm() time.Time {
+	loc, err := time.LoadLocation("Europe/Stockholm")
+	if err != nil {
+		loc = time.UTC
+	}
+	n := time.Now().In(loc)
+	return time.Date(n.Year(), n.Month(), n.Day(), 0, 0, 0, 0, loc)
+}
+
 func NewJobListingHandler(db *gorm.DB, cfg *config.Config) *JobListingHandler {
 	return &JobListingHandler{db: db, cfg: cfg}
 }
@@ -44,6 +53,8 @@ func (h *JobListingHandler) Register(r *gin.RouterGroup) {
 		admin.PUT("/update", h.UpdateJobListing)
 		admin.DELETE("/delete", h.DeleteJobListing)
 		admin.POST("/full", h.SingleUpload)
+		admin.GET("/all", h.GetAllListingsAdmin)
+		admin.GET("/job", h.GetJobListingAdmin)
 		// no auth required for these
 		jl.GET("/all", h.GetAllListings)
 		jl.GET("/job", h.GetJobListing)
@@ -118,13 +129,19 @@ func (h *JobListingHandler) GetJobListing(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Company not found"})
 		return
 	}
+	if jl.EndDate.Before(startOfTodayStockholm()) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Job Listing not found"})
+		return
+	}
 	c.JSON(http.StatusOK, jl)
 }
 
 // Get with Query Params
 func (h *JobListingHandler) GetAllListings(c *gin.Context) {
 	var shortListings []SmallJobListing
-	if err := jobListingSummaryQuery(h.db).Scan(&shortListings).Error; err != nil {
+	if err := jobListingSummaryQuery(h.db).
+		Where("job_listings.end_date >= ?", startOfTodayStockholm()).
+		Scan(&shortListings).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -143,6 +160,29 @@ func jobListingSummaryQuery(db *gorm.DB) *gorm.DB {
 		"job_listings.apply_click_count",
 	).Joins("left join companies on companies.id = job_listings.company_id").
 		Order("job_listings.created_at DESC, job_listings.id DESC")
+}
+
+func (h *JobListingHandler) GetAllListingsAdmin(c *gin.Context) {
+	var shortListings []SmallJobListing
+	if err := jobListingSummaryQuery(h.db).Scan(&shortListings).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, shortListings)
+}
+
+func (h *JobListingHandler) GetJobListingAdmin(c *gin.Context) {
+	id := c.Query("id")
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "No id provided"})
+		return
+	}
+	var jl models.JobListing
+	if err := h.db.First(&jl, "id = ?", id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Company not found"})
+		return
+	}
+	c.JSON(http.StatusOK, jl)
 }
 
 // TrackApplyClick records a click on a job listing's "Apply" button/link.
