@@ -7,9 +7,12 @@ import (
 	"backend/internal/middleware"
 	"backend/internal/models"
 	"backend/internal/utils"
+	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -49,6 +52,83 @@ func resolveTeamFromAcceptedApplication(db *gorm.DB, email string) string {
 		return ""
 	}
 	return application.AssignedTeam
+}
+
+// profilePersonalInput is the optional part of a member's own profile save.
+// A nil field was not sent, so the stored value stays. An empty string clears it.
+// Older clients that do not know these keys therefore cannot wipe them.
+type profilePersonalInput struct {
+	AskMeAbout        *string `json:"askMeAbout"`
+	OutsideStudies    *string `json:"outsideStudies"`
+	CurrentlyBuilding *string `json:"currentlyBuilding"`
+	CurrentlyLearning *string `json:"currentlyLearning"`
+	CurrentlyReading  *string `json:"currentlyReading"`
+	SongID            *string `json:"songId"`
+	SongTitle         *string `json:"songTitle"`
+	SongArtist        *string `json:"songArtist"`
+	SongImage         *string `json:"songImage"`
+	SongHref          *string `json:"songHref"`
+}
+
+func (in profilePersonalInput) apply(profile *models.Profile) error {
+	limits := []struct {
+		name  string
+		value *string
+		max   int
+		link  bool
+	}{
+		{"askMeAbout", in.AskMeAbout, 1000, false},
+		{"outsideStudies", in.OutsideStudies, 1000, false},
+		{"currentlyBuilding", in.CurrentlyBuilding, 200, false},
+		{"currentlyLearning", in.CurrentlyLearning, 200, false},
+		{"currentlyReading", in.CurrentlyReading, 200, false},
+		{"songId", in.SongID, 64, false},
+		{"songTitle", in.SongTitle, 300, false},
+		{"songArtist", in.SongArtist, 300, false},
+		{"songImage", in.SongImage, 2000, true},
+		{"songHref", in.SongHref, 2000, true},
+	}
+	for _, field := range limits {
+		if field.value == nil {
+			continue
+		}
+		if utf8.RuneCountInString(*field.value) > field.max {
+			return fmt.Errorf("%s must be at most %d characters", field.name, field.max)
+		}
+		if field.link {
+			if err := validateOptionalHTTPURL(*field.value); err != nil {
+				return fmt.Errorf("%s %w", field.name, err)
+			}
+		}
+	}
+
+	assign := func(dst *string, src *string) {
+		if src != nil {
+			*dst = *src
+		}
+	}
+	assign(&profile.AskMeAbout, in.AskMeAbout)
+	assign(&profile.OutsideStudies, in.OutsideStudies)
+	assign(&profile.CurrentlyBuilding, in.CurrentlyBuilding)
+	assign(&profile.CurrentlyLearning, in.CurrentlyLearning)
+	assign(&profile.CurrentlyReading, in.CurrentlyReading)
+	assign(&profile.SongID, in.SongID)
+	assign(&profile.SongTitle, in.SongTitle)
+	assign(&profile.SongArtist, in.SongArtist)
+	assign(&profile.SongImage, in.SongImage)
+	assign(&profile.SongHref, in.SongHref)
+	return nil
+}
+
+func validateOptionalHTTPURL(value string) error {
+	if value == "" {
+		return nil
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return fmt.Errorf("must be an http or https URL")
+	}
+	return nil
 }
 
 func (h *ProfileHandler) Register(r *gin.RouterGroup) {
@@ -107,19 +187,29 @@ func (h *ProfileHandler) GetMyProfile(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"userId":         userID,
-		"exists":         true,
-		"roles":          roles,
-		"email":          profile.Email,
-		"firstName":      profile.FirstName,
-		"lastName":       profile.LastName,
-		"university":     profile.University,
-		"programme":      profile.Programme,
-		"graduationYear": profile.GraduationYear,
-		"githubLink":     profile.GitHubLink,
-		"linkedInLink":   profile.LinkedInLink,
-		"aboutMe":        profile.AboutMe,
-		"profilePicture": profile.ProfilePicture,
+		"userId":            userID,
+		"exists":            true,
+		"roles":             roles,
+		"email":             profile.Email,
+		"firstName":         profile.FirstName,
+		"lastName":          profile.LastName,
+		"university":        profile.University,
+		"programme":         profile.Programme,
+		"graduationYear":    profile.GraduationYear,
+		"githubLink":        profile.GitHubLink,
+		"linkedInLink":      profile.LinkedInLink,
+		"aboutMe":           profile.AboutMe,
+		"profilePicture":    profile.ProfilePicture,
+		"askMeAbout":        profile.AskMeAbout,
+		"outsideStudies":    profile.OutsideStudies,
+		"currentlyBuilding": profile.CurrentlyBuilding,
+		"currentlyLearning": profile.CurrentlyLearning,
+		"currentlyReading":  profile.CurrentlyReading,
+		"songId":            profile.SongID,
+		"songTitle":         profile.SongTitle,
+		"songArtist":        profile.SongArtist,
+		"songImage":         profile.SongImage,
+		"songHref":          profile.SongHref,
 	})
 }
 
@@ -146,6 +236,7 @@ func (h *ProfileHandler) UpdateMyProfile(c *gin.Context) {
 		GitHubLink     string              `json:"githubLink"`
 		LinkedInLink   string              `json:"linkedinLink"`
 		AboutMe        string              `json:"aboutMe"`
+		profilePersonalInput
 	}
 
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -164,6 +255,10 @@ func (h *ProfileHandler) UpdateMyProfile(c *gin.Context) {
 		existingProfile.GitHubLink = input.GitHubLink
 		existingProfile.LinkedInLink = input.LinkedInLink
 		existingProfile.AboutMe = input.AboutMe
+		if err := input.profilePersonalInput.apply(&existingProfile); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 
 		if err := h.db.Save(&existingProfile).Error; err != nil {
 			log.Printf("Exist profile error")
@@ -212,6 +307,10 @@ func (h *ProfileHandler) UpdateMyProfile(c *gin.Context) {
 		AboutMe:        input.AboutMe,
 		Team:           resolveTeamFromAcceptedApplication(h.db, user.Email),
 	}
+	if err := input.profilePersonalInput.apply(&newProfile); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	if err := h.db.Create(&newProfile).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -258,6 +357,7 @@ func (h *ProfileHandler) CreateMyProfile(c *gin.Context) {
 		GitHubLink     string              `json:"githubLink"`
 		LinkedInLink   string              `json:"linkedinLink"`
 		AboutMe        string              `json:"aboutMe"`
+		profilePersonalInput
 	}
 
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -285,6 +385,10 @@ func (h *ProfileHandler) CreateMyProfile(c *gin.Context) {
 		LinkedInLink:   input.LinkedInLink,
 		AboutMe:        input.AboutMe,
 		Team:           resolveTeamFromAcceptedApplication(h.db, user.Email),
+	}
+	if err := input.profilePersonalInput.apply(&newProfile); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
 	}
 
 	if err := h.db.Create(&newProfile).Error; err != nil {
@@ -565,19 +669,29 @@ func (h *ProfileHandler) GetPublicProfile(c *gin.Context) {
 		Scan(&projects)
 
 	c.JSON(http.StatusOK, gin.H{
-		"id":             profile.Id,
-		"slug":           profile.Slug,
-		"firstName":      profile.FirstName,
-		"lastName":       profile.LastName,
-		"profilePicture": profile.ProfilePicture,
-		"university":     profile.University,
-		"programme":      profile.Programme,
-		"graduationYear": profile.GraduationYear,
-		"githubLink":     profile.GitHubLink,
-		"linkedinLink":   profile.LinkedInLink,
-		"aboutMe":        profile.AboutMe,
-		"teamHistory":    teamHistory,
-		"projects":       projects,
+		"id":                profile.Id,
+		"slug":              profile.Slug,
+		"firstName":         profile.FirstName,
+		"lastName":          profile.LastName,
+		"profilePicture":    profile.ProfilePicture,
+		"university":        profile.University,
+		"programme":         profile.Programme,
+		"graduationYear":    profile.GraduationYear,
+		"githubLink":        profile.GitHubLink,
+		"linkedinLink":      profile.LinkedInLink,
+		"aboutMe":           profile.AboutMe,
+		"askMeAbout":        profile.AskMeAbout,
+		"outsideStudies":    profile.OutsideStudies,
+		"currentlyBuilding": profile.CurrentlyBuilding,
+		"currentlyLearning": profile.CurrentlyLearning,
+		"currentlyReading":  profile.CurrentlyReading,
+		"songId":            profile.SongID,
+		"songTitle":         profile.SongTitle,
+		"songArtist":        profile.SongArtist,
+		"songImage":         profile.SongImage,
+		"songHref":          profile.SongHref,
+		"teamHistory":       teamHistory,
+		"projects":          projects,
 	})
 }
 
