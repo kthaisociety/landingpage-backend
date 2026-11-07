@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Backend for the KTH AI Society site. This package is a Go 1.23 service built with Gin and GORM, backed by PostgreSQL and Redis, and integrated with Google OAuth, Mailchimp, Amazon SES, and Cloudflare R2-style object storage settings.
+Backend for the KTH AI Society site. This package is a Go 1.23 service built with Gin and GORM, backed by PostgreSQL and Redis, and integrated with Google OAuth, Mailchimp, Amazon SES, and S3-compatible object storage (GleSYS).
 
 Critical current constraint: startup initializes OAuth, Mailchimp, SES, sessions, and schema migration eagerly. Database settings alone are not enough for a clean local boot.
 

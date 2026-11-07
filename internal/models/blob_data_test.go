@@ -32,9 +32,9 @@ func TestBlob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error Loading Config: %s\n", err)
 	}
-	r2, err := utils.InitS3SDK(cfg)
+	store, err := utils.InitS3SDK(cfg)
 	if err != nil {
-		t.Fatalf("Failed to init r2: %s\n", err)
+		t.Fatalf("Failed to init blob store: %s\n", err)
 	}
 	// Initialize DB
 	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=%s",
@@ -50,11 +50,11 @@ func TestBlob(t *testing.T) {
 	name := "test_file"
 	ftype := ".txt"
 	auid, _ := uuid.NewUUID()
-	bd, err := NewBlobData(name, ftype, auid, []byte("asdfasdfasdfasdf"), db, r2)
+	bd, err := NewBlobData(name, ftype, auid, []byte("asdfasdfasdfasdf"), db, store)
 	if err != nil {
 		t.Fatalf("Error creating Blob Data: %s\n", err)
 	}
-	data, err := bd.GetData(r2)
+	data, err := bd.GetData(store)
 	if err != nil {
 		t.Fatalf("Failed to load blob data: %s\n", err)
 	}

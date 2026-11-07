@@ -539,7 +539,7 @@ func (h *ProfileHandler) UploadProfilePicture(c *gin.Context) {
 	name := strings.Join(parts[:len(parts)-1], ".")
 	ftype := parts[len(parts)-1]
 
-	r2, err := utils.InitS3SDK(h.cfg)
+	store, err := utils.InitS3SDK(h.cfg)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Storage unavailable"})
 		return
@@ -557,12 +557,12 @@ func (h *ProfileHandler) UploadProfilePicture(c *gin.Context) {
 		if parseErr == nil {
 			var oldBlob models.BlobData
 			if h.db.First(&oldBlob, "blob_id = ?", oldUUID).Error == nil {
-				_ = oldBlob.DeleteData(&oldUUID, h.db, r2)
+				_ = oldBlob.DeleteData(&oldUUID, h.db, store)
 			}
 		}
 	}
 
-	blob, err := models.NewBlobData(name, ftype, userID, fdata, h.db, r2)
+	blob, err := models.NewBlobData(name, ftype, userID, fdata, h.db, store)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload picture"})
 		return
@@ -595,13 +595,13 @@ func (h *ProfileHandler) GetProfilePicture(c *gin.Context) {
 		return
 	}
 
-	r2, err := utils.InitS3SDK(h.cfg)
+	store, err := utils.InitS3SDK(h.cfg)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Storage unavailable"})
 		return
 	}
 
-	data, err := blob.GetData(r2)
+	data, err := blob.GetData(store)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch picture"})
 		return
@@ -618,7 +618,7 @@ func (h *ProfileHandler) GetProfilePicture(c *gin.Context) {
 	}
 
 	// Public, content-addressed by blob UUID — safe to cache aggressively so
-	// grids like About Us do not re-hit R2/DB on every navigation.
+	// grids like About Us do not re-hit storage/DB on every navigation.
 	c.Header("Cache-Control", "public, max-age=31536000, immutable")
 
 	c.Data(http.StatusOK, contentType, data)

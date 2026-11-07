@@ -46,9 +46,9 @@ func NewCompany(cv string, description string, websiteUrl string, file *multipar
 		var logo_id uuid.UUID
 
 		if has_logo {
-			r2, err := utils.InitS3SDK(cfg)
+			store, err := utils.InitS3SDK(cfg)
 			if err != nil {
-				log.Printf("Failed to init r2: %s\n", err)
+				log.Printf("Failed to init blob store: %s\n", err)
 				return nil, err
 			}
 			logoBlob, err := NewBlobData(
@@ -57,7 +57,7 @@ func NewCompany(cv string, description string, websiteUrl string, file *multipar
 				c_id,
 				fdata,
 				db,
-				r2,
+				store,
 			)
 			if err != nil {
 				log.Printf("Failed to create blob data: %s\n", err)

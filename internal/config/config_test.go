@@ -180,6 +180,42 @@ func TestLoadConfigDevelopmentMode(t *testing.T) {
 	}
 }
 
+// The object storage settings are the pipeline's names (deployments'
+// project.yaml guide), read as they are; only the region has a default.
+func TestLoadConfigS3(t *testing.T) {
+	t.Setenv("GOOGLE_CLIENT_ID", "client-id")
+	t.Setenv("GOOGLE_CLIENT_SECRET", "client-secret")
+	unsetEnvForTest(t, "DEV_ROLE_OVERRIDES")
+	t.Setenv("S3_ACCESS_KEY_ID", "access-key")
+	t.Setenv("S3_SECRET_ACCESS_KEY", "secret-key")
+	t.Setenv("S3_ENDPOINT", "https://objects.dc-sto1.glesys.net")
+	t.Setenv("S3_BUCKET_FILES", "kthais-kthais-backend-staging-files")
+
+	t.Run("region set", func(t *testing.T) {
+		t.Setenv("S3_REGION", "eu-north-1")
+		cfg, err := LoadConfig()
+		if err != nil {
+			t.Fatalf("LoadConfig() error = %v", err)
+		}
+		if cfg.S3.AccessKeyID != "access-key" || cfg.S3.SecretAccessKey != "secret-key" ||
+			cfg.S3.Endpoint != "https://objects.dc-sto1.glesys.net" ||
+			cfg.S3.BucketFiles != "kthais-kthais-backend-staging-files" || cfg.S3.Region != "eu-north-1" {
+			t.Fatalf("S3 = %+v", cfg.S3)
+		}
+	})
+
+	t.Run("region unset", func(t *testing.T) {
+		unsetEnvForTest(t, "S3_REGION")
+		cfg, err := LoadConfig()
+		if err != nil {
+			t.Fatalf("LoadConfig() error = %v", err)
+		}
+		if cfg.S3.Region != "us-east-1" {
+			t.Fatalf("S3.Region = %q, want us-east-1", cfg.S3.Region)
+		}
+	})
+}
+
 // testRSAKeyPEMs returns a fresh PEM-encoded RSA private/public key pair.
 func testRSAKeyPEMs(t *testing.T) (string, string) {
 	t.Helper()

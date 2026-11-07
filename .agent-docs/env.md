@@ -22,7 +22,7 @@
 - `LUMA_API_KEY`, `LUMA_MEMBERS_TIER_ID`
 - `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `SES_REGION`, `SES_SENDER`, `SES_REPLY_TO`
 - `MCP_SERVICE_SECRET`, `ONBOARDING_SERVICE_SECRET`, `ONBOARDING_SERVICE_URL`
-- `R2_Bucket`, `R2_Secret_Access_Key`, `R2_Access_Key_Id`, `R2_Endpoint`
+- `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_ENDPOINT`, `S3_REGION` (default `us-east-1`), `S3_BUCKET_FILES`: object storage. The pipeline sets them to the project's GleSYS storage. Requests are always path-style (`endpoint/bucket/key`).
 
 ## Startup Gotchas
 
