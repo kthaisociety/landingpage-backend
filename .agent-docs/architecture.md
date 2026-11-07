@@ -10,7 +10,7 @@
 - Google OAuth
 - Mailchimp
 - Amazon SES
-- Cloudflare R2-style object storage settings
+- S3-compatible object storage settings (`S3_*`, GleSYS)
 
 ## Main Folders
 

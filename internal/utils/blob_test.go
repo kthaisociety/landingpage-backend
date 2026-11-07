@@ -2,58 +2,48 @@ package utils
 
 import (
 	"backend/internal/config"
-	"fmt"
-	"log"
+	"bytes"
 	"os"
 	"testing"
 
 	"github.com/joho/godotenv"
 )
 
-// this test requires a cloudflare account that I don't want to share atm
-func TestS3init(t *testing.T) {
-	fmt.Println("Running Blob Test")
+// A put, get and delete against the bucket set by the S3_* values in .env.
+// Skipped without a .env or S3_ENDPOINT, as in CI.
+func TestBlobStoreRoundTrip(t *testing.T) {
 	file := "../../.env"
-	loaded := false
-	if _, err := os.Stat(file); err == nil {
-		if err := godotenv.Load(file); err != nil {
-			t.Fatalf("Could not load env file: %s\n", err)
-		}
-		log.Println("Loaded .env file")
-		loaded = true
+	if _, err := os.Stat(file); err != nil {
+		t.Skip("no .env; this test needs an S3 endpoint")
 	}
-	if !loaded {
-		return
+	if err := godotenv.Load(file); err != nil {
+		t.Fatalf("Could not load env file: %s", err)
 	}
 	cfg, err := config.LoadConfig()
 	if err != nil {
-		t.Fatalf("Error Loading Config: %s\n", err)
+		t.Fatalf("Error Loading Config: %s", err)
 	}
-	log.Printf("R2_Endpoint: %s\n R2_Access_Key: %s\n R2_Access_Key_Id: %s\n", cfg.R2_endpoint, cfg.R2_access_key, cfg.R2_access_key_id)
-	fmt.Println("Init SDK")
-	client, err := InitS3SDK(cfg)
+	if cfg.S3.Endpoint == "" {
+		t.Skip("S3_ENDPOINT is unset")
+	}
+
+	store, err := InitS3SDK(cfg)
 	if err != nil {
-		t.Fatalf("Failed to init client: %s\n", err)
+		t.Fatalf("Failed to init store: %s", err)
 	}
-	ol, err := client.GetObjectList()
+
+	key := "blob-test-" + t.Name()
+	want := []byte("My test Object Here")
+	if err := store.PutObject(key, want); err != nil {
+		t.Fatalf("Error putting object: %s", err)
+	}
+	t.Cleanup(func() { _ = store.DeleteObject(key) })
+
+	got, err := store.GetObject(key)
 	if err != nil {
-		t.Fatalf("Failed to get objects from R2 Bucket: %s\n", err)
+		t.Fatalf("Error getting object: %s", err)
 	}
-	PrettyPrintS3Objects(ol)
-	obj_data, err := client.GetObject("gui.erl")
-	if err != nil {
-		t.Fatalf("Failed to get object data%s\n", err)
+	if !bytes.Equal(got, want) {
+		t.Fatalf("GetObject = %q, want %q", got, want)
 	}
-	log.Printf("Object Data: %s\n", obj_data)
-	put_obj := []byte("My test Object Here")
-	testKey := "testObj123"
-	err = client.PutObject(testKey, put_obj)
-	if err != nil {
-		t.Fatalf("Error putting object: %s\n", err)
-	}
-	test_put, err := client.GetObject(testKey)
-	if err != nil {
-		t.Fatalf("Error getting object: %s\n", err)
-	}
-	log.Printf("Test Object Val: %s\n", test_put)
 }

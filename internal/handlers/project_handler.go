@@ -708,7 +708,7 @@ func (h *ProjectHandler) UpdateProjectMedia(c *gin.Context) {
 		}
 	}
 
-	r2, err := utils.InitS3SDK(h.cfg)
+	store, err := utils.InitS3SDK(h.cfg)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Storage unavailable"})
 		return
@@ -742,7 +742,7 @@ func (h *ProjectHandler) UpdateProjectMedia(c *gin.Context) {
 		}
 		name := strings.Join(parts[:len(parts)-1], ".")
 		ext := parts[len(parts)-1]
-		blob, blobErr := models.NewBlobData(name, ext, userUUID, data, h.db, r2)
+		blob, blobErr := models.NewBlobData(name, ext, userUUID, data, h.db, store)
 		if blobErr != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store cover image"})
 			return
@@ -775,7 +775,7 @@ func (h *ProjectHandler) UpdateProjectMedia(c *gin.Context) {
 			}
 			name := strings.Join(parts[:len(parts)-1], ".")
 			ext := parts[len(parts)-1]
-			blob, blobErr := models.NewBlobData(name, ext, userUUID, data, h.db, r2)
+			blob, blobErr := models.NewBlobData(name, ext, userUUID, data, h.db, store)
 			if blobErr != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store screenshot"})
 				return
@@ -818,12 +818,12 @@ func (h *ProjectHandler) GetProjectMedia(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Media not found"})
 		return
 	}
-	r2, err := utils.InitS3SDK(h.cfg)
+	store, err := utils.InitS3SDK(h.cfg)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Storage unavailable"})
 		return
 	}
-	data, err := blob.GetData(r2)
+	data, err := blob.GetData(store)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch media"})
 		return

@@ -95,13 +95,13 @@ func (h *CompanyHandler) GetLogo(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err})
 		return
 	}
-	r2, err := utils.InitS3SDK(h.cfg)
+	store, err := utils.InitS3SDK(h.cfg)
 	if err != nil {
 		log.Printf("Failed to Init Blob Store: %s\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err})
 		return
 	}
-	logo, err := logoBlob.GetData(r2)
+	logo, err := logoBlob.GetData(store)
 	if err != nil {
 		log.Printf("Failed to Fetch Blob: %s\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err})
@@ -144,12 +144,12 @@ func (h *CompanyHandler) UpdateCompany(c *gin.Context) {
 		company.WebsiteUrl = websiteUrl
 	}
 
-	r2, r2Err := utils.InitS3SDK(h.cfg)
+	store, storeErr := utils.InitS3SDK(h.cfg)
 
 	if c.PostForm("removeLogo") == "true" && company.Logo != uuid.Nil {
 		var oldBlob models.BlobData
-		if err := h.db.First(&oldBlob, "blob_id = ?", company.Logo).Error; err == nil && r2Err == nil {
-			oldBlob.DeleteData(&company.Logo, h.db, r2) // <-- Cleanly calls your new model method!
+		if err := h.db.First(&oldBlob, "blob_id = ?", company.Logo).Error; err == nil && storeErr == nil {
+			oldBlob.DeleteData(&company.Logo, h.db, store) // <-- Cleanly calls your new model method!
 		}
 		company.Logo = uuid.Nil
 	}
@@ -169,10 +169,10 @@ func (h *CompanyHandler) UpdateCompany(c *gin.Context) {
 				namePart = strings.Join(importParts[:len(importParts)-1], ".")
 			}
 
-			if r2Err == nil {
+			if storeErr == nil {
 				oldLogoID := company.Logo
 
-				logoBlob, blobErr := models.NewBlobData(namePart, extPart, company.Id, fdata, h.db, r2)
+				logoBlob, blobErr := models.NewBlobData(namePart, extPart, company.Id, fdata, h.db, store)
 				if blobErr == nil {
 					company.Logo = logoBlob.BlobId
 
@@ -180,7 +180,7 @@ func (h *CompanyHandler) UpdateCompany(c *gin.Context) {
 					if oldLogoID != uuid.Nil {
 						var oldBlob models.BlobData
 						if err := h.db.First(&oldBlob, "blob_id = ?", oldLogoID).Error; err == nil {
-							oldBlob.DeleteData(&oldLogoID, h.db, r2) // <-- Cleanly calls your new model method!
+							oldBlob.DeleteData(&oldLogoID, h.db, store) // <-- Cleanly calls your new model method!
 						}
 					}
 				}
@@ -211,10 +211,10 @@ func (h *CompanyHandler) DeleteCompany(c *gin.Context) {
 
 	// Delete the physical logo if the company has one
 	if company.Logo != uuid.Nil {
-		if r2, err := utils.InitS3SDK(h.cfg); err == nil {
+		if store, err := utils.InitS3SDK(h.cfg); err == nil {
 			var logoBlob models.BlobData
 			if err := h.db.First(&logoBlob, "blob_id = ?", company.Logo).Error; err == nil {
-				logoBlob.DeleteData(&company.Logo, h.db, r2) // <-- Cleanly calls your new model method!
+				logoBlob.DeleteData(&company.Logo, h.db, store) // <-- Cleanly calls your new model method!
 			}
 		}
 	}

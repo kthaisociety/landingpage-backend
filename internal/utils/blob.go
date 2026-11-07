@@ -15,30 +15,34 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
-type R2Client struct {
-	R2_client  *s3.Client
+// BlobStore reads and writes one bucket through the S3 API. Each file is stored
+// under its BlobData.BlobId; the database holds the rest.
+type BlobStore struct {
+	client     *s3.Client
 	BucketName string
 }
 
-func InitS3SDK(server_cfg *cfg.Config) (R2Client, error) {
-	var accessKeyId = server_cfg.R2_access_key_id
-	var accessKeySecret = server_cfg.R2_access_key
-	var r2_endpoint = server_cfg.R2_endpoint
+// InitS3SDK returns the store for the "files" bucket (S3_BUCKET_FILES).
+func InitS3SDK(server_cfg *cfg.Config) (BlobStore, error) {
+	s := server_cfg.S3
 
 	cfg, err := config.LoadDefaultConfig(context.TODO(),
-		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKeyId, accessKeySecret, "")),
-		config.WithRegion("auto"),
+		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(s.AccessKeyID, s.SecretAccessKey, "")),
+		config.WithRegion(s.Region),
 	)
 	if err != nil {
-		return R2Client{}, err
+		return BlobStore{}, err
 	}
 
 	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
-		o.BaseEndpoint = aws.String(r2_endpoint)
+		o.BaseEndpoint = aws.String(s.Endpoint)
+		// endpoint/bucket/key rather than bucket.endpoint/key: GleSYS is
+		// addressed path-style (infrastructure's terraform/glesys).
+		o.UsePathStyle = true
 	})
-	return R2Client{
-		R2_client:  client,
-		BucketName: server_cfg.R2_bucket_name,
+	return BlobStore{
+		client:     client,
+		BucketName: s.BucketFiles,
 	}, nil
 }
 
@@ -49,9 +53,9 @@ func PrettyPrintS3Objects(ol *s3.ListObjectsV2Output) {
 	}
 }
 
-func (r2 R2Client) GetObjectList() (*s3.ListObjectsV2Output, error) {
-	objectList, err := r2.R2_client.ListObjectsV2(context.TODO(), &s3.ListObjectsV2Input{
-		Bucket: &r2.BucketName,
+func (b BlobStore) GetObjectList() (*s3.ListObjectsV2Output, error) {
+	objectList, err := b.client.ListObjectsV2(context.TODO(), &s3.ListObjectsV2Input{
+		Bucket: &b.BucketName,
 	})
 	if err != nil {
 		return nil, err
@@ -59,9 +63,9 @@ func (r2 R2Client) GetObjectList() (*s3.ListObjectsV2Output, error) {
 	return objectList, nil
 }
 
-func (r2 R2Client) GetObject(object_key string) ([]byte, error) {
-	response, err := r2.R2_client.GetObject(context.TODO(), &s3.GetObjectInput{
-		Bucket: aws.String(r2.BucketName),
+func (b BlobStore) GetObject(object_key string) ([]byte, error) {
+	response, err := b.client.GetObject(context.TODO(), &s3.GetObjectInput{
+		Bucket: aws.String(b.BucketName),
 		Key:    aws.String(object_key),
 	})
 	if err != nil {
@@ -74,18 +78,18 @@ func (r2 R2Client) GetObject(object_key string) ([]byte, error) {
 	return data, nil
 }
 
-func (r2 R2Client) PutObject(key string, obj []byte) error {
-	_, err := r2.R2_client.PutObject(context.Background(), &s3.PutObjectInput{
-		Bucket: aws.String(r2.BucketName),
+func (b BlobStore) PutObject(key string, obj []byte) error {
+	_, err := b.client.PutObject(context.Background(), &s3.PutObjectInput{
+		Bucket: aws.String(b.BucketName),
 		Key:    aws.String(key),
 		Body:   bytes.NewReader(obj),
 	})
 	return err
 }
 
-func (r2 R2Client) DeleteObject(key string) error {
-	_, err := r2.R2_client.DeleteObject(context.TODO(), &s3.DeleteObjectInput{
-		Bucket: aws.String(r2.BucketName),
+func (b BlobStore) DeleteObject(key string) error {
+	_, err := b.client.DeleteObject(context.TODO(), &s3.DeleteObjectInput{
+		Bucket: aws.String(b.BucketName),
 		Key:    aws.String(key),
 	})
 	return err

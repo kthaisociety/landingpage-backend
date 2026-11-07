@@ -296,13 +296,13 @@ func (h *GeneralApplicationHandler) Create(c *gin.Context) {
 		if shouldStoreResumeInDatabase(h.cfg) {
 			application.ResumeData = resumeBytes
 		} else {
-			r2, err := utils.InitS3SDK(h.cfg)
+			store, err := utils.InitS3SDK(h.cfg)
 			if err != nil {
 				return fmt.Errorf("failed to initialize resume storage: %w", err)
 			}
 			ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(fileHeader.Filename)), ".")
 			name := strings.TrimSuffix(filepath.Base(fileHeader.Filename), filepath.Ext(fileHeader.Filename))
-			blob, err := models.NewBlobData(name, ext, applicationID, resumeBytes, tx, r2)
+			blob, err := models.NewBlobData(name, ext, applicationID, resumeBytes, tx, store)
 			if err != nil {
 				return err
 			}
@@ -720,12 +720,12 @@ func (h *GeneralApplicationHandler) AdminDownloadResume(c *gin.Context) {
 		return
 	}
 
-	r2, err := utils.InitS3SDK(h.cfg)
+	store, err := utils.InitS3SDK(h.cfg)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to initialize resume storage"})
 		return
 	}
-	data, err := resumeBlob.GetData(r2)
+	data, err := resumeBlob.GetData(store)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch resume"})
 		return

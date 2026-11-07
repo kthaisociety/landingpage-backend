@@ -104,11 +104,18 @@ type Config struct {
 	// accepted. Empty by default — the notify call is skipped (logged, not
 	// fatal) until onboarding-service is actually deployed.
 	OnboardingServiceURL string
-	R2_bucket_name       string
-	R2_access_key        string
-	R2_access_key_id     string
-	R2_endpoint          string
-	R2_Account_Id        string // might not be needed
+
+	// S3 is the object storage for résumés, profile pictures, project media
+	// and logos: the project's GleSYS storage in staging and production, one
+	// private bucket, "files". The pipeline writes these values
+	// (secret/kthais-backend/<env>/storage).
+	S3 struct {
+		AccessKeyID     string
+		SecretAccessKey string
+		Endpoint        string
+		Region          string
+		BucketFiles     string
+	}
 
 	SES struct {
 		Region  string
@@ -195,12 +202,14 @@ func LoadConfig() (*Config, error) {
 	cfg.OnboardingServiceSecret = getEnv("ONBOARDING_SERVICE_SECRET", "")
 	cfg.OnboardingServiceURL = getEnv("ONBOARDING_SERVICE_URL", "")
 
-	//Cloudflare R2
-	cfg.R2_bucket_name = getEnv("R2_Bucket", "")
-	cfg.R2_access_key = getEnv("R2_Secret_Access_Key", "off key scraper")
-	cfg.R2_access_key_id = getEnv("R2_Access_Key_Id", "")
-	cfg.R2_endpoint = getEnv("R2_Endpoint", "")
-	cfg.R2_Account_Id = getEnv("R2_Account_Id", "")
+	// Object storage. The names are the pipeline's (deployments' project.yaml
+	// guide); S3_BUCKET_FILES is the bucket "files" in infrastructure's
+	// projects.yaml. GleSYS ignores the region, but requests are signed with one.
+	cfg.S3.AccessKeyID = getEnv("S3_ACCESS_KEY_ID", "")
+	cfg.S3.SecretAccessKey = getEnv("S3_SECRET_ACCESS_KEY", "")
+	cfg.S3.Endpoint = getEnv("S3_ENDPOINT", "")
+	cfg.S3.Region = getEnv("S3_REGION", "us-east-1")
+	cfg.S3.BucketFiles = getEnv("S3_BUCKET_FILES", "")
 
 	// Debug OAuth configuration
 	// fmt.Printf("Google Client ID: %s\n", maskString(cfg.OAuth.GoogleClientID))
